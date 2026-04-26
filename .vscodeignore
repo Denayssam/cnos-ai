@@ -1,0 +1,15 @@
+.vscode/**
+.vscode-test/**
+src/**
+node_modules/**
+.gitignore
+tsconfig.json
+**/*.map
+**/*.ts
+!out/**
+*.vsix
+cnos_full_context.txt
+generate_context.cjs
+notebooklm_context_part1.md
+notebooklm_generator.cjs
+package-lock.json

@@ -1,0 +1,138 @@
+{
+  "name": "fluxo-ai",
+  "displayName": "Fluxo AI — Agent Swarm",
+  "description": "Autonomous AI coding agent powered by OpenRouter. Writes files, runs commands, routes to specialized agents (Coder, Designer, Dashboard, Payments).",
+  "version": "7.8.2",
+  "publisher": "fluxotechai",
+  "repository": { "type": "git", "url": "https://github.com/fluxotechai/fluxo-ai" },
+  "icon": "media/icon.png",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["AI", "Chat", "Programming Languages"],
+  "keywords": ["ai", "agent", "openrouter", "code assistant", "autonomous", "fluxo"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "fluxo-ai-sidebar",
+          "title": "Fluxo AI",
+          "icon": "media/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "fluxo-ai-sidebar": [
+        {
+          "type": "webview",
+          "id": "fluxo.sidebar",
+          "name": "Launcher"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "fluxo.openPanel",          "title": "Fluxo: Open AI Panel",          "icon": "$(robot)" },
+      { "command": "fluxo.newChat",             "title": "Fluxo: New Chat",               "icon": "$(add)" },
+      { "command": "fluxo.clearChat",           "title": "Fluxo: Clear Chat",             "icon": "$(clear-all)" },
+      { "command": "fluxo.askAboutSelection",   "title": "Fluxo: Ask About Selection",    "icon": "$(comment)" },
+      { "command": "fluxo.openSettings",        "title": "Fluxo: Settings",               "icon": "$(settings-gear)" },
+      { "command": "fluxo.toggleSentinel",      "title": "Fluxo: Toggle Sentinel",        "icon": "$(eye)" }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "fluxo.askAboutSelection",
+          "when": "editorHasSelection",
+          "group": "fluxo@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "fluxo.openPanel",
+          "group": "navigation",
+          "when": "true"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "fluxo.openPanel",
+        "key": "ctrl+alt+c",
+        "mac": "cmd+alt+c"
+      },
+      {
+        "command": "fluxo.askAboutSelection",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorHasSelection"
+      }
+    ],
+    "configuration": {
+      "title": "Fluxo AI",
+      "properties": {
+        "fluxo.openrouterApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenRouter API Key. Get yours free at https://openrouter.ai/keys",
+          "order": 1
+        },
+        "fluxo.defaultModel": {
+          "type": "string",
+          "default": "google/gemini-2.5-flash",
+          "description": "Default AI model (e.g., google/gemini-2.5-flash)",
+          "order": 2
+        },
+        "fluxo.customModels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "google/gemini-2.5-flash",
+            "google/gemini-2.5-flash-lite",
+            "google/gemini-2.5-pro",
+            "deepseek/deepseek-v3.2",
+            "anthropic/claude-3.7-sonnet",
+            "anthropic/claude-3.5-haiku"
+          ],
+          "description": "List of available models. OpenRouter models use google/, anthropic/, openai/ prefixes. Use gemini-* for direct Gemini AI Studio. Use deepseek/* for direct DeepSeek API.",
+          "order": 3
+        },
+        "fluxo.maxTokens": {
+          "type": "number",
+          "default": 16384,
+          "description": "Max tokens per AI response. Use 16384+ for coding tasks — too low (e.g. 4096) causes the model to truncate tool calls and omit required parameters like old_string.",
+          "order": 4
+        },
+        "fluxo.streamingEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable streaming for final responses",
+          "order": 5
+        },
+        "fluxo.deepseekApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "DeepSeek API Key for direct access to deepseek-chat / deepseek-coder (bypasses OpenRouter). Get yours at https://platform.deepseek.com/api_keys",
+          "order": 6
+        },
+        "fluxo.geminiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Google AI Studio API Key for direct Gemini access (gemini-2.5-flash, gemini-2.5-pro). Get yours at https://aistudio.google.com/apikey",
+          "order": 7
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.3.0"
+  }
+}
