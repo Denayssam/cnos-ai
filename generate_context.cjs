@@ -97,36 +97,54 @@ console.log(`🤖 Detected App: ${metadata.name} (${metadata.stack})`);
 
 const allFiles = getAllFiles(__dirname);
 
-// --- HEADER GENERATION (The "Gem" Hook) ---
-let content = `[SYSTEM_MANIFEST]
-APP_NAME: ${metadata.name}
-APP_VERSION: ${metadata.version}
-TECH_STACK: ${metadata.stack}
-DESCRIPTION: ${metadata.description}
-GENERATED_AT: ${new Date().toISOString()}
-[/SYSTEM_MANIFEST]
+// ✂️ CHUNKING LOGIC
+const MAX_CHARS_PER_FILE = 500000; // Aprox 500KB por archivo
+let fileIndex = 1;
+let currentContent = '';
 
-[CODEBASE_START]
-`;
+function getHeader(index) {
+    return `[SYSTEM_MANIFEST]\nAPP_NAME: ${metadata.name}\nAPP_VERSION: ${metadata.version}\nPART: ${index}\nGENERATED_AT: ${new Date().toISOString()}\n[/SYSTEM_MANIFEST]\n\n[CODEBASE_START]\n`;
+}
+
+currentContent = getHeader(fileIndex);
 
 // --- CONTENT DUMP ---
-allFiles.forEach(filePath => {
+allFiles.forEach((filePath) => {
     try {
         let fileContent = fs.readFileSync(filePath, 'utf8');
         const relativePath = path.relative(__dirname, filePath);
         
         fileContent = safeRead(filePath, fileContent);
 
-        content += `\n================================================================================\n`;
-        content += `FILE PATH: ${relativePath}\n`;
-        content += `================================================================================\n`;
-        content += `${fileContent}\n\n`;
-        
+        let block = `\n================================================================================\n`;
+        block += `FILE PATH: ${relativePath}\n`;
+        block += `================================================================================\n`;
+        block += `${fileContent}\n\n`;
+
+        // Check if adding this block exceeds the limit
+        if (currentContent.length + block.length > MAX_CHARS_PER_FILE) {
+            // Save current chunk
+            const outputName = OUTPUT_FILE.replace('.txt', `_part${fileIndex}.txt`);
+            fs.writeFileSync(outputName, currentContent);
+            console.log(`\n📁 Chunk ${fileIndex} generated: ${outputName}`);
+            
+            // Reset for next chunk
+            fileIndex++;
+            currentContent = getHeader(fileIndex);
+        }
+
+        currentContent += block;
         console.log(`✅ Added: ${relativePath}`);
     } catch (err) { 
         console.error(`❌ Error reading ${filePath}: ${err.message}`); 
     }
 });
 
-fs.writeFileSync(OUTPUT_FILE, content);
-console.log(`\n🎉 SUCCESS! Context generated at: ${OUTPUT_FILE}`);
+// Write the final remaining chunk
+if (currentContent.trim().length > getHeader(fileIndex).trim().length) {
+    const outputName = OUTPUT_FILE.replace('.txt', `_part${fileIndex}.txt`);
+    fs.writeFileSync(outputName, currentContent);
+    console.log(`\n📁 Chunk ${fileIndex} generated: ${outputName}`);
+}
+
+console.log(`\n🎉 SUCCESS! Context split into ${fileIndex} files.`);

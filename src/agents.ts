@@ -263,7 +263,7 @@ ${WEB_ARCHITECTURE_SOP}`,
     emoji: '🧭',
     color: '#8b5cf6',
     description: 'Orchestration, complex planning, and emergency debugging',
-    tools: ['read_file', 'write_file', 'search_and_replace', 'replace_lines', 'replace_block', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval'],
+    tools: ['read_file', 'write_file', 'search_and_replace', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'update_memory'],
     keywords: [
       'manager', 'gestiona', 'organiza', 'planifica', 'proyecto',
       'architect', 'arquitecto', 'debug', 'investiga', 'loop',

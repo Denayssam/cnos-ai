@@ -12,6 +12,7 @@ import * as SearchInFilesTool from './SearchInFilesTool';
 import * as SearchImagesTool  from './SearchImagesTool';
 import * as AskApprovalTool    from './AskApprovalTool';
 import * as SearchReplaceTool  from './SearchReplaceTool';
+import * as UpdateMemoryTool   from './UpdateMemoryTool';
 import { ToolResult, NativeTool } from './shared';
 
 export { ToolResult, NativeTool };
@@ -33,6 +34,7 @@ const ALL_TOOLS = [
   SearchInFilesTool,
   SearchImagesTool,
   AskApprovalTool,
+  UpdateMemoryTool,
 ];
 
 export const TOOL_DEFINITIONS: NativeTool[] = ALL_TOOLS.map(t => t.TOOL_DEF);

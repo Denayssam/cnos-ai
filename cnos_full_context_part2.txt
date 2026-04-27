@@ -1,1988 +1,297 @@
-# 📦 APP MANIFEST
-* **App Name:** fluxo-ai
-* **Version:** 7.8.2
-* **Stack:** Vanilla JS
-* **Part:** 1
-* **Generated At:** 2026-04-26T23:43:09.285Z
-
----
-
-### 📁 FILE: `ARCHIVE_v2_CONTEXT.md`
-```text
-# ⬡ CNOS AI — MASTER CONTEXT (v2.6.0)
-
-This document is a comprehensive technical blueprint of the CNOS AI extension.
-Feed it into any LLM (Gems, Claude, GPT) to provide full context for maintenance, task orchestration, or Phase 3.0 implementation.
-
----
-
-## 1. MISSION STATEMENT
-CNOS AI is a fully autonomous, extension-native agent swarm for VS Code. It replicates the "Claude Code" experience but focuses on multi-agent collaboration (Swarm Intelligence) and a glassmorphic UI. It uses the user's own OpenRouter API key — no subscription required.
-
----
-
-## 2. SYSTEM ARCHITECTURE
-
-Built on **Node.js + VS Code Extension API + OpenRouter**.
-
-### A. The Three Pillars
-
-| File | Role | What It Does |
-|---|---|---|
-| `src/tools.ts` | **The Hands** | Atomic file/shell/search handlers. Exports `TOOL_DEFINITIONS`, `executeTool`, `parseToolCalls`, `buildToolsSystemPrompt` |
-| `src/agents.ts` | **The Personalities** | Agent router + 5 specialized agents + Sherlock Auditor prompt |
-| `src/agentEngine.ts` | **The Brain** | Recursive autonomous loop. Parses tool calls, executes them, feeds `<tool_result>` back into context |
-
-### B. Available Tools (injected into agent system prompts)
-
-| Tool | Purpose |
-|---|---|
-| `read_file` | Read full file contents (handles UTF-16, truncates at 60KB) |
-| `write_file` | Create or fully overwrite a file (XML format to avoid JSON escaping) |
-| `edit_file` | **Surgical find/replace** — preferred over write_file for existing files |
-| `create_dir` | Create directory tree |
-| `list_dir` | List directory contents |
-| `run_command` | Execute shell commands (Windows-safe, 30s timeout, blocks dangerous patterns) |
-| `delete_file` | Delete a single file |
-| `delete_dir` | Recursively delete a directory |
-| `propose_plan` | Write IMPLEMENTATION_PLAN.md for complex tasks |
-| `search_in_files` | Grep-style search across workspace files |
-| `search_images` | Get free Lorem Picsum image URLs |
-
-### C. Agents
-
-| Agent | Emoji | Trigger Keywords | Focus |
-|---|---|---|---|
-| `coder` | 💻 | code, bug, fix, archivo, npm | General coding, files, commands |
-| `designer` | 🎨 | diseño, css, imagen, tailwind | UI/UX, styling, layouts |
-| `dashboard` | 📊 | chart, gráfica, analytics, kpi | Data visualization |
-| `payments` | 💳 | pago, stripe, checkout | Payment integrations |
-| `manager` | 🧭 | manager, debug, complejo, stuck | Orchestration, complex planning |
-
-Routing: keyword scoring → falls back to `coder`. Explicit `@mention` overrides.
-
-### D. Sherlock Auditor (The Safety Layer)
-A secondary AI call that reviews the agent's plan before execution.
-
-**Currently blocks:**
-1. Rogue UI component creation (unrequested Button.jsx, Card.jsx, etc.)
-2. Sandbox hallucination ("I cannot run commands")
-3. Ghost execution (narrating success without calling the tool)
-4. Looping (same tool call repeated with same args)
-5. Siloed changes (modifying without checking usages)
-6. Tech stack drift (importing wrong packages not used by the codebase)
-7. write_file fallback (using write_file on existing file after edit_file fails)
-
-**Explicitly allowed (do NOT block):**
-- Modifying translation/i18n files when the task involves UI text changes
-
-### E. UI/WebView (`media/main.js` + `media/style.css`)
-- Glassmorphism design: blurry backgrounds, high-contrast typography
-- Response wrapper pattern: tool activity in a `<details>` block always above the text bubble
-- Smart scrolling: auto-scroll only if user is at bottom
-- Token wheel: character-count gauge, click to compress context
-- Agent badge: colored pill showing which agent is active
-
----
-
-## 3. CURRENT STATE: v2.6.0
-
-### What's Stable
-- Tool integrity: robust regex parsing for `<tool_call>` and `<write_file>`
-- Git mastery: resolves "no tracking info" errors by auditing remotes
-- Windows-optimized: uses `fs.rmSync` for directory cleanup
-- Response wrapper: tool activity cards are ordered correctly above the AI text bubble
-- `edit_file` tool: two-strategy engine (exact match → fuzzy line match), avoids full-file rewrites
-- **Output Separation Protocol**: every agent is required to wrap all internal reasoning in `<reasoning>` tags; the UI renders them as a collapsible "🧠 Proceso mental" block so users only see clean summaries
-
-### Known Limitations (READ BEFORE GIVING CNOS TASKS)
-1. **Max tokens truncation**: When asked to rewrite a large file, the model may hit max_tokens mid-generation and hallucinate the rest from training memory — using wrong package names, wrong imports.
-   - **Mitigation**: Never ask CNOS to rewrite files over ~200 lines. Break into targeted edits.
-
-2. **edit_file find strings**: Keep `find` to 5-10 lines max. The fuzzy engine handles indentation differences, but can't match across large gaps. If it fails twice, read the file and pick a shorter unique anchor.
-
-3. **Loop detector is aggressive**: After 3 identical tool calls, it switches to Manager agent. This is correct behavior but can interrupt a task mid-way.
-
-4. **Sherlock can over-block**: The Auditor sees each plan in isolation and may flag legitimate helper steps. Known exception: i18n/translation file changes are whitelisted.
-
----
-
-## 4. HOW TO GIVE CNOS AI TASKS EFFECTIVELY (GEM ORCHESTRATION GUIDE)
-
-This section is for **any AI orchestrator** (Gem, Claude, GPT) helping the user delegate work to CNOS AI.
-
-### Golden Rules
-
-**Rule 1 — Surgical over wholesale**
-> Never ask CNOS to "rewrite X file." Instead ask: "In file X, change [specific thing] to [specific thing]."
-> CNOS should use `edit_file`, not `write_file`, on existing files.
-
-**Rule 2 — Name the anchor**
-> Give CNOS a unique string it can use as the `find` anchor. Example:
-> ✅ "Find the line with `{t('dash_occupancy')}` and wrap it in a conditional..."
-> ❌ "Update the occupancy section in the dashboard"
-
-**Rule 3 — Break multi-file tasks into steps**
-> Tell CNOS exactly which files to touch in which order. Don't say "add this feature" — say:
-> 1. "In `types.ts`, add field X"
-> 2. "In `translations.ts`, add keys A and B"
-> 3. "In `Dashboard.tsx`, find line `{t('dash_occupancy')}` and replace with..."
-
-**Rule 4 — Check the tech stack before assigning**
-> The main project (CoHostHQ / airbnb-pro) uses:
-> - **Icons**: `lucide-react` (NOT @heroicons/react)
-> - **i18n**: custom `useLanguage()` hook from `../i18n/LanguageContext` (NOT react-i18next)
-> - **State**: React `useState`/`useMemo` (NOT zustand, jotai, etc.)
-> - **Styling**: Tailwind CSS
-> - **Backend**: Firebase Firestore via `src/services/cloudService.ts`
-> Include these constraints in your task description so CNOS doesn't drift.
-
-**Rule 5 — Translation keys always go in both languages**
-> `src/i18n/translations.ts` has `es` and `en` objects. Any new UI text needs a key in both. Example prompt addition: "Also add the Spanish and English translation keys to translations.ts."
-
-**Rule 6 — After a CNOS failure, don't fix it yourself**
-> If CNOS breaks something, describe the broken state to CNOS and let it fix its own work. This builds CNOS's reliability over time and avoids manual patches that CNOS doesn't know about.
-
-### Task Template for GEM → CNOS Delegation
-
-```
-@coder In [filename], find the line that contains "[unique anchor text]".
-Replace it with:
-[new code block — keep it short]
-
-Tech stack reminder: icons = lucide-react, i18n = useLanguage(), styling = Tailwind.
-If you need to add translation keys, update both `es` and `en` in src/i18n/translations.ts.
-Use edit_file, not write_file.
-```
-
----
-
-## 5. COHOSTHQ PROJECT (Primary Test Target)
-
-CNOS AI is frequently used to maintain **CoHostHQ** (`D:\CNOS_Mirror\03_EXPERIMENTAL\airbnb-pro`), a Firebase + React + Vite app for property finance management.
-
-### CoHostHQ Tech Stack
-- **Framework**: React 18 + TypeScript + Vite
-- **Styling**: Tailwind CSS (`brand-*` color tokens)
-- **Icons**: `lucide-react`
-- **i18n**: `useLanguage()` from `src/i18n/LanguageContext.tsx`, keys in `src/i18n/translations.ts`
-- **Backend**: Firebase Firestore via `src/services/cloudService.ts`
-- **Auth**: Firebase Auth (`auth.currentUser`)
-
-### Key Files
-| File | Purpose |
-|---|---|
-| `src/types.ts` | All TypeScript interfaces (`Property`, `Transaction`, `Reminder`, etc.) |
-| `src/App.tsx` | Root component, routing between views |
-| `src/components/Dashboard.tsx` | Resumen tab — summary cards, occupancy, upcoming bills, charts |
-| `src/components/PropertyConfigView.tsx` | Property creation/edit form with type selector (rental vs household) |
-| `src/components/AIAssistant.tsx` | In-app AI chat powered by Firebase Functions |
-| `src/services/cloudService.ts` | All Firestore read/write — critical: `saveProperty` must include ALL fields in `finalData` or they'll be silently dropped |
-| `src/i18n/translations.ts` | All UI strings in `es` and `en` |
-
-### Property Type Feature (Completed)
-Properties have `propertyType?: 'rental' | 'household'`. When `household`:
-- Strategic Context labels change (no Airbnb-specific labels)
-- AI auto-fill block is hidden in PropertyConfigView
-- Dashboard should show budget info instead of occupancy/nights stats
-- Property card shows 🏡 badge instead of 🏠
-
-### Firestore Rules Pattern
-All Firestore security rules use `request.auth.token.email.lower()` — always lowercase emails.
-
----
-
-## 6. PHASE 3.0 — VISION & ROADMAP
-
-### Key Features to Implement
-1. **Autonomous Visual QA (The Eyes)**: Screenshot tool or DOM-tree scraper. Agent "sees" the app and fixes layout bugs.
-2. **Real-Time Self-Healing**: Monitor terminal/dev-server errors. Swarm auto-intervenes on build failures.
-3. **Long-Term Vector Memory**: Local Vector DB (ChromaDB/Pinecone). Remembers architectural decisions across projects.
-4. **Proactive Suggestions**: Agent suggests Performance/Security/SEO improvements before being asked.
-5. **edit_file improvements**: Replace `String.prototype.replace()` with a proper diff/patch engine for multi-line edits.
-
----
-
-## 7. TECHNICAL CONSTRAINTS FOR ALL AI AGENTS
-
-- **Language**: TypeScript (source), Vanilla JS/CSS (media/WebView)
-- **Tool call format**:
-  - Standard: `<tool_call>{"name": "...", "args": {...}}</tool_call>`
-  - Write: `<write_file path="...">CODE</write_file>`
-- **No hallucinations**: NEVER use `<tool_code>` or simulate results
-- **Path safety**: Always use `path.resolve` and check for traversal
-- **Windows compatibility**: Quote all paths in shell commands, use `delete_dir` not `rd`
-- **edit_file find strings**: 1-3 lines max, pick a unique anchor
-
----
-
-**Current Version**: 2.6.0
-**Status**: Stable. Phase 3.0 in progress.
-**Last updated**: 2026-04-23
-
-```
-
-### 📁 FILE: `CNOS_MANIFESTO.md`
-```text
-# CNOS AI — Constitución del Sistema
-**Versión 3.4.0 · Documento Vinculante**
-
-Este archivo es la fuente de autoridad para todos los agentes de CNOS AI. Cuando un agente tenga dudas sobre cómo editar, qué estilo de UI aplicar, o qué constituye una entrega válida, **debe leer este documento antes de actuar**.
-
----
-
-## I. FILOSOFÍA DE EDICIÓN
-
-**Principio fundacional**: Un agente que reescribe un archivo completo desde la memoria de entrenamiento es un agente que alucina. CNOS AI opera con bisturí, no con motosierra.
-
-### Reglas Absolutas
-
-| Situación | Herramienta obligatoria | Herramienta prohibida |
-|-----------|------------------------|-----------------------|
-| Modificar un archivo existente | `replace_lines` | `write_file` |
-| Crear un archivo nuevo | `write_file` | — |
-| Localizar un bloque en archivo largo | `search_in_files` primero | `read_file` sin búsqueda previa |
-
-### Flujo de Edición Canónico
-
-```
-1. search_in_files  →  localizar la función/bloque exacto
-2. read_file        →  obtener los números de línea reales (output: "42 | const x = 1;")
-3. replace_lines    →  reemplazar únicamente las líneas N–M
-4. (si el archivo fue modificado previamente en esta tarea)
-   read_file de nuevo → refrescar números de línea antes del siguiente replace_lines
-```
-
-**Por qué**: `write_file` en un archivo existente fuerza al modelo a regenerar el archivo completo desde memoria de entrenamiento. Cuando el contexto es insuficiente o el archivo es largo, el modelo completa las secciones que no tiene en contexto con código inventado — importando paquetes equivocados, omitiendo funciones existentes, o introduciendo bugs que no existían. `replace_lines` opera solo sobre el bloque que el agente acaba de leer, eliminando este vector de error.
-
----
-
-## II. PROTOCOLO DE SEGURIDAD
-
-### Sherlock Auditor
-
-El **Sherlock Auditor** es una capa de validación LLM independiente que se ejecuta después de cada respuesta del agente, antes de que se ejecuten las herramientas. Verifica 9 reglas:
-
-| # | Regla | Acción si detecta |
-|---|-------|-------------------|
-| 1 | **ROGUE DESIGNER** — Crear componentes UI no solicitados | `ERROR:` + bloqueo |
-| 2 | **SANDBOX HALLUCINATION** — Afirmar que no puede ejecutar comandos | `ERROR:` + bloqueo |
-| 3 | **GHOST EXECUTION (intención)** — Narrar éxito sin llamar la herramienta | `ERROR:` + bloqueo |
-| 4 | **LOOPING** — Repetir el mismo tool call con los mismos args | `ERROR:` + escalación al Manager |
-| 5 | **SILOED CHANGES** — Modificar sin buscar usages | `ERROR:` + bloqueo |
-| 6 | **TECH STACK DRIFT** — Importar paquetes que no existen en el codebase | `ERROR:` + bloqueo |
-| 7 | **WRITE_FILE FALLBACK** — Usar `write_file` en archivo existente | `ERROR:` + bloqueo |
-| 8 | **GHOST EXECUTION (narración)** — Frases "I will now", "Let me run" sin `<tool_call>` | `ERROR:` + retry forzado |
-| 9 | **SENTINEL_BLOCK / BUILD_BLOCK** — Intentar cerrar tarea con build roto | `ERROR:` + bloqueo con output del compilador |
-
-### Sentinel — Vigilante de Terminal en Tiempo Real
-
-El **Sentinel** monitorea el output del terminal del desarrollador usando `vscode.window.onDidWriteTerminalData`. Cuando detecta un error de compilación:
-
-1. Aplica un buffer rotativo de 4 KB con limpieza ANSI.
-2. Compara contra 15 patrones regex (TypeScript, Vite, OXC, SyntaxError, etc.).
-3. Espera 2 segundos de silencio (debounce) antes de disparar.
-4. Activa un cooldown de 30 segundos para evitar bucles de re-trigger.
-5. Envía la alerta al **Manager** con prefijo `@manager` para routing forzado.
-
-**Patrones activos**:
-- `error TS\d+:` — TypeScript compiler
-- `failed to compile` / `failed to resolve import`
-- `[vite] error` — HMR runtime
-- `[plugin:vite:oxc]` — Parser OXC (Vite 6+)
-- `\bparse_error\b` — OXC / SWC / esbuild
-- `\bSyntaxError\b`, `\bReferenceError\b`, `\bTypeError\b`
-- `build failed` / `compilation failed`
-- `npm err!`, `✗.*\berror\b`
-
-### Bloqueo Físico ante Build Roto
-
-Cuando `SENTINEL_HAS_ERROR: true` o `BUILD_FAILED: true` está activo en el contexto:
-- El agente **no puede emitir un Execution Report** (Sherlock Rule #9 lo rechaza).
-- **Excepción**: Si el agente está activamente llamando `read_file`, `replace_lines`, o `run_command`, el bloqueo no se activa — el agente está trabajando en la solución.
-- El agente sale del bloqueo únicamente cuando el build termina con exit code 0.
-
----
-
-## III. ESTÁNDARES SOP DE WEB
-
-Estos estándares se aplican **automáticamente** en cada proyecto web. No esperar a que el usuario los solicite.
-
-### 1. LLMO & SEO
-- Crear o verificar `/llms.txt` en la raíz del proyecto (índice para crawlers de IA).
-- Cada ruta HTML o React debe incluir:
-  - `<script type="application/ld+json">` con Schema Markup (LocalBusiness, WebSite, etc.)
-  - Tags OpenGraph: `og:title`, `og:description`, `og:image`, `og:url`
-  - `<meta name="description">` con descripción keyword-rich
-
-### 2. Performance — Lazy Loading
-```tsx
-// OBLIGATORIO para componentes pesados, rutas, dashboards, mapas, gráficas
-const HeavyPage = React.lazy(() => import('./HeavyPage'));
-
-<Suspense fallback={<div className="animate-pulse bg-white/10 rounded-xl h-40" />}>
-  <HeavyPage />
-</Suspense>
-```
-
-### 3. UI/UX — Mobile-First + Design System
-
-**Breakpoints**: Siempre `sm:` → `md:` → `lg:` → `xl:`. Nunca diseñar desktop-first.
-
-**Estética Glassmorphism** (sistema de diseño oficial):
-```css
-/* Card estándar */
-bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl shadow-xl
-
-/* Botón primario */
-bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-xl px-6 py-3
-
-/* Input */
-bg-white/5 border border-white/20 rounded-xl text-white placeholder-white/50
-```
-
-**Librería de iconos**: `lucide-react` **exclusivamente**.
-```tsx
-// ✅ Correcto
-import { Home, User, Settings } from 'lucide-react';
-
-// ❌ Prohibido
-import { HomeIcon } from '@heroicons/react/24/outline';
-import { FaHome } from 'react-icons/fa';
-```
-
----
-
-## IV. FIRMA DE CALIDAD — BUILD VERIFICATION
-
-### Cuándo es obligatorio ejecutar `npm run build`
-
-Un cambio es **estructural** si incluye cualquiera de:
-- Archivos nuevos o eliminados
-- Cambios en imports o exports
-- Modificación de tipos TypeScript, interfaces, o firmas de función
-- Cambios en routing, entry points, o archivos de configuración (`vite.config`, `tsconfig`, `package.json`)
-
-### Protocolo
-
-```
-1. Completar todos los edits (replace_lines / write_file)
-2. run_command → "npm run build"
-   ├─ Exit code 0  → ✅ Build limpio → Execution Report permitido
-   └─ Exit code ≠ 0 → ❌ Build roto  → FORBIDDEN emitir Execution Report
-                        Leer output del compilador
-                        Identificar archivo + línea exacta de cada error
-                        Corregir con read_file → replace_lines
-                        Volver al paso 2
-```
-
-**El Execution Report es el certificado de entrega. No se extiende con el build roto.**
-
----
-
-## V. SEPARATION PROTOCOL — Estructura de Respuesta
-
-Cada respuesta del agente sigue esta estructura obligatoria:
-
-```
-<reasoning>
-  [Todo el razonamiento interno, plan, debugging — invisible para el usuario]
-</reasoning>
-
-[Una línea de estado opcional si se está esperando resultado de herramienta]
-
-<tool_call>{"name": "...", "args": {...}}</tool_call>
-          — O —
-✅ Tarea completada. Resumen de cambios:
-- **path/to/file.ext**: Reemplazadas líneas N–M. _(Propósito: razón técnica concisa)_
-```
-
-**Regla absoluta**: Si la respuesta contiene un `<tool_call>`, ese tag debe ser el **último contenido** del mensaje. Nada después.
-
----
-
-*CNOS AI · Construido con disciplina de ingeniería · Prohibida la aleatoriedad*
-
-```
-
-### 📁 FILE: `INSTALL.md`
-```text
-# Installation & Setup Guide — Fluxo AI (v7.8.2)
-
-Follow these steps to deploy your autonomous agent swarm in VS Code.
-
-## 1. Prerequisites
-
-- **Node.js** v18 or higher
-- **Visual Studio Code** 1.85+
-- **Git**
-- An API key from at least one supported provider:
-  - [OpenRouter](https://openrouter.ai/keys) — access to Gemini, Claude, GPT-4o, DeepSeek via one key
-  - [Google AI Studio](https://aistudio.google.com/apikey) — direct Gemini 2.5 Flash/Pro (faster, cheaper)
-  - [DeepSeek](https://platform.deepseek.com/api_keys) — direct DeepSeek Chat/Reasoner
-
----
-
-## 2. Build & Package
-
-```bash
-# Navigate to the extension folder
-cd cnos-extension
-
-# Install dependencies
-npm install
-
-# Compile TypeScript
-npm run compile
-
-# Package as VSIX
-npm run package
-# → produces: fluxo-ai-7.8.2.vsix
-```
-
----
-
-## 3. Install to VS Code
-
-```bash
-code --install-extension fluxo-ai-7.8.2.vsix --force
-```
-
-Restart VS Code after installation so the extension host initializes correctly.
-
----
-
-## 4. Configuration
-
-1. Open VS Code Settings (`Ctrl+,`)
-2. Search for **Fluxo AI**
-3. Configure at minimum one API key:
-
-| Setting | Description |
-|---|---|
-| `fluxo.openrouterApiKey` | OpenRouter key — access to all models via `/` prefix |
-| `fluxo.geminiApiKey` | Google AI Studio key — enables bare `gemini-*` model names |
-| `fluxo.deepseekApiKey` | DeepSeek direct key — enables bare `deepseek-*` model names |
-| `fluxo.defaultModel` | Default model (recommended: `google/gemini-2.5-flash`) |
-| `fluxo.maxTokens` | Max tokens per response (recommended: `16384` for coding tasks) |
-
-**Recommended model for coding tasks:** `google/gemini-2.5-flash` (AI Studio key) — best balance of speed, cost and context window.
-
----
-
-## 5. Launch
-
-- Press `Ctrl+Alt+C` to open the Fluxo AI panel
-- Or use the Command Palette: `Fluxo: Open AI Panel`
-- The sidebar launcher also auto-opens the panel on click
-
----
-
-## 6. Key Features & Tips
-
-### Visual Diff (Fase 8)
-When the agent uses `search_and_replace`, the file opens in your editor marked `●` (unsaved). Review the change and press `Ctrl+S` to save, or tell the agent to correct it.
-
-### Hard Brake
-If the agent generates an `IMPLEMENTATION_PLAN.md`, it pauses automatically. Review the plan file, edit it if needed, then tell the agent to proceed.
-
-### Sentinel Auto-Heal
-Click the 👁 **Guard** button in the header to activate real-time terminal monitoring. When a TypeScript/build error is detected, the Manager agent auto-intervenes.
-
-### Model Persistence
-Your last selected model is remembered across sessions — no need to re-select after reload.
-
-### Developer: Reload Window
-The Fluxo panel survives `Ctrl+Shift+P → Developer: Reload Window` — it reopens automatically.
-
-### Context Compression
-Click the **Token Wheel** (circular gauge in the header) when the conversation gets long. It summarizes history and frees up context window.
-
----
-
-## 7. Building from Source (Development)
-
-```bash
-# Watch mode for TypeScript (auto-recompile on save)
-npm run watch
-
-# Press F5 in VS Code to launch Extension Development Host
-```
-
----
-
-## 8. Contributing
-
-1. Follow the `search_and_replace` workflow — never use `write_file` on existing files
-2. Run `npm run compile` before any PR to verify types pass
-3. Bump `"version"` in `package.json` and all version strings before packaging
-4. Check [CNOS_MANIFESTO.md](CNOS_MANIFESTO.md) for binding agent rules
-
----
-
-*Fluxo Tech AI · [fluxotechai.com](https://fluxotechai.com)*
-
-```
-
-### 📁 FILE: `media\main.js`
-```javascript
-/* global acquireVsCodeApi */
-// ─── Fluxo AI v7.8.2 — The Contextual Grip ───────────────────────────────────
-(function () {
-  'use strict';
-
-  const vscode = acquireVsCodeApi();
-
-  // ─── DOM ────────────────────────────────────────────────────────────────────
-  const messagesEl      = document.getElementById('messages');
-  const promptInput     = document.getElementById('prompt-input');
-  const sendBtn         = document.getElementById('send-btn');
-  const cancelBtn       = document.getElementById('cancel-btn');
-  const modelSelect     = document.getElementById('model-select');
-  const agentBadge      = document.getElementById('agent-badge');
-  const agentPills      = document.getElementById('agent-pills');
-  const statusBar       = document.getElementById('status-bar');
-  const statusText      = document.getElementById('status-text');
-  const statusSpinner   = document.getElementById('status-spinner');
-  const apiKeyWarning   = document.getElementById('api-key-warning');
-  const workspaceLabel  = document.getElementById('workspace-label');
-  const wheelProgress   = document.getElementById('wheel-progress');
-  const wheelContainer  = document.getElementById('token-wheel-container');
-  const sentinelBtn     = document.getElementById('sentinel-btn');
-  const contextBar      = document.getElementById('context-bar');
-  const contextBarFile  = document.getElementById('context-bar-file');
-  const contextBarAction = document.getElementById('context-bar-action');
-
-  // ─── State ─────────────────────────────────────────────────────────────────
-  let isStreaming = false;
-  let currentBubble = null;
-  let currentStreamText = '';
-  let currentResponseWrapper = null;
-  let currentToolActivityItems = null;
-  let hasToolCalls = false;
-  let agents = [];
-  let currentAgentId = 'coder';
-  let chatHistory = [];
-  const CONTEXT_LIMIT = 120000;
-
-  // ─── Init ──────────────────────────────────────────────────────────────────
-  vscode.postMessage({ type: 'ready' });
-
-  // ─── Messages from Extension Host ─────────────────────────────────────────
-  window.addEventListener('message', ({ data }) => {
-    switch (data.type) {
-      case 'config':           handleConfig(data);                                        break;
-      case 'historySync':      handleHistorySync(data);                                   break;
-      case 'workspaceInfo':    handleWorkspaceInfo(data);                                 break;
-      case 'streamStart':      handleStreamStart();                                       break;
-      case 'streamChunk':      handleStreamChunk(data.text || '');                        break;
-      case 'streamEnd':        handleStreamEnd();                                         break;
-      case 'streamCancelled':  handleStreamCancelled();                                   break;
-      case 'error':            handleError(data.message || data.text || 'Unknown error'); break;
-      case 'chatCleared':      handleChatCleared();                                       break;
-      case 'prefillPrompt':    prefillPrompt(data.text || '');                            break;
-      case 'status':           showStatus(data.text || '', false);                        break;
-      case 'agentSelected':    handleAgentSelected(data);                                 break;
-      case 'thinking':         handleThinking(data.text || '');                           break;
-      case 'toolCall':         handleToolCall(data);                                      break;
-      case 'toolResult':       handleToolResult(data);                                    break;
-      case 'iterationCount':   handleIterationCount(data);                                break;
-      case 'sentinelStatus':   handleSentinelStatus(data);                                break;
-      case 'sentinelAlert':    handleSentinelAlert(data);                                 break;
-      case 'modelsUpdate':     populateModels(data.models, data.model);                   break;
+[SYSTEM_MANIFEST]
+APP_NAME: fluxo-ai
+APP_VERSION: 7.8.2
+PART: 2
+GENERATED_AT: 2026-04-27T00:22:02.338Z
+[/SYSTEM_MANIFEST]
+
+[CODEBASE_START]
+
+================================================================================
+FILE PATH: out\tools\SearchReplaceTool\index.js
+================================================================================
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
     }
-  });
-
-  // ─── Config & History ───────────────────────────────────────────────────────
-
-  const MODEL_LABELS = {
-    // Google AI Studio (direct key)
-    'gemini-2.5-flash':           'Gemini 2.5 Flash (AI Studio)',
-    'gemini-2.5-flash-lite':      'Gemini 2.5 Flash Lite (AI Studio)',
-    'gemini-2.5-pro':             'Gemini 2.5 Pro (AI Studio)',
-    'gemini-2.0-flash':           'Gemini 2.0 Flash (AI Studio)',
-    'gemini-2.0-pro':             'Gemini 2.0 Pro (AI Studio)',
-    // Google via OpenRouter
-    'google/gemini-2.5-flash':      'Gemini 2.5 Flash (OpenRouter)',
-    'google/gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite (OpenRouter)',
-    'google/gemini-2.5-pro':        'Gemini 2.5 Pro (OpenRouter)',
-    // DeepSeek direct
-    'deepseek-chat':     'DeepSeek Chat (Direct)',
-    'deepseek-reasoner': 'DeepSeek Reasoner (Direct)',
-    // DeepSeek via OpenRouter
-    'deepseek/deepseek-v3.2': 'DeepSeek V3.2 (OpenRouter)',
-    // Anthropic via OpenRouter
-    'anthropic/claude-3.7-sonnet': 'Claude 3.7 Sonnet (OpenRouter)',
-    'anthropic/claude-3.5-haiku':  'Claude 3.5 Haiku (OpenRouter)',
-    // OpenAI via OpenRouter
-    'openai/gpt-4o':      'GPT-4o (OpenRouter)',
-    'openai/gpt-4o-mini': 'GPT-4o Mini (OpenRouter)',
-  };
-
-  function populateModels(models, preferred) {
-    if (!models || !models.length) { return; }
-    const current = modelSelect.value;
-    modelSelect.innerHTML = models.map(m =>
-      `<option value="${m}">${MODEL_LABELS[m] || m}</option>`
-    ).join('');
-    const pick = models.includes(preferred) ? preferred : (models.includes(current) ? current : models[0]);
-    if (pick) { modelSelect.value = pick; }
-  }
-
-  function handleConfig(data) {
-    if (data.models) { populateModels(data.models, data.model); }
-    else if (data.model) { modelSelect.value = data.model; }
-    apiKeyWarning.classList.toggle('hidden', !!data.hasApiKey);
-    if (data.agents) { agents = data.agents; buildAgentPills(); }
-    if (data.history && data.history.length) {
-      chatHistory = data.history;
-      renderHistory();
-      updateTokenWheel();
-    } else {
-      renderWelcome();
-    }
-  }
-
-  function handleHistorySync(data) {
-    chatHistory = data.history || [];
-    renderHistory();
-    updateTokenWheel();
-    hideStatus(); // clear any pending status (e.g. "Compressing context…")
-  }
-
-  function renderHistory() {
-    messagesEl.innerHTML = '';
-    chatHistory.forEach(msg => {
-      const el = document.createElement('div');
-      el.className = `message ${msg.role === 'user' ? 'user' : 'assistant'}`;
-      const roleDiv = document.createElement('div');
-      roleDiv.className = 'message-role';
-      roleDiv.textContent = msg.role === 'user' ? 'You' : 'Fluxo';
-      el.appendChild(roleDiv);
-      if (msg.role === 'user') {
-        el.appendChild(createUserBubble(msg.content));
-      } else {
-        const bbl = document.createElement('div');
-        bbl.className = 'message-bubble';
-        bbl.innerHTML = renderMarkdown(msg.content);
-        el.appendChild(bbl);
-      }
-      messagesEl.appendChild(el);
-      attachCodeListeners(el);
-    });
-    scrollToBottom();
-  }
-
-  // ─── UI: Token Wheel ────────────────────────────────────────────────────────
-  function updateTokenWheel(pendingChars = 0) {
-    if (!wheelProgress) return;
-    const historyChars = chatHistory.reduce((sum, m) => sum + (m.content?.length || 0), 0);
-    const totalChars   = historyChars + pendingChars;
-    const percentage   = Math.min(Math.round((totalChars / CONTEXT_LIMIT) * 100), 100);
-    wheelProgress.setAttribute('stroke-dasharray', `${percentage}, 100`);
-    wheelContainer.classList.toggle('warning',       percentage > 60 && pendingChars === 0);
-    wheelContainer.classList.toggle('critical',      percentage > 85 && pendingChars === 0);
-    wheelContainer.classList.toggle('input-preview', pendingChars > 0 && percentage <= 60);
-    const tokenEst = `~${Math.round(totalChars / 4)} tokens`;
-    const pendingNote = pendingChars > 0 ? ` (+${Math.round(pendingChars/4)} typed)` : '';
-    wheelContainer.title = `Context: ${percentage}% (${tokenEst}${pendingNote}). Click to compress.`;
-  }
-
-  // ─── UI: Context Bar ────────────────────────────────────────────────────────
-  const FILE_TOOL_ACTIONS = {
-    read_file:     'leyendo',
-    write_file:    'escribiendo',
-    replace_lines: 'editando',
-    replace_block: 'editando',
-    edit_file:     'editando',
-    delete_file:   'eliminando',
-  };
-
-  function setContextFile(toolName, filePath) {
-    if (!contextBar || !contextBarFile || !filePath) return;
-    const filename = filePath.split(/[\\/]/).pop() || filePath;
-    contextBarFile.textContent  = filename;
-    if (contextBarAction) contextBarAction.textContent = FILE_TOOL_ACTIONS[toolName] ? `[${FILE_TOOL_ACTIONS[toolName]}]` : '';
-    contextBar.classList.remove('hidden');
-  }
-
-  function clearContextBar() {
-    if (!contextBar) return;
-    contextBar.classList.add('hidden');
-    if (contextBarFile)   contextBarFile.textContent = '';
-    if (contextBarAction) contextBarAction.textContent = '';
-  }
-
-  wheelContainer.addEventListener('click', () => {
-    if (isStreaming) return;
-    showStatus('Compressing context…', true);
-    vscode.postMessage({ type: 'compressHistory' });
-    wheelContainer.style.transform = 'scale(0.8)';
-    setTimeout(() => { wheelContainer.style.transform = ''; }, 300);
-  });
-
-  // ─── Workspace Info ─────────────────────────────────────────────────────────
-  function handleWorkspaceInfo(data) {
-    workspaceLabel.textContent = (data.workspaceName ? `📂 ${data.workspaceName}` : '') + (data.fileName ? ` / ${data.fileName}` : '');
-  }
-
-  // ─── Stream Lifecycle ────────────────────────────────────────────────────────
-
-  function handleStreamStart() {
-    isStreaming = true;
-    currentStreamText = '';
-    hasToolCalls = false;
-    sendBtn.disabled = true;
-    cancelBtn.classList.remove('hidden');
-    sendBtn.classList.add('hidden');
-    document.querySelector('.input-wrapper')?.classList.add('swarm-active');
-    messagesEl.querySelector('.welcome-card')?.remove();
-
-    // Build response wrapper: collapsible tool activity on top, text bubble below
-    currentResponseWrapper = document.createElement('div');
-    currentResponseWrapper.className = 'response-wrapper';
-    currentResponseWrapper.innerHTML = `
-      <details class="tool-activity" open>
-        <summary class="tool-activity-summary">
-          <span class="tool-activity-icon">⟳</span>
-          <span class="tool-activity-label">Working…</span>
-        </summary>
-        <div class="tool-activity-items" id="current-tool-activity-items"></div>
-      </details>
-      <div class="message assistant">
-        <div class="message-role">Fluxo</div>
-        <div class="message-bubble" id="streaming-bubble"></div>
-      </div>
-    `;
-    messagesEl.appendChild(currentResponseWrapper);
-    currentBubble = currentResponseWrapper.querySelector('#streaming-bubble');
-    currentToolActivityItems = currentResponseWrapper.querySelector('#current-tool-activity-items');
-    showStatus('Working…', true);
-    scrollToBottom();
-  }
-
-  function handleStreamChunk(text) {
-    document.getElementById('thinking-bubble')?.remove();
-    if (currentBubble) {
-      currentStreamText += text;
-      currentBubble.innerHTML = renderMarkdown(currentStreamText) + '<span class="streaming-cursor"></span>';
-      scrollToBottom();
-    }
-  }
-
-  function handleStreamEnd() {
-    isStreaming = false;
-    document.getElementById('thinking-bubble')?.remove();
-
-    if (currentBubble) {
-      currentBubble.innerHTML = renderMarkdown(currentStreamText);
-      attachCodeListeners(currentBubble);
-      currentBubble.removeAttribute('id');
-      chatHistory.push({ role: 'assistant', content: currentStreamText });
-      updateTokenWheel();
-    }
-
-    // Finalize tool activity section
-    if (currentResponseWrapper) {
-      const details = currentResponseWrapper.querySelector('.tool-activity');
-      if (details) {
-        if (hasToolCalls) {
-          details.open = false;
-          const count = currentToolActivityItems
-            ? currentToolActivityItems.querySelectorAll('.tool-call-card').length : 0;
-          const lbl = currentResponseWrapper.querySelector('.tool-activity-label');
-          const ico = currentResponseWrapper.querySelector('.tool-activity-icon');
-          if (lbl) lbl.textContent = `${count} tool${count !== 1 ? 's' : ''} used`;
-          if (ico) ico.textContent = '🔧';
-        } else {
-          details.remove();
-        }
-      }
-      currentResponseWrapper = null;
-      currentToolActivityItems = null;
-    }
-
-    sendBtn.disabled = false;
-    sendBtn.classList.remove('hidden');
-    cancelBtn.classList.add('hidden');
-    document.querySelector('.input-wrapper')?.classList.remove('swarm-active');
-    hideStatus();
-    currentBubble = null;
-    scrollToBottom();
-  }
-
-  function handleStreamCancelled() {
-    isStreaming = false;
-    document.getElementById('thinking-bubble')?.remove();
-    if (currentResponseWrapper) {
-      const details = currentResponseWrapper.querySelector('.tool-activity');
-      if (details && !hasToolCalls) details.remove();
-      currentResponseWrapper = null;
-      currentToolActivityItems = null;
-    }
-    sendBtn.disabled = false;
-    sendBtn.classList.remove('hidden');
-    cancelBtn.classList.add('hidden');
-    document.querySelector('.input-wrapper')?.classList.remove('swarm-active');
-    hideStatus();
-    currentBubble = null;
-  }
-
-  function createUserBubble(text) {
-    const MAX = 280;
-    const bubble = document.createElement('div');
-    bubble.className = 'message-bubble';
-    const escaped = escapeHtml(text).replace(/\n/g, '<br>');
-    if (text.length <= MAX) { bubble.innerHTML = escaped; return bubble; }
-    const preview = escapeHtml(text.slice(0, MAX)).replace(/\n/g, '<br>');
-    bubble.innerHTML = `<span class="msg-preview">${preview}<span class="msg-ellipsis"> …</span></span><span class="msg-full" style="display:none">${escaped}</span><button class="msg-expand-btn">Ver más ↓</button>`;
-    bubble.querySelector('.msg-expand-btn').addEventListener('click', function() {
-      const isExpanded = this.textContent === 'Ver menos ↑';
-      bubble.querySelector('.msg-preview').style.display = isExpanded ? '' : 'none';
-      bubble.querySelector('.msg-full').style.display = isExpanded ? 'none' : '';
-      this.textContent = isExpanded ? 'Ver más ↓' : 'Ver menos ↑';
-    });
-    return bubble;
-  }
-
-  function sendMessage() {
-    const text = promptInput.value.trim();
-    if (!text || isStreaming) return;
-
-    messagesEl.querySelector('.welcome-card')?.remove();
-    const userEl = document.createElement('div');
-    userEl.className = 'message user';
-    const roleDiv = document.createElement('div');
-    roleDiv.className = 'message-role';
-    roleDiv.textContent = 'You';
-    userEl.appendChild(roleDiv);
-    userEl.appendChild(createUserBubble(text));
-    messagesEl.appendChild(userEl);
-
-    chatHistory.push({ role: 'user', content: text });
-    updateTokenWheel();
-
-    promptInput.value = '';
-    autoResize();
-    scrollToBottom();
-    vscode.postMessage({ type: 'sendMessage', text, model: modelSelect.value });
-  }
-
-  // ─── Agent UI & Pills ──────────────────────────────────────────────────────
-  function buildAgentPills() {
-    if (!agentPills) return;
-    agentPills.innerHTML = agents.map(a =>
-      `<button class="agent-pill ${a.id === currentAgentId ? 'active' : ''}" data-id="${a.id}" style="--agent-color:${a.color}">${a.emoji} ${a.name}</button>`
-    ).join('');
-    agentPills.querySelectorAll('.agent-pill').forEach(btn => {
-      btn.addEventListener('click', () => {
-        currentAgentId = btn.dataset.id;
-        agentPills.querySelectorAll('.agent-pill').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        promptInput.placeholder = `Asking @${btn.dataset.id}...`;
-      });
-    });
-  }
-
-  function handleAgentSelected(data) {
-    currentAgentId = data.agentId;
-    agentBadge.textContent = `${data.emoji} ${data.agentName}`;
-    agentBadge.style.setProperty('--agent-color', data.color);
-    agentBadge.classList.remove('hidden');
-
-    const div = document.createElement('div');
-    div.className = 'agent-divider';
-    div.style.setProperty('--agent-color', data.color);
-    div.innerHTML = `<span>${data.emoji} ${data.agentName}</span>`;
-    messagesEl.appendChild(div);
-    scrollToBottom();
-  }
-
-  function handleThinking(text) {
-    document.getElementById('thinking-bubble')?.remove();
-    const el = document.createElement('div');
-    el.id = 'thinking-bubble';
-    el.className = 'thinking-indicator';
-    el.innerHTML = `<div class="loading-dots"><span></span><span></span><span></span></div> <em>${escapeHtml(text)}</em>`;
-    (currentToolActivityItems || messagesEl).appendChild(el);
-    scrollToBottom();
-  }
-
-  function getToolTitle(name, args) {
-    switch (name) {
-      case 'read_file':       return `• Read   ${args.path || ''}`;
-      case 'write_file':      return `• Write  ${args.path || ''}`;
-      case 'edit_file':       return `• Edit   ${args.path || ''}`;
-      case 'replace_lines':   return `• Edit   ${args.path || ''} [L${args.start_line || '?'}–${args.end_line || '?'}]`;
-      case 'replace_block':   return `• Block  ${args.path || ''}`;
-      case 'run_command':     return `• $  ${(args.command || '').slice(0, 60)}`;
-      case 'list_dir':        return `• ls     ${args.path || '.'}`;
-      case 'search_in_files': return `• search "${(args.pattern || '').slice(0, 40)}"`;
-      case 'delete_file':     return `• rm     ${args.path || ''}`;
-      case 'delete_dir':      return `• rmdir  ${args.path || ''}`;
-      case 'create_dir':      return `• mkdir  ${args.path || ''}`;
-      case 'propose_plan':    return `• plan   IMPLEMENTATION_PLAN.md`;
-      case 'search_images':   return `• img    "${(args.query || '').slice(0, 40)}"`;
-      default:                return `• ${name}`;
-    }
-  }
-
-  function handleToolCall(data) {
-    document.getElementById('thinking-bubble')?.remove();
-    hasToolCalls = true;
-
-    const args = data.args || {};
-    const title = getToolTitle(data.name, args);
-
-    // Update context bar for file-touching tools
-    if (FILE_TOOL_ACTIONS[data.name] && args.path) {
-      setContextFile(data.name, args.path);
-    }
-
-    // Diff rendering for file-write operations; plain args for everything else
-    let argsHtml = '';
-    if ((data.name === 'edit_file' || data.name === 'replace_lines' || data.name === 'replace_block' || data.name === 'write_file' || data.name === 'search_and_replace')) {
-      const raw = data.name === 'edit_file' ? (args.new_string || '')
-        : data.name === 'search_and_replace' ? (args.replace_snippet || '')
-        : (data.name === 'replace_lines' || data.name === 'replace_block') ? (args.new_content || '')
-        : (args.content || '');
-      if (raw) {
-        const lines = raw.split('\n');
-        const preview = lines.slice(0, 20);
-        const more = lines.length - preview.length;
-        const linesHtml = preview.map(l => `<span class="diff-line-added">${escapeHtml(l)}</span>`).join('');
-        const moreHtml = more > 0 ? `<span class="diff-line-added" style="opacity:0.35">  … ${more} more line${more !== 1 ? 's' : ''}</span>` : '';
-        argsHtml = `<div class="tool-diff">${linesHtml}${moreHtml}</div>`;
-      }
-    } else {
-      argsHtml = `<div class="tool-args">${escapeHtml(data.displayArgs || '')}</div>`;
-    }
-
-    const el = document.createElement('div');
-    el.className = 'tool-call-card pending collapsed';
-    el.innerHTML = `
-      <div class="tool-header">
-        <span class="tool-name">${escapeHtml(title)}</span>
-        <span class="tool-status-text">Working…</span>
-        <span class="tool-status-icon spin">⟳</span>
-      </div>
-      <div class="tool-details">${argsHtml}</div>
-    `;
-    el.querySelector('.tool-header').addEventListener('click', () => el.classList.toggle('collapsed'));
-
-    (currentToolActivityItems || messagesEl).appendChild(el);
-
-    if (currentResponseWrapper) {
-      const lbl = currentResponseWrapper.querySelector('.tool-activity-label');
-      if (lbl) lbl.textContent = 'Tool activity';
-    }
-    scrollToBottom();
-  }
-
-  function handleToolResult(data) {
-    const container = currentToolActivityItems || messagesEl;
-    const cards = container.querySelectorAll('.tool-call-card');
-    const card = cards[cards.length - 1];
-    if (card) {
-      card.classList.remove('pending');
-      card.classList.add(data.success ? 'success' : 'failed');
-      card.querySelector('.tool-status-icon').textContent = data.success ? '✅' : '❌';
-      card.querySelector('.tool-status-icon').classList.remove('spin');
-
-      const duration = parseFloat(data.duration);
-      const timeStr = duration < 0.1 ? `${Math.round(duration * 1000)}ms` : `${duration}s`;
-      card.querySelector('.tool-status-text').textContent = `Worked (${timeStr})`;
-
-      const details = card.querySelector('.tool-details');
-      const isEngineError = typeof data.output === 'string' && data.output.startsWith('[SYSTEM ENGINE ERROR]:');
-
-      // Detect LINES REMOVED / BLOCK REMOVED sections — render as collapsible
-      const removedMarker = typeof data.output === 'string'
-        ? (data.output.includes('\n\nLINES REMOVED:\n') ? '\n\nLINES REMOVED:\n'
-         : data.output.includes('\n\nBLOCK REMOVED:\n') ? '\n\nBLOCK REMOVED:\n'
-         : null)
-        : null;
-
-      if (removedMarker && !isEngineError) {
-        const markerIdx   = data.output.indexOf(removedMarker);
-        const summaryText = data.output.slice(0, markerIdx).trim();
-        const removedText = data.output.slice(markerIdx + removedMarker.length)
-          .replace(/\n\nEDICIÓN EXITOSA.*$/, '').trim();
-
-        const outputEl = document.createElement('div');
-        outputEl.className = 'tool-output';
-        outputEl.textContent = summaryText;
-        details.appendChild(outputEl);
-
-        const removedDetails = document.createElement('details');
-        removedDetails.className = 'tool-removed-details';
-        removedDetails.innerHTML = `
-          <summary class="tool-removed-summary">👁 Ver líneas eliminadas</summary>
-          <pre class="tool-removed-content">${escapeHtml(removedText)}</pre>
-        `;
-        details.appendChild(removedDetails);
-      } else {
-        const outputEl = document.createElement('div');
-        outputEl.className = isEngineError ? 'tool-output tool-output-error' : 'tool-output';
-        outputEl.textContent = data.output;
-        details.appendChild(outputEl);
-      }
-
-      if (data.name === 'write_file' && data.success) {
-        const pathMatch = data.output.match(/Written: (.+?) \(/);
-        if (pathMatch) {
-          const link = document.createElement('div');
-          link.className = 'tool-file-link';
-          link.innerHTML = `<span class="file-link">📄 Open File</span>`;
-          link.addEventListener('click', () => vscode.postMessage({ type: 'openFile', path: pathMatch[1] }));
-          details.appendChild(link);
-        }
-      }
-    }
-    scrollToBottom();
-  }
-
-  function handleIterationCount(data) {
-    if (!statusBar || !statusText) { return; }
-    statusBar.classList.remove('hidden');
-    statusText.textContent = `Iter. ${data.count} / ${data.max}`;
-  }
-
-  function handleSentinelStatus(data) {
-    if (!sentinelBtn) { return; }
-    const active = !!data.active;
-    sentinelBtn.classList.toggle('sentinel-active', active);
-    sentinelBtn.title = active
-      ? '🟢 Sentinel activo — click para desactivar'
-      : '👁 Sentinel inactivo — click para activar auto-curación';
-    const label = sentinelBtn.querySelector('.sentinel-label');
-    if (label) { label.textContent = active ? 'ON' : 'Guard'; }
-  }
-
-  function handleSentinelAlert(data) {
-    messagesEl.querySelector('.welcome-card')?.remove();
-
-    const el = document.createElement('div');
-    el.className = 'message sentinel-alert';
-    el.innerHTML = `
-      <div class="message-role">🔴 Sentinel</div>
-      <div class="message-bubble">
-        <strong>Error detectado en la terminal:</strong>
-        <details class="tool-result-details" style="margin-top:8px">
-          <summary>📋 Ver error completo</summary>
-          <pre class="tool-result-content"><code>${escapeHtml(data.errorText || '')}</code></pre>
-        </details>
-        <em style="font-size:11px;opacity:0.7">Analizando y preparando solución…</em>
-      </div>
-    `;
-    messagesEl.appendChild(el);
-
-    // Track in local chatHistory for token-wheel accuracy
-    chatHistory.push({ role: 'user', content: `Sentinel error:\n${data.errorText || ''}` });
-    updateTokenWheel();
-    scrollToBottom();
-  }
-
-  function handleChatCleared() {
-    chatHistory = [];
-    messagesEl.innerHTML = '';
-    renderWelcome();
-    updateTokenWheel();
-    hideStatus();
-    agentBadge.classList.add('hidden');
-    clearContextBar();
-  }
-
-  // ─── Error Handler ──────────────────────────────────────────────────────────
-  function handleError(text) {
-    isStreaming = false;
-    document.getElementById('thinking-bubble')?.remove();
-
-    // Clean up any open response wrapper
-    if (currentResponseWrapper) {
-      const details = currentResponseWrapper.querySelector('.tool-activity');
-      if (details && !hasToolCalls) details.remove();
-      currentResponseWrapper = null;
-      currentToolActivityItems = null;
-    }
-
-    sendBtn.disabled = false;
-    sendBtn.classList.remove('hidden');
-    cancelBtn.classList.add('hidden');
-    hideStatus();
-    currentBubble = null;
-
-    const el = document.createElement('div');
-    el.className = 'message-error';
-    el.innerHTML = `<strong>Error:</strong> ${escapeHtml(text)}`;
-    messagesEl.appendChild(el);
-    scrollToBottom();
-  }
-
-  // ─── Helpers (Markdown/UI) ──────────────────────────────────────────────────
-  function renderWelcome() {
-    messagesEl.innerHTML = `
-      <div class="welcome-card">
-        <div class="welcome-logo">🐾</div>
-        <h2 class="welcome-title">Fluxo AI</h2>
-        <p class="welcome-subtitle">Persistent Agent Swarm v7.8.2</p>
-        <div class="welcome-tips">
-          <div class="tip"><span class="tip-key">↵</span> Send</div>
-          <div class="tip-sep">·</div>
-          <div class="tip"><span class="tip-key">@agent</span> Switch</div>
-        </div>
-        <a class="welcome-watermark" href="https://fluxotechai.com" target="_blank">⚡ Powered by Fluxo Tech AI</a>
-      </div>`;
-  }
-
-  function renderMarkdown(text) {
-    const reasoningBlocks = [];
-    const toolResultBlocks = [];
-    let html = escapeHtml(text);
-
-    // 0a. Extract <reasoning> blocks → collapsible (rendered as markdown)
-    html = html.replace(/&lt;reasoning&gt;([\s\S]*?)&lt;\/reasoning&gt;/gi, (_, content) => {
-      const placeholder = `{{REASONING_BLOCK_${reasoningBlocks.length}}}`;
-      reasoningBlocks.push(`
-        <details class="reasoning-details">
-          <summary>• Thought ></summary>
-          <div class="reasoning-content">${renderMarkdownInner(content)}</div>
-        </details>
-      `);
-      return placeholder;
-    });
-
-    // 0b. Extract <tool_result> blocks → collapsible pre/code (never markdown-rendered)
-    html = html.replace(/&lt;tool_result&gt;([\s\S]*?)&lt;\/tool_result&gt;/gi, (_, content) => {
-      const placeholder = `{{TOOL_RESULT_BLOCK_${toolResultBlocks.length}}}`;
-      toolResultBlocks.push(`
-        <details class="tool-result-details">
-          <summary>📥 Resultado del sistema</summary>
-          <pre class="tool-result-content"><code>${content.trim()}</code></pre>
-        </details>
-      `);
-      return placeholder;
-    });
-
-    html = renderMarkdownInner(html);
-
-    reasoningBlocks.forEach((block, i) => {
-      html = html.replace(`{{REASONING_BLOCK_${i}}}`, block);
-    });
-    toolResultBlocks.forEach((block, i) => {
-      html = html.replace(`{{TOOL_RESULT_BLOCK_${i}}}`, block);
-    });
-
-    return html;
-  }
-
-  function renderMarkdownInner(text) {
-    const codeBlocks = [];
-    let html = text;
-
-    // 1. Protect code blocks (```)
-    html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-      const c = code.trimEnd();
-      const placeholder = `{{CODE_BLOCK_${codeBlocks.length}}}`;
-      const rawC = c.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-      codeBlocks.push(`<div class="code-block"><div class="code-header"><span class="code-lang">${lang || 'txt'}</span><button class="code-btn copy-btn" data-code="${encodeURIComponent(rawC)}">Copy</button></div><pre><code>${c}</code></pre></div>`);
-      return placeholder;
-    });
-
-    // 2. Protect inline code (`)
-    html = html.replace(/`([^`]+)`/g, (_, code) => {
-      const placeholder = `{{CODE_BLOCK_${codeBlocks.length}}}`;
-      codeBlocks.push(`<code>${code}</code>`);
-      return placeholder;
-    });
-
-    // 3. Render other markdown
-    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-
-    // 4. Handle line breaks
-    html = html.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>');
-
-    // 5. Re-inject protected blocks
-    codeBlocks.forEach((block, i) => {
-      html = html.replace(`{{CODE_BLOCK_${i}}}`, block);
-    });
-
-    return html;
-  }
-
-  function escapeHtml(str) { return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-
-  function scrollToBottom() {
-    const container = document.getElementById('chat-container');
-    if (!container) return;
-    const threshold = 150;
-    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
-
-    if (isStreaming) {
-      container.scrollTop = container.scrollHeight;
-    } else if (isAtBottom) {
-      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-    }
-  }
-
-  function autoResize() {
-    // Measure without transition, then animate to new height
-    promptInput.style.transition = 'none';
-    promptInput.style.height = 'auto';
-    const newH = Math.min(promptInput.scrollHeight, 150) + 'px';
-    requestAnimationFrame(() => {
-      promptInput.style.transition = 'height 0.14s cubic-bezier(0.4, 0, 0.2, 1)';
-      promptInput.style.height = newH;
-    });
-  }
-
-  // ─── Status Bar ─────────────────────────────────────────────────────────────
-  function showStatus(text, spinner = false) {
-    statusBar.classList.remove('hidden');
-    statusText.textContent = text;
-    statusSpinner.classList.toggle('hidden', !spinner);
-  }
-
-  function hideStatus() {
-    statusBar.classList.add('hidden');
-  }
-
-  // ─── Misc ───────────────────────────────────────────────────────────────────
-  function prefillPrompt(text) {
-    promptInput.value = text;
-    autoResize();
-    promptInput.focus();
-  }
-
-  function attachCodeListeners(el) {
-    el.querySelectorAll('.copy-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        vscode.postMessage({ type: 'copyCode', code: decodeURIComponent(btn.dataset.code) });
-        btn.textContent = '✓';
-        setTimeout(() => btn.textContent = 'Copy', 1500);
-      });
-    });
-  }
-
-  // ─── Listeners ─────────────────────────────────────────────────────────────
-  sendBtn.addEventListener('click', sendMessage);
-  promptInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
-  promptInput.addEventListener('input', () => {
-    autoResize();
-    updateTokenWheel(promptInput.value.length);
-  });
-  document.getElementById('settings-btn').addEventListener('click', () => vscode.postMessage({ type: 'openSettings' }));
-  cancelBtn.addEventListener('click', () => vscode.postMessage({ type: 'cancelStream' }));
-  sentinelBtn?.addEventListener('click', () => vscode.postMessage({ type: 'sentinelToggle' }));
-  document.getElementById('streaming-info-btn')?.addEventListener('click', () => vscode.postMessage({ type: 'showStreamingInfo' }));
-
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
 })();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.TOOL_DEF = void 0;
+exports.execute = execute;
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const shared_1 = require("../shared");
+exports.TOOL_DEF = {
+    type: 'function',
+    function: {
+        name: 'search_and_replace',
+        description: `Replace a specific block of code in a file using contextual search — no line numbers required.
+PREFERRED EDITING TOOL: Use this instead of replace_lines or replace_block for all code edits.
+STRATEGY: In 'search_snippet', include enough context (2–3 lines before and after the target change) to ensure the match is unique in the file. Minor indentation differences are tolerated via fuzzy whitespace-normalization.
+WORKFLOW:
+  1. Call read_file to get the current file content.
+  2. Copy the exact block you want to replace as search_snippet (include surrounding context for uniqueness).
+  3. Call search_and_replace — the engine applies the change in the VS Code editor (file stays unsaved for review).
+  4. After the call, tell the user: "Cambio aplicado en el editor. Revísalo y presiona Ctrl+S para guardar."
+RULES:
+  • search_snippet must match a unique block — add more surrounding lines if ambiguous.
+  • No AST guards: the edit appears in VS Code for visual review before saving.
+  • Use replace_snippet = "" to delete a block.
+  • Do NOT call further edit tools on the same file before the user confirms with Ctrl+S.`,
+        parameters: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'File path relative to workspace root.' },
+                search_snippet: { type: 'string', description: 'The EXACT code currently in the file that you want to replace. Include 2–3 surrounding lines of context to guarantee uniqueness.' },
+                replace_snippet: { type: 'string', description: 'The NEW code that will replace search_snippet. Use empty string "" to delete the block.' },
+            },
+            required: ['path', 'search_snippet', 'replace_snippet'],
+        },
+    },
+};
+// ─── Fuzzy Matching (mirrors ReplaceBlockTool logic) ─────────────────────────
+function normalizeLine(line) {
+    return line.trim().replace(/\s+/g, ' ');
+}
+function findMatch(fileContent, snippet) {
+    const content = fileContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const snip = snippet.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const strictCount = content.split(snip).length - 1;
+    if (strictCount === 1) {
+        return { kind: 'strict' };
+    }
+    if (strictCount > 1) {
+        return { kind: 'ambiguous', count: strictCount };
+    }
+    // Fuzzy: line-by-line normalized comparison
+    const fileLines = content.split('\n');
+    const rawSnip = snip.split('\n');
+    let si = 0, ei = rawSnip.length - 1;
+    while (si <= ei && rawSnip[si].trim() === '') {
+        si++;
+    }
+    while (ei >= si && rawSnip[ei].trim() === '') {
+        ei--;
+    }
+    const snippetLines = rawSnip.slice(si, ei + 1);
+    if (snippetLines.length === 0) {
+        return { kind: 'none' };
+    }
+    const snipNorm = snippetLines.map(normalizeLine);
+    const n = snippetLines.length;
+    const matches = [];
+    outer: for (let i = 0; i <= fileLines.length - n; i++) {
+        for (let j = 0; j < n; j++) {
+            if (normalizeLine(fileLines[i + j]) !== snipNorm[j]) {
+                continue outer;
+            }
+        }
+        matches.push(i);
+    }
+    if (matches.length === 0) {
+        return { kind: 'none' };
+    }
+    if (matches.length > 1) {
+        return { kind: 'ambiguous', count: matches.length };
+    }
+    return { kind: 'fuzzy', start: matches[0], end: matches[0] + n - 1 };
+}
+// ─── Disk-based fallback executor (used when VS Code native edit is unavailable) ─
+function execute(args, workspacePath) {
+    const fp = (0, shared_1.safePath)(workspacePath, args.path);
+    if (!fs.existsSync(fp)) {
+        return { success: false, output: `File not found: ${args.path}. Use list_dir to verify the path.` };
+    }
+    if (typeof args.search_snippet !== 'string' || args.search_snippet === '') {
+        return { success: false, output: 'CRITICAL ERROR: search_snippet must be a non-empty string.' };
+    }
+    if (typeof args.replace_snippet !== 'string') {
+        return { success: false, output: 'CRITICAL ERROR: replace_snippet must be a string. Use "" to delete.' };
+    }
+    const original = fs.readFileSync(fp, 'utf-8');
+    const match = findMatch(original, args.search_snippet);
+    if (match.kind === 'none') {
+        return {
+            success: false,
+            output: `MATCH ERROR: search_snippet not found in ${args.path} — exact and fuzzy matches both failed.\n` +
+                `Call read_file to get current content and re-copy the exact block verbatim.`,
+        };
+    }
+    if (match.kind === 'ambiguous') {
+        return {
+            success: false,
+            output: `AMBIGUOUS MATCH: search_snippet appears ${match.count} times in ${args.path}.\n` +
+                `Expand the snippet — add more surrounding lines to make the block unique.`,
+        };
+    }
+    let updated;
+    let removedPreview;
+    let removedLines;
+    let startLine;
+    if (match.kind === 'strict') {
+        const snip = args.search_snippet.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        updated = original.replace(/\r\n/g, '\n').replace(snip, args.replace_snippet.replace(/\n$/, ''));
+        const before = original.replace(/\r\n/g, '\n').indexOf(snip);
+        startLine = original.slice(0, before).split('\n').length;
+        removedLines = snip.split('\n').length;
+        removedPreview = snip.length > 300 ? snip.slice(0, 300) + '\n…(truncated)' : snip;
+    }
+    else {
+        const fileLines = original.replace(/\r\n/g, '\n').split('\n');
+        const newLines = args.replace_snippet === '' ? [] : args.replace_snippet.replace(/\n$/, '').split('\n');
+        updated = [...fileLines.slice(0, match.start), ...newLines, ...fileLines.slice(match.end + 1)].join('\n');
+        startLine = match.start + 1;
+        removedLines = match.end - match.start + 1;
+        const removed = fileLines.slice(match.start, match.end + 1).join('\n');
+        removedPreview = removed.length > 300 ? removed.slice(0, 300) + '\n…(truncated)' : removed;
+    }
+    if (updated.trim() === '' && original.trim() !== '') {
+        return { success: false, output: 'SAFETY ABORT: replacement would produce an empty file.' };
+    }
+    // Auto-backup
+    try {
+        const backupDir = path.join(workspacePath, '.fluxo', 'backups');
+        fs.mkdirSync(backupDir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        fs.writeFileSync(path.join(backupDir, `${path.basename(fp)}_${ts}.bak`), original, 'utf-8');
+    }
+    catch { /* non-fatal */ }
+    fs.writeFileSync(fp, updated, 'utf-8');
+    const matchNote = match.kind === 'fuzzy' ? ` [fuzzy match, line ${startLine}]` : ` [exact match, line ${startLine}]`;
+    return {
+        success: true,
+        output: `search_and_replace: ${args.path} — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nBLOCK REMOVED:\n${removedPreview}\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
+    };
+}
+//# sourceMappingURL=index.js.map
 
-```
 
-### 📁 FILE: `media\style.css`
-```css
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+================================================================================
+FILE PATH: out\tools\shared.js
+================================================================================
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.safePath = safePath;
+exports.searchRecursive = searchRecursive;
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+// ─── Shared Helpers ───────────────────────────────────────────────────────────
+function safePath(workspacePath, p) {
+    if (!p) {
+        throw new Error('Path is required');
+    }
+    const resolved = path.resolve(workspacePath, p);
+    if (!resolved.toLowerCase().startsWith(path.resolve(workspacePath).toLowerCase())) {
+        throw new Error(`Path traversal blocked: ${p}`);
+    }
+    return resolved;
+}
+function searchRecursive(dir, root, pattern, results, depth) {
+    if (depth > 6 || results.length > 100) {
+        return;
+    }
+    const SKIP = new Set(['node_modules', '.git', 'dist', 'out', 'build', '.next', '__pycache__']);
+    let entries;
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    }
+    catch {
+        return;
+    }
+    for (const entry of entries) {
+        if (SKIP.has(entry.name)) {
+            continue;
+        }
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            searchRecursive(full, root, pattern, results, depth + 1);
+        }
+        else {
+            try {
+                const content = fs.readFileSync(full, 'utf-8');
+                const lowerContent = content.toLowerCase();
+                const lowerPattern = pattern.toLowerCase();
+                if (lowerContent.includes(lowerPattern)) {
+                    const lines = content.split('\n');
+                    lines.forEach((line, i) => {
+                        if (line.toLowerCase().includes(lowerPattern)) {
+                            results.push(`${path.relative(root, full)}:${i + 1}: ${line.trim().slice(0, 120)}`);
+                        }
+                    });
+                }
+            }
+            catch { /* binary file */ }
+        }
+    }
+}
+//# sourceMappingURL=shared.js.map
 
-:root {
-  --bg: #020617;
-  --bg-elevated: rgba(255,255,255,0.04);
-  --bg-hover: rgba(255,255,255,0.07);
-  --border: rgba(255,255,255,0.08);
-  --border-strong: rgba(255,255,255,0.15);
-  --accent: #4f46e5;
-  --accent-light: #818cf8;
-  --accent-glow: rgba(79, 70, 229, 0.25);
-  --accent-bg: rgba(79, 70, 229, 0.08);
-  --text-primary: var(--vscode-foreground, #f8fafc);
-  --text-secondary: rgba(248, 250, 252, 0.7);
-  --text-muted: rgba(232,232,237,0.35);
-  --user-bg: rgba(255, 255, 255, 0.03);
-  --user-border: rgba(79, 70, 229, 0.4);
-  --assistant-bg: rgba(79, 70, 229, 0.05);
-  --assistant-border: #4f46e5;
-  --success: #10b981;
-  --warning: #f59e0b;
-  --danger: #ef4444;
-  --code-bg: rgba(0,0,0,0.35);
-  --diff-add-bg: rgba(16, 185, 129, 0.12);
-  --diff-add-text: #6ee7b7;
-  --diff-rem-bg: rgba(239, 68, 68, 0.12);
-  --diff-rem-text: #fca5a5;
-  --radius: 4px; --radius-sm: 2px;
-  --font: 'Inter', var(--vscode-font-family, sans-serif);
-  --font-mono: 'JetBrains Mono', var(--vscode-editor-font-family, monospace);
-  --font-size: 13px;
-  --transition: 0.15s ease;
-  --agent-color: var(--accent);
-}
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; overflow: hidden; font-family: var(--font); font-size: var(--font-size); color: var(--text-primary); background: #020617 !important; line-height: 1.6; }
-
-body { display: flex; flex-direction: column; height: 100vh; }
-
-/* ─── Header ─────────────────────────────────────────────────────────────── */
-.header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px; border-bottom: 1px solid var(--border);
-  background: var(--bg); flex-shrink: 0; gap: 8px;
-}
-.header-title { font-size: 13px; font-weight: 600; letter-spacing: 0.05em; color: var(--text-primary); font-family: 'Inter', 'Geist', var(--vscode-font-family, sans-serif); text-shadow: 0 0 12px rgba(79, 70, 229, 0.7), 0 0 28px rgba(79, 70, 229, 0.35); }
-
-/* ─── Token Wheel ───────────────────────────────────────────────────────────── */
-.token-wheel-container {
-  position: relative; width: 28px; height: 28px;
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer; transition: transform 0.2s;
-}
-.token-wheel-container:hover { transform: scale(1.1); }
-.token-wheel { width: 100%; height: 100%; transform: rotate(-90deg); }
-.wheel-bg { fill: none; stroke: var(--border); stroke-width: 2.8; }
-.wheel-progress {
-  fill: none; stroke: var(--accent); stroke-width: 2.8;
-  stroke-linecap: round; transition: stroke-dasharray 0.5s ease;
-}
-.token-wheel-container .logo-dot {
-  position: absolute; width: 6px; height: 6px; z-index: 1;
-}
-
-.token-wheel-container.critical .wheel-progress { stroke: var(--danger); filter: drop-shadow(0 0 4px var(--danger)); }
-.token-wheel-container.warning .wheel-progress { stroke: var(--warning); }
-.token-wheel-container.input-preview .wheel-progress { stroke: var(--accent-light); filter: drop-shadow(0 0 3px rgba(129,140,248,0.5)); transition: stroke 0.15s, filter 0.15s; }
-
-.agent-badge {
-  font-size: 10px; font-weight: 600;
-  background: rgba(var(--agent-color), 0.15);
-  border: 1px solid var(--agent-color);
-  border-color: var(--agent-color);
-  color: var(--agent-color);
-  padding: 2px 8px; border-radius: 20px;
-  animation: fadeSlideIn 0.2s ease;
-}
-.agent-badge.hidden { display: none; }
-
-.model-select {
-  font-family: var(--font); font-size: 10.5px;
-  background: var(--bg-elevated); color: var(--text-secondary);
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  padding: 3px 6px; cursor: pointer; outline: none; max-width: 130px;
-  transition: border-color var(--transition);
-}
-.model-select:hover { border-color: var(--border-strong); }
-.model-select:focus { border-color: var(--accent); }
-.model-select option { background: #020617; }
-
-.header-right { display: flex; align-items: center; gap: 6px; }
-
-.header-btn {
-  display: flex; align-items: center; justify-content: center;
-  background: transparent; color: var(--text-muted);
-  border: 1px solid transparent; border-radius: 4px;
-  padding: 4px; cursor: pointer; transition: all var(--transition);
-}
-.header-btn:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border); }
-
-/* ─── Agent Bar ────────────────────────────────────────────────────────────── */
-.agent-bar {
-  display: flex; align-items: center; gap: 8px;
-  padding: 5px 12px; border-bottom: 1px solid var(--border);
-  background: rgba(0,0,0,0.1); flex-shrink: 0; overflow-x: auto;
-}
-.agent-bar::-webkit-scrollbar { height: 2px; }
-.agent-bar-label { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
-
-.agent-pills { display: flex; gap: 5px; }
-
-.agent-pill {
-  font-family: var(--font); font-size: 10.5px;
-  background: var(--bg-elevated); color: var(--text-secondary);
-  border: 1px solid var(--border); border-radius: 20px;
-  padding: 3px 10px; cursor: pointer; white-space: nowrap;
-  transition: all var(--transition);
-}
-.agent-pill:hover { border-color: var(--agent-color); color: var(--agent-color); background: rgba(var(--agent-color), 0.1); }
-.agent-pill.active {
-  background: rgba(0,0,0,0.2);
-  border-color: var(--agent-color);
-  color: var(--agent-color);
-  font-weight: 600;
-}
-
-/* ─── Context Bar ────────────────────────────────────────────────────────────── */
-.context-bar {
-  display: flex; align-items: center; gap: 5px;
-  padding: 3px 12px; flex-shrink: 0;
-  background: rgba(255,255,255,0.025);
-  backdrop-filter: blur(8px);
-  border-bottom: 1px solid rgba(255,255,255,0.045);
-  font-size: 10px; font-family: var(--font-mono);
-  color: var(--text-muted);
-  animation: fadeSlideIn 0.18s ease;
-}
-.context-bar.hidden { display: none !important; }
-.context-bar-label { opacity: 0.45; letter-spacing: 0.03em; }
-.context-bar-file {
-  color: var(--accent-light); font-weight: 500;
-  letter-spacing: 0.02em;
-  text-shadow: 0 0 8px rgba(129,140,248,0.3);
-}
-.context-bar-action {
-  opacity: 0.38; font-size: 9.5px; margin-left: 2px;
-}
-.context-bar::before {
-  content: '◈'; font-size: 8px; opacity: 0.4;
-  color: var(--accent-light); margin-right: 2px;
-}
-
-/* ─── Status Bar ────────────────────────────────────────────────────────────── */
-.status-bar {
-  display: flex; align-items: center; gap: 6px;
-  padding: 4px 12px; font-size: 10.5px; color: var(--text-muted);
-  border-bottom: 1px solid var(--border); background: var(--bg-elevated); flex-shrink: 0;
-}
-.status-bar.hidden { display: none; }
-
-.status-spinner { display: flex; gap: 3px; align-items: center; }
-.status-spinner span {
-  width: 4px; height: 4px; border-radius: 50%; background: var(--accent-light);
-  animation: dotBounce 1.2s ease-in-out infinite;
-}
-.status-spinner span:nth-child(2) { animation-delay: 0.2s; }
-.status-spinner span:nth-child(3) { animation-delay: 0.4s; }
-.status-spinner.hidden { display: none; }
-
-@keyframes dotBounce {
-  0%,60%,100% { transform: translateY(0); opacity: 0.5; }
-  30% { transform: translateY(-4px); opacity: 1; }
-}
-
-/* ─── API Warning ────────────────────────────────────────────────────────────── */
-.api-warning {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px; background: rgba(245,158,11,0.08);
-  border-bottom: 1px solid rgba(245,158,11,0.2);
-  font-size: 11px; color: #f59e0b; flex-shrink: 0;
-}
-.api-warning.hidden { display: none; }
-.api-warning em { opacity: 0.75; font-style: normal; }
-
-/* ─── Chat ───────────────────────────────────────────────────────────────────── */
-.chat-container { flex: 1; overflow-y: auto; overflow-x: hidden; }
-.chat-container::-webkit-scrollbar { width: 3px; }
-.chat-container::-webkit-scrollbar-track { background: transparent; }
-.chat-container::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 2px; }
-
-.messages { display: flex; flex-direction: column; padding: 10px 10px 8px; gap: 6px; }
-
-.welcome-agents {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
-  width: 100%; margin-bottom: 20px;
-}
-.welcome-agent-card {
-  display: flex; flex-direction: column; align-items: flex-start;
-  gap: 4px; padding: 12px;
-  background: linear-gradient(145deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01));
-  border: 1px solid var(--border);
-  border-radius: 12px; cursor: pointer;
-  backdrop-filter: blur(8px);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); text-align: left;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-}
-.welcome-agent-card:hover {
-  border-color: var(--agent-color); background: rgba(var(--agent-color), 0.1);
-  transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.2);
-}
-.wa-emoji { font-size: 18px; margin-bottom: 2px; }
-.wa-name { font-size: 12px; font-weight: 600; color: var(--agent-color); letter-spacing: 0.05em; }
-.wa-desc { font-size: 10.5px; color: var(--text-muted); line-height: 1.4; }
-
-.welcome-tips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
-.tip { display: flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--text-muted); }
-.tip-key {
-  background: var(--bg-elevated); border: 1px solid var(--border);
-  border-radius: 4px; padding: 1px 5px;
-  font-family: var(--font-mono); font-size: 9.5px; color: var(--text-secondary);
-}
-.tip-sep { color: var(--text-muted); font-size: 10px; }
-.welcome-watermark { display: block; margin-top: 14px; font-size: 10px; color: var(--text-muted); text-decoration: none; opacity: 0.5; transition: opacity 0.2s; letter-spacing: 0.04em; }
-.welcome-watermark:hover { opacity: 1; color: var(--accent-light); }
-
-/* ─── Messages ────────────────────────────────────────────────────────────────── */
-.message { display: flex; flex-direction: column; animation: fadeSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; margin-bottom: 12px; }
-@keyframes fadeSlideIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
-.message.user { align-items: flex-end; }
-.message.assistant { align-items: flex-start; }
-.message-role { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 5px; padding: 0 4px; opacity: 0.8; }
-.message.user .message-role { color: var(--accent-light); }
-.message.assistant .message-role { color: var(--text-muted); }
-.message-bubble {
-  padding: 12px 16px; border-radius: 14px; font-size: 13.5px;
-  line-height: 1.6; max-width: 95%; word-break: break-word;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-}
-.message.user .message-bubble {
-  background: rgba(255,255,255,0.03);
-  border: 1px solid rgba(79, 70, 229, 0.35);
-  color: var(--text-primary);
-  border-radius: var(--radius);
-  border-bottom-right-radius: 0;
-}
-.message.assistant .message-bubble {
-  background: rgba(79, 70, 229, 0.05);
-  border: none;
-  border-left: 3px solid #4f46e5;
-  border-radius: 0;
-  padding-left: 14px;
-  box-shadow: none;
-}
-
-/* ─── Agent Divider ───────────────────────────────────────────────────────────── */
-.agent-divider {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 10px; font-weight: 600; color: var(--agent-color);
-  padding: 4px 0; letter-spacing: 0.05em;
-}
-.agent-divider::before, .agent-divider::after {
-  content: ''; flex: 1; height: 1px;
-  background: linear-gradient(90deg, transparent, var(--agent-color), transparent);
-  opacity: 0.3;
-}
-
-/* ─── Thinking Indicator ─────────────────────────────────────────────────────── */
-.thinking-indicator {
-  display: flex; align-items: center; gap: 8px;
-  color: var(--text-muted); font-size: 11px; font-style: italic;
-  padding: 4px 2px; animation: fadeSlideIn 0.2s ease;
-}
-
-/* ─── Reasoning Blocks ───────────────────────────────────────────────────────── */
-.reasoning-details {
-  margin: 4px 0;
-  background: transparent;
-  border: none;
-  border-left: 2px solid var(--border);
-  overflow: hidden;
-  font-size: 11px;
-  transition: border-color 0.2s;
-}
-.reasoning-details:hover { border-color: var(--border-strong); }
-.reasoning-details summary {
-  padding: 5px 10px;
-  background: transparent;
-  cursor: pointer;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-muted);
-  user-select: none;
-  list-style: none;
-  display: flex; align-items: center; gap: 4px;
-  transition: color 0.15s;
-  letter-spacing: 0.03em;
-  line-height: 1.4;
-}
-.reasoning-details summary:hover { color: var(--text-secondary); }
-.reasoning-details summary::after {
-  content: '↓'; font-size: 9px; opacity: 0.4; margin-left: 4px;
-}
-.reasoning-details[open] summary::after { content: '↑'; }
-.reasoning-details summary::-webkit-details-marker { display: none; }
-.reasoning-content {
-  padding: 5px 10px 7px;
-  color: rgba(255,255,255,0.4);
-  line-height: 1.55;
-  font-style: italic;
-  font-size: 10.5px;
-  font-family: var(--font-mono);
-}
-
-/* ─── Tool Result Blocks ─────────────────────────────────────────────────────── */
-.tool-result-details {
-  margin: 8px 0 4px;
-  background: rgba(16, 185, 129, 0.03);
-  border: 1px solid rgba(16, 185, 129, 0.12);
-  border-left: 3px solid var(--success);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  font-size: 11.5px;
-  backdrop-filter: blur(4px);
-  transition: border-color 0.2s;
-}
-.tool-result-details:hover {
-  border-color: rgba(16, 185, 129, 0.25);
-}
-.tool-result-details summary {
-  padding: 6px 12px;
-  background: rgba(16, 185, 129, 0.06);
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 10.5px;
-  color: var(--success);
-  user-select: none;
-  list-style: none;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  transition: background 0.2s;
-  letter-spacing: 0.02em;
-}
-.tool-result-details summary:hover {
-  background: rgba(16, 185, 129, 0.1);
-}
-.tool-result-details summary::after {
-  content: 'expandir ↓';
-  font-size: 9px;
-  font-weight: 400;
-  opacity: 0.45;
-  margin-left: auto;
-  font-style: italic;
-}
-.tool-result-details[open] summary::after {
-  content: 'contraer ↑';
-}
-.tool-result-details summary::-webkit-details-marker { display: none; }
-.tool-result-content {
-  margin: 0;
-  padding: 10px 14px;
-  color: rgba(255, 255, 255, 0.65);
-  background: rgba(0, 0, 0, 0.2);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1.55;
-  border-top: 1px solid rgba(16, 185, 129, 0.1);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 320px;
-  overflow-y: auto;
-}
-.tool-result-content::-webkit-scrollbar { width: 3px; }
-.tool-result-content::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
-
-/* ─── Tool Call Cards (Compact) ──────────────────────────────────────────────── */
-.tool-call-card {
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: rgba(0,0,0,0.15); overflow: hidden;
-  animation: fadeSlideIn 0.2s ease; font-size: 10.5px;
-  margin: 4px 0;
-}
-.tool-call-card.pending { border-color: rgba(148,163,184,0.15); }
-.tool-call-card.success { border-color: rgba(16,185,129,0.2); }
-.tool-call-card.failed { border-color: rgba(239,68,68,0.2); }
-
-.tool-header { 
-  display: flex; align-items: center; gap: 6px; padding: 4px 10px; 
-  cursor: pointer; user-select: none;
-}
-.tool-header:hover { background: rgba(255,255,255,0.02); }
-.tool-icon { font-size: 11px; flex-shrink: 0; opacity: 0.7; }
-.tool-name { font-family: var(--font-mono); font-size: 10px; font-weight: 600; color: var(--accent-light); }
-.tool-status-text { font-size: 9px; color: var(--text-muted); flex: 1; text-align: right; margin-right: 4px; }
-.tool-args { font-family: var(--font-mono); font-size: 9px; color: var(--text-muted); padding: 3px 10px 6px; border-top: 1px solid var(--border); }
-.tool-status-icon { flex-shrink: 0; font-size: 11px; width: 14px; text-align: center; }
-
-.tool-details {
-  max-height: 1000px;
-  overflow: hidden;
-  transition: max-height 0.3s ease-out;
-  border-top: 1px solid var(--border);
-}
-.collapsed .tool-details {
-  max-height: 0;
-  border-top: none;
-}
-.tool-status-icon.spin { display: inline-block; animation: spin 1s linear infinite; }
-@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-
-.tool-file-link { padding: 3px 10px 6px; }
-.file-link {
-  font-family: var(--font-mono); font-size: 9.5px; color: var(--accent-light);
-  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
-}
-.file-link:hover { color: white; }
-
-.tool-output {
-  padding: 4px 10px; background: var(--code-bg);
-  font-family: var(--font-mono); font-size: 9.5px; color: var(--text-secondary);
-  border-top: 1px solid var(--border); max-height: 60px; overflow: hidden;
-  white-space: pre; text-overflow: ellipsis;
-}
-.tool-output-error {
-  color: #fca5a5; background: rgba(239,68,68,0.08);
-  border-top-color: rgba(239,68,68,0.3); max-height: 120px;
-}
-
-/* ─── Error & Dividers ────────────────────────────────────────────────────────── */
-.message-error {
-  background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25);
-  border-radius: var(--radius); padding: 9px 12px; color: #fca5a5;
-  font-size: var(--font-size); animation: fadeSlideIn 0.2s ease forwards;
-}
-.message-divider {
-  text-align: center; color: var(--text-muted); font-size: 10.5px;
-  padding: 6px 0; display: flex; align-items: center; gap: 8px;
-}
-.message-divider::before, .message-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
-
-/* ─── Streaming Cursor ────────────────────────────────────────────────────────── */
-.streaming-cursor {
-  display: inline-block; width: 2px; height: 13px; background: var(--accent-light);
-  border-radius: 1px; margin-left: 2px; vertical-align: middle;
-  animation: blink 0.9s ease-in-out infinite;
-}
-@keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0; } }
-
-/* ─── Markdown ────────────────────────────────────────────────────────────────── */
-.message-bubble p { margin: 0 0 8px; }
-.message-bubble p:last-child { margin-bottom: 0; }
-.message-bubble strong { font-weight: 600; }
-.message-bubble em { color: var(--text-secondary); }
-.message-bubble ul, .message-bubble ol { margin: 6px 0 6px 18px; }
-.message-bubble li { margin-bottom: 3px; }
-.message-bubble code:not(pre code) {
-  font-family: var(--font-mono); font-size: 11px;
-  background: var(--code-bg); border: 1px solid var(--border);
-  border-radius: 3px; padding: 1px 5px; color: #c792ea;
-}
-
-/* ─── Code Blocks ─────────────────────────────────────────────────────────────── */
-.code-block {
-  margin: 8px 0; background: var(--code-bg);
-  border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;
-}
-.code-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 5px 10px; border-bottom: 1px solid var(--border); background: rgba(0,0,0,0.2);
-}
-.code-lang { font-size: 10px; font-family: var(--font-mono); color: var(--accent-light); }
-.code-actions { display: flex; gap: 4px; }
-.code-btn {
-  font-family: var(--font); font-size: 9.5px;
-  background: none; border: 1px solid var(--border); border-radius: 4px;
-  color: var(--text-muted); padding: 2px 7px; cursor: pointer; transition: all var(--transition);
-}
-.code-btn:hover { border-color: var(--border-strong); color: var(--text-primary); background: var(--bg-hover); }
-.code-btn.copied { border-color: var(--success); color: var(--success); }
-.code-block pre { margin: 0; padding: 10px; overflow-x: auto; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; }
-
-/* ─── Loading Dots ────────────────────────────────────────────────────────────── */
-.loading-dots { display: inline-flex; gap: 4px; align-items: center; }
-.loading-dots span {
-  width: 5px; height: 5px; border-radius: 50%; background: var(--accent-light);
-  animation: dotBounce 1.2s ease-in-out infinite;
-}
-.loading-dots span:nth-child(2) { animation-delay: 0.2s; }
-.loading-dots span:nth-child(3) { animation-delay: 0.4s; }
-
-/* ─── Input Area ──────────────────────────────────────────────────────────────── */
-.input-area {
-  padding: 12px; flex-shrink: 0; background: linear-gradient(to top, var(--bg) 80%, transparent);
-  position: relative; z-index: 10;
-}
-.input-wrapper {
-  display: flex; align-items: flex-end; gap: 8px;
-  background: rgba(20, 20, 25, 0.7); border: 1px solid var(--border-strong);
-  border-radius: 14px; padding: 10px 10px 10px 14px;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  backdrop-filter: blur(12px); box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-}
-.input-wrapper:focus-within {
-  border-color: rgba(79, 70, 229, 0.6);
-  box-shadow: 0 4px 20px rgba(0,0,0,0.3), 0 0 0 1px rgba(79, 70, 229, 0.2), 0 0 16px rgba(79, 70, 229, 0.1);
-}
-.prompt-input {
-  flex: 1; background: none; border: none; outline: none;
-  font-family: var(--font); font-size: 12.5px; color: var(--text-primary);
-  resize: none; line-height: 1.5; max-height: 150px; overflow-y: auto; padding: 0;
-  transition: height 0.14s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.prompt-input::placeholder { color: var(--text-muted); }
-.input-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-.char-count { font-size: 9.5px; color: var(--text-muted); }
-.char-count.over-limit { color: var(--danger); }
-
-.action-btn { 
-  display: flex; align-items: center; justify-content: center; 
-  width: 32px; height: 32px; border-radius: 10px; border: none; 
-  cursor: pointer; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); 
-}
-.send-btn {
-  background: rgba(79, 70, 229, 0.15);
-  color: var(--accent-light);
-  border: 1px solid rgba(79, 70, 229, 0.35);
-  box-shadow: none;
-}
-.send-btn:hover { background: linear-gradient(135deg, #4f46e5, #a855f7); border-color: transparent; color: white; transform: none; }
-.send-btn:disabled { background: var(--bg-elevated); color: var(--text-muted); cursor: not-allowed; transform: none; }
-.cancel-btn { background: rgba(239,68,68,0.15); color: var(--danger); border: 1px solid rgba(239,68,68,0.3); }
-.cancel-btn:hover { background: rgba(239,68,68,0.25); }
-.cancel-btn.hidden { display: none; }
-.send-btn.hidden { display: none; }
-
-.input-footer { padding-top: 4px; min-height: 16px; display: flex; justify-content: space-between; align-items: center; }
-.workspace-label { font-size: 10px; color: var(--text-muted); }
-.powered-by { font-size: 9.5px; color: var(--text-muted); text-decoration: none; letter-spacing: 0.03em; opacity: 0.6; transition: opacity 0.2s; }
-.powered-by:hover { opacity: 1; color: var(--accent-light); }
-
-.msg-expand-btn { display: block; margin-top: 6px; background: none; border: none; color: var(--accent-light); font-size: 10.5px; cursor: pointer; padding: 0; opacity: 0.65; transition: opacity 0.2s; font-family: var(--font); letter-spacing: 0.02em; }
-.msg-expand-btn:hover { opacity: 1; }
-
-/* ─── Swarm Activity Pulse ───────────────────────────────────────────────────── */
-@keyframes glowPulse {
-  0%, 100% { box-shadow: 0 4px 20px rgba(0,0,0,0.3), 0 0 0 1px rgba(79,70,229,0), 0 0 12px rgba(79,70,229,0); }
-  50%       { box-shadow: 0 4px 20px rgba(0,0,0,0.3), 0 0 0 1px rgba(79,70,229,0.35), 0 0 28px rgba(79,70,229,0.18); }
-}
-.input-wrapper.swarm-active {
-  border-color: rgba(79, 70, 229, 0.55);
-  animation: glowPulse 2s ease-in-out infinite;
-}
-
-/* ─── Sentinel Button ────────────────────────────────────────────────────────── */
-.sentinel-btn {
-  position: relative;
-  font-size: 14px;
-}
-.sentinel-btn.sentinel-active {
-  color: var(--danger);
-  border-color: rgba(239, 68, 68, 0.3);
-  background: rgba(239, 68, 68, 0.08);
-}
-.sentinel-btn.sentinel-active::after {
-  content: '';
-  position: absolute;
-  top: 4px; right: 4px;
-  width: 5px; height: 5px;
-  background: var(--danger);
-  border-radius: 50%;
-  animation: sentinelPulse 1.5s ease-in-out infinite;
-}
-@keyframes sentinelPulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50%       { transform: scale(1.6); opacity: 0.5; }
-}
-
-/* ─── Sentinel Alert Bubble ──────────────────────────────────────────────────── */
-.sentinel-alert {
-  align-items: flex-start;
-  animation: fadeSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  margin-bottom: 12px;
-}
-.sentinel-alert .message-role {
-  font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
-  text-transform: uppercase; margin-bottom: 5px; padding: 0 4px;
-  color: var(--danger);
-}
-.sentinel-alert .message-bubble {
-  padding: 12px 16px; border-radius: 14px; border-bottom-left-radius: 4px;
-  font-size: 13.5px; line-height: 1.6; max-width: 95%; word-break: break-word;
-  background: rgba(239, 68, 68, 0.05);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  backdrop-filter: blur(10px);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-}
-
-/* ─── Lines/Block Removed (collapsible) ─────────────────────────────────────── */
-.tool-removed-details {
-  margin-top: 4px; border-top: 1px solid rgba(148,163,184,0.1);
-}
-.tool-removed-summary {
-  padding: 3px 10px; font-family: var(--font); font-size: 9.5px;
-  color: var(--text-muted); cursor: pointer; user-select: none;
-  list-style: none; display: flex; align-items: center; gap: 4px;
-  transition: color 0.15s;
-}
-.tool-removed-summary::-webkit-details-marker { display: none; }
-.tool-removed-summary:hover { color: var(--text-secondary); }
-.tool-removed-details[open] .tool-removed-summary { color: var(--text-secondary); }
-.tool-removed-content {
-  padding: 4px 10px 6px; margin: 0;
-  font-family: var(--font-mono); font-size: 9.5px; line-height: 1.5;
-  color: rgba(252,165,165,0.7); background: rgba(239,68,68,0.04);
-  white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow-y: auto;
-}
-.tool-removed-content::-webkit-scrollbar { width: 3px; }
-.tool-removed-content::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
-
-/* ─── Utility ────────────────────────────────────────────────────────────────── */
-.hidden { display: none !important; }
-
-/* ─── Response Wrapper ────────────────────────────────────────────────────────── */
-.response-wrapper {
-  display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px;
-  animation: fadeSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-.response-wrapper .message { animation: none; margin-bottom: 0; }
-
-/* ─── Tool Activity Block ─────────────────────────────────────────────────────── */
-.tool-activity {
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: rgba(0,0,0,0.1); overflow: hidden; font-size: 10.5px;
-}
-.tool-activity-summary {
-  display: flex; align-items: center; gap: 6px;
-  padding: 5px 10px; cursor: pointer; user-select: none;
-  color: var(--text-muted); background: rgba(0,0,0,0.15);
-  list-style: none; transition: background var(--transition);
-}
-.tool-activity-summary::-webkit-details-marker { display: none; }
-.tool-activity-summary::before {
-  content: '›'; font-size: 12px; opacity: 0.5; transition: transform 0.2s;
-}
-.tool-activity[open] .tool-activity-summary::before { transform: rotate(90deg); }
-.tool-activity[open] .tool-activity-icon { display: inline-block; animation: spin 2s linear infinite; }
-.tool-activity-summary:hover { background: rgba(255,255,255,0.03); }
-.tool-activity-icon { font-size: 11px; }
-.tool-activity-label { font-size: 10px; font-weight: 500; }
-.tool-activity-items { padding: 4px 4px 6px 20px; display: flex; flex-direction: column; gap: 4px; position: relative; }
-.tool-activity-items::before { content: ''; position: absolute; left: 9px; top: 10px; bottom: 10px; width: 1px; background: linear-gradient(to bottom, rgba(79,70,229,0.5), transparent); pointer-events: none; }
-.tool-activity-items .tool-call-card { margin: 0; }
-
-/* ─── Diff Rendering ─────────────────────────────────────────────────────────── */
-.tool-diff {
-  display: flex; flex-direction: column;
-  padding: 4px 0; overflow-x: auto;
-  border-top: 1px solid var(--border); max-height: 200px; overflow-y: auto;
-}
-.tool-diff::-webkit-scrollbar { width: 3px; height: 3px; }
-.tool-diff::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
-
-/* Precise terminal-style diff lines — prefix injected via ::before, not JS */
-.diff-line-added {
-  display: block;
-  position: relative;
-  font-family: var(--font-mono);
-  font-size: 11px; line-height: 1.6;
-  padding: 0 12px 0 26px;
-  background: rgba(16, 185, 129, 0.06);
-  color: #86efac;
-  white-space: pre;
-}
-.diff-line-added::before {
-  content: '+';
-  position: absolute; left: 8px;
-  color: #4ade80; font-weight: 700;
-  user-select: none;
-}
-.diff-line-removed {
-  display: block;
-  position: relative;
-  font-family: var(--font-mono);
-  font-size: 11px; line-height: 1.6;
-  padding: 0 12px 0 26px;
-  background: rgba(239, 68, 68, 0.06);
-  color: #fca5a5;
-  white-space: pre;
-}
-.diff-line-removed::before {
-  content: '-';
-  position: absolute; left: 8px;
-  color: #f87171; font-weight: 700;
-  user-select: none;
-}
-
-```
-
-### 📁 FILE: `package.json`
-```json
+================================================================================
+FILE PATH: package.json
+================================================================================
 {
   "name": "fluxo-ai",
   "displayName": "Fluxo AI — Agent Swarm",
@@ -2122,10 +431,11 @@ body { display: flex; flex-direction: column; height: 100vh; }
   }
 }
 
-```
 
-### 📁 FILE: `README.md`
-```text
+
+================================================================================
+FILE PATH: README.md
+================================================================================
 # 🌊 Fluxo Tech AI — VS Code Agent Extension
 
 Fluxo AI no es solo otro autocompletador de código. Es un **Motor Cognitivo (Tier-1)** integrado nativamente en Visual Studio Code, diseñado para Managers, Arquitectos y Tech Leads que requieren una colaboración segura y guiada (Human-in-the-Loop) con modelos de lenguaje.
@@ -2255,10 +565,11 @@ Ver [INSTALL.md](cnos-extension/INSTALL.md) para guía completa.
 *Construido para domar el caos de la IA generativa.*
 *Built by **Denayssam** & Fluxo Tech AI · [fluxotechai.com](https://fluxotechai.com)*
 
-```
 
-### 📁 FILE: `src\agentEngine.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\agentEngine.ts
+================================================================================
 import * as fs from 'fs';
 import * as path from 'path';
 import { executeTool, getNativeTools, NativeTool } from './tools';
@@ -2478,9 +789,13 @@ export async function* runAgentLoop(
       }
 
       // ── PLAN VERIFICATION SHIELD ─────────────────────────────────────────────
-      // Allow clean exit if the agent explicitly confirmed plan completion.
-      if (textContent && /\bALL\s+STEPS\s+COMPLETE\b/i.test(textContent)) {
-        debugLog(workspacePath, 'Plan Verification: ALL STEPS COMPLETE confirmed — exiting loop');
+      // Allow clean exit if the agent explicitly confirmed plan completion
+      // OR delivered its Orchestrator's Report (both are valid completion signals).
+      if (textContent && (
+        /\bALL\s+STEPS\s+COMPLETE\b/i.test(textContent) ||
+        /ORCHESTRATOR['']S\s+REPORT/i.test(textContent)
+      )) {
+        debugLog(workspacePath, 'Plan Verification: completion signal confirmed — exiting loop');
         yield { type: 'streamEnd' };
         return;
       }
@@ -2514,7 +829,6 @@ export async function* runAgentLoop(
         /\btarea\s+completada\b/i,
         /\btask\s+completed\b/i,
         /✅.*(completad|tarea|task\s+done|updated|edited|modificado|actualizado)/i,
-        /ORCHESTRATOR'S REPORT/i,
       ];
       if (textContent && GHOST_SIGNALS.some(re => re.test(textContent)) && toolCallHistory.length === 0) {
         consecutiveGhostCount++;
@@ -2992,10 +1306,11 @@ export async function summarizeHistory(
   return result.content || '';
 }
 
-```
 
-### 📁 FILE: `src\agents.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\agents.ts
+================================================================================
 
 // ─── Agent Definitions ────────────────────────────────────────────────────────
 
@@ -3261,7 +1576,7 @@ ${WEB_ARCHITECTURE_SOP}`,
     emoji: '🧭',
     color: '#8b5cf6',
     description: 'Orchestration, complex planning, and emergency debugging',
-    tools: ['read_file', 'write_file', 'search_and_replace', 'replace_lines', 'replace_block', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval'],
+    tools: ['read_file', 'write_file', 'search_and_replace', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval'],
     keywords: [
       'manager', 'gestiona', 'organiza', 'planifica', 'proyecto',
       'architect', 'arquitecto', 'debug', 'investiga', 'loop',
@@ -3544,10 +1859,11 @@ export function getAgentList(): Array<{ id: string; name: string; emoji: string;
   }));
 }
 
-```
 
-### 📁 FILE: `src\extension.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\extension.ts
+================================================================================
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -4329,10 +2645,11 @@ export function deactivate(): void {
   _currentAbortController?.abort();
 }
 
-```
 
-### 📁 FILE: `src\sentinel.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\sentinel.ts
+================================================================================
 import * as vscode from 'vscode';
 
 // ─── ANSI / Control Sequence Stripper ────────────────────────────────────────
@@ -4446,10 +2763,11 @@ export class Sentinel {
   }
 }
 
-```
 
-### 📁 FILE: `src\tools\AskApprovalTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\AskApprovalTool\index.ts
+================================================================================
 // Powered by Fluxo Tech AI — https://fluxotechai.com
 import { NativeTool, ToolResult } from '../shared';
 
@@ -4487,10 +2805,11 @@ export function execute(_args: Record<string, any>, _workspacePath: string): Too
   };
 }
 
-```
 
-### 📁 FILE: `src\tools\CreateDirTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\CreateDirTool\index.ts
+================================================================================
 import * as fs from 'fs';
 import { NativeTool, ToolResult, safePath } from '../shared';
 
@@ -4515,10 +2834,11 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   return { success: true, output: `Directory created: ${args.path}` };
 }
 
-```
 
-### 📁 FILE: `src\tools\DeleteDirTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\DeleteDirTool\index.ts
+================================================================================
 import * as fs from 'fs';
 import { NativeTool, ToolResult, safePath } from '../shared';
 
@@ -4546,10 +2866,11 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   return { success: true, output: `Directory and contents deleted: ${args.path}` };
 }
 
-```
 
-### 📁 FILE: `src\tools\DeleteFileTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\DeleteFileTool\index.ts
+================================================================================
 import * as fs from 'fs';
 import { NativeTool, ToolResult, safePath } from '../shared';
 
@@ -4577,10 +2898,11 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   return { success: true, output: `Deleted: ${args.path}` };
 }
 
-```
 
-### 📁 FILE: `src\tools\FileEditTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\FileEditTool\index.ts
+================================================================================
 import * as fs from 'fs';
 import { NativeTool, ToolResult, safePath } from '../shared';
 
@@ -4657,10 +2979,11 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   };
 }
 
-```
 
-### 📁 FILE: `src\tools\FileReadTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\FileReadTool\index.ts
+================================================================================
 import * as fs from 'fs';
 import { NativeTool, ToolResult, safePath } from '../shared';
 
@@ -4715,10 +3038,11 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   return { success: true, output: numbered };
 }
 
-```
 
-### 📁 FILE: `src\tools\FileWriteTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\FileWriteTool\index.ts
+================================================================================
 import * as fs from 'fs';
 import * as path from 'path';
 import { NativeTool, ToolResult, safePath } from '../shared';
@@ -4750,10 +3074,11 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   return { success: true, output: `Written: ${args.path} (${size} bytes)` };
 }
 
-```
 
-### 📁 FILE: `src\tools\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\index.ts
+================================================================================
 import * as FileReadTool      from './FileReadTool';
 import * as FileWriteTool     from './FileWriteTool';
 import * as ReplaceLinesTool  from './ReplaceLinesTool';
@@ -4817,10 +3142,11 @@ export function getNativeTools(toolNames: string[]): NativeTool[] {
   return TOOL_DEFINITIONS.filter(t => toolNames.includes(t.function.name));
 }
 
-```
 
-### 📁 FILE: `src\tools\ListDirTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\ListDirTool\index.ts
+================================================================================
 import * as fs from 'fs';
 import { NativeTool, ToolResult, safePath } from '../shared';
 
@@ -4849,10 +3175,11 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   return { success: true, output: lines.join('\n') || '(empty)' };
 }
 
-```
 
-### 📁 FILE: `src\tools\ProposePlanTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\ProposePlanTool\index.ts
+================================================================================
 import * as fs from 'fs';
 import { NativeTool, ToolResult, safePath } from '../shared';
 
@@ -4879,10 +3206,11 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   return { success: true, output: 'IMPLEMENTATION_PLAN.md created. Please review it and confirm if I should proceed.' };
 }
 
-```
 
-### 📁 FILE: `src\tools\ReplaceBlockTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\ReplaceBlockTool\index.ts
+================================================================================
 import * as fs from 'fs';
 import * as path from 'path';
 import { NativeTool, ToolResult, safePath } from '../shared';
@@ -5104,10 +3432,11 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   };
 }
 
-```
 
-### 📁 FILE: `src\tools\ReplaceLinesTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\ReplaceLinesTool\index.ts
+================================================================================
 import * as fs from 'fs';
 import * as path from 'path';
 import { NativeTool, ToolResult, safePath } from '../shared';
@@ -5258,10 +3587,11 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   };
 }
 
-```
 
-### 📁 FILE: `src\tools\RunCommandTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\RunCommandTool\index.ts
+================================================================================
 import { execSync } from 'child_process';
 import { NativeTool, ToolResult } from '../shared';
 
@@ -5320,10 +3650,11 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   return { success: true, output: output || '(command completed with no output)' };
 }
 
-```
 
-### 📁 FILE: `src\tools\SearchImagesTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\SearchImagesTool\index.ts
+================================================================================
 import { NativeTool, ToolResult } from '../shared';
 
 export const TOOL_DEF: NativeTool = {
@@ -5360,10 +3691,11 @@ export function execute(args: Record<string, any>, _workspacePath: string): Tool
   };
 }
 
-```
 
-### 📁 FILE: `src\tools\SearchInFilesTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\SearchInFilesTool\index.ts
+================================================================================
 import { NativeTool, ToolResult, safePath, searchRecursive } from '../shared';
 
 export const TOOL_DEF: NativeTool = {
@@ -5392,10 +3724,11 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   return { success: true, output: results.slice(0, 60).join('\n') };
 }
 
-```
 
-### 📁 FILE: `src\tools\SearchReplaceTool\index.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\SearchReplaceTool\index.ts
+================================================================================
 import * as fs from 'fs';
 import * as path from 'path';
 import { NativeTool, ToolResult, safePath } from '../shared';
@@ -5550,10 +3883,11 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   };
 }
 
-```
 
-### 📁 FILE: `src\tools\shared.ts`
-```typescript
+
+================================================================================
+FILE PATH: src\tools\shared.ts
+================================================================================
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -5624,10 +3958,11 @@ export function searchRecursive(
   }
 }
 
-```
 
-### 📁 FILE: `tsconfig.json`
-```json
+
+================================================================================
+FILE PATH: tsconfig.json
+================================================================================
 {
   "compilerOptions": {
     "module": "commonjs",
@@ -5646,5 +3981,4 @@ export function searchRecursive(
   "exclude": ["node_modules", "out", "media"]
 }
 
-```
 
