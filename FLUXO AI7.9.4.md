@@ -1,9 +1,9 @@
 # 📦 APP MANIFEST
 * **App Name:** fluxo-ai
-* **Version:** 7.8.2
+* **Version:** 7.9.4
 * **Stack:** Vanilla JS
 * **Part:** 1
-* **Generated At:** 2026-04-26T23:43:09.285Z
+* **Generated At:** 2026-04-27T02:05:19.423Z
 
 ---
 
@@ -527,7 +527,7 @@ npm run watch
 ### 📁 FILE: `media\main.js`
 ```javascript
 /* global acquireVsCodeApi */
-// ─── Fluxo AI v7.8.2 — The Contextual Grip ───────────────────────────────────
+// ─── Fluxo AI v7.9.4 — Visual State Persistence & Sherlock Rules ─────────────
 (function () {
   'use strict';
 
@@ -555,14 +555,17 @@ npm run watch
 
   // ─── State ─────────────────────────────────────────────────────────────────
   let isStreaming = false;
+  let isUserScrolling = false;   // true when user scrolled up to read; suppresses auto-scroll
   let currentBubble = null;
-  let currentStreamText = '';
+  let currentStreamText = '';    // full accumulated text for history
+  let currentBubbleText = '';    // text for the currently active visual bubble
   let currentResponseWrapper = null;
   let currentToolActivityItems = null;
   let hasToolCalls = false;
   let agents = [];
   let currentAgentId = 'coder';
   let chatHistory = [];
+  let visualEvents = [];         // ordered visual log: persisted via vscode.setState for reload recovery
   const CONTEXT_LIMIT = 120000;
 
   // ─── Init ──────────────────────────────────────────────────────────────────
@@ -634,17 +637,36 @@ npm run watch
     else if (data.model) { modelSelect.value = data.model; }
     apiKeyWarning.classList.toggle('hidden', !!data.hasApiKey);
     if (data.agents) { agents = data.agents; buildAgentPills(); }
-    if (data.history && data.history.length) {
-      chatHistory = data.history;
-      renderHistory();
-      updateTokenWheel();
-    } else {
-      renderWelcome();
+
+    // Try to restore full visual state (tool cards + messages) from webview storage first.
+    // vscode.setState persists across Developer: Reload Window via the WebviewPanelSerializer.
+    let restoredFromState = false;
+    try {
+      const saved = vscode.getState();
+      if (saved && saved.visualEvents && saved.visualEvents.length) {
+        visualEvents = saved.visualEvents;
+        chatHistory = saved.chatHistory || [];
+        renderVisualHistory();
+        updateTokenWheel();
+        restoredFromState = true;
+      }
+    } catch {}
+
+    if (!restoredFromState) {
+      if (data.history && data.history.length) {
+        chatHistory = data.history;
+        renderHistory();
+        updateTokenWheel();
+      } else {
+        renderWelcome();
+      }
     }
   }
 
   function handleHistorySync(data) {
     chatHistory = data.history || [];
+    visualEvents = []; // compression replaces history — old tool cards are stale
+    saveState();
     renderHistory();
     updateTokenWheel();
     hideStatus(); // clear any pending status (e.g. "Compressing context…")
@@ -669,6 +691,89 @@ npm run watch
       }
       messagesEl.appendChild(el);
       attachCodeListeners(el);
+      attachFileLinkListeners(el);
+    });
+    scrollToBottom();
+  }
+
+  // ─── Visual State Persistence ────────────────────────────────────────────────
+
+  function saveState() {
+    try { vscode.setState({ visualEvents, chatHistory }); } catch {}
+  }
+
+  function renderVisualHistory() {
+    messagesEl.innerHTML = '';
+    visualEvents.forEach(evt => {
+      if (evt.type === 'user') {
+        const el = document.createElement('div');
+        el.className = 'message user';
+        el.innerHTML = '<div class="message-role">You</div>';
+        el.appendChild(createUserBubble(evt.content));
+        messagesEl.appendChild(el);
+
+      } else if (evt.type === 'assistant') {
+        const el = document.createElement('div');
+        el.className = 'message assistant';
+        el.innerHTML = '<div class="message-role">Fluxo</div>';
+        const bbl = document.createElement('div');
+        bbl.className = 'message-bubble';
+        bbl.innerHTML = renderMarkdown(evt.content);
+        el.appendChild(bbl);
+        messagesEl.appendChild(el);
+        attachCodeListeners(el);
+        attachFileLinkListeners(el);
+
+      } else if (evt.type === 'agentDivider') {
+        const div = document.createElement('div');
+        div.className = 'agent-divider';
+        div.style.setProperty('--agent-color', evt.color);
+        div.innerHTML = `<span>${evt.emoji} ${escapeHtml(evt.agentName)}</span>`;
+        messagesEl.appendChild(div);
+
+      } else if (evt.type === 'tool') {
+        const statusIcon = evt.status === 'success' ? '✅' : evt.status === 'failed' ? '❌' : '⟳';
+        const dur = evt.duration ? parseFloat(evt.duration) : 0;
+        const timeStr = evt.duration ? (dur < 0.1 ? `${Math.round(dur * 1000)}ms` : `${evt.duration}s`) : '';
+        const statusText = evt.status === 'pending' ? 'Working…' : `Worked (${timeStr})`;
+        const el = document.createElement('div');
+        el.className = `tool-call-card ${evt.status === 'success' ? 'success' : evt.status === 'failed' ? 'failed' : 'pending'} collapsed`;
+        el.innerHTML = `
+          <div class="tool-header">
+            <span class="tool-name">${escapeHtml(evt.title || evt.name)}</span>
+            <span class="tool-status-text">${statusText}</span>
+            <span class="tool-status-icon">${statusIcon}</span>
+          </div>
+          <div class="tool-details"></div>
+        `;
+        const details = el.querySelector('.tool-details');
+        if (evt.diffLines && evt.diffLines.length) {
+          const diffEl = document.createElement('pre');
+          diffEl.className = 'tool-diff-block';
+          evt.diffLines.forEach(line => {
+            const span = document.createElement('span');
+            span.className = (line.startsWith('+ ') || line === '+') ? 'diff-add'
+                           : (line.startsWith('- ') || line === '-') ? 'diff-remove'
+                           : 'diff-ctx';
+            span.textContent = line + '\n';
+            diffEl.appendChild(span);
+          });
+          details.appendChild(diffEl);
+          if (evt.restOutput) {
+            const restEl = document.createElement('div');
+            restEl.className = 'tool-output';
+            restEl.textContent = evt.restOutput;
+            details.appendChild(restEl);
+          }
+        } else if (evt.restOutput) {
+          const outEl = document.createElement('div');
+          outEl.className = 'tool-output';
+          outEl.textContent = evt.restOutput;
+          details.appendChild(outEl);
+        }
+        el.querySelector('.tool-header').addEventListener('click', () => el.classList.toggle('collapsed'));
+        messagesEl.appendChild(el);
+      }
     });
     scrollToBottom();
   }
@@ -690,12 +795,13 @@ npm run watch
 
   // ─── UI: Context Bar ────────────────────────────────────────────────────────
   const FILE_TOOL_ACTIONS = {
-    read_file:     'leyendo',
-    write_file:    'escribiendo',
-    replace_lines: 'editando',
-    replace_block: 'editando',
-    edit_file:     'editando',
-    delete_file:   'eliminando',
+    read_file:          'leyendo',
+    write_file:         'escribiendo',
+    search_and_replace: 'editando',
+    replace_lines:      'editando',
+    replace_block:      'editando',
+    edit_file:          'editando',
+    delete_file:        'eliminando',
   };
 
   function setContextFile(toolName, filePath) {
@@ -731,6 +837,8 @@ npm run watch
   function handleStreamStart() {
     isStreaming = true;
     currentStreamText = '';
+    currentBubbleText = '';
+    currentBubble = null;
     hasToolCalls = false;
     sendBtn.disabled = true;
     cancelBtn.classList.remove('hidden');
@@ -738,94 +846,77 @@ npm run watch
     document.querySelector('.input-wrapper')?.classList.add('swarm-active');
     messagesEl.querySelector('.welcome-card')?.remove();
 
-    // Build response wrapper: collapsible tool activity on top, text bubble below
+    // Sequential wrapper — tools and text bubbles are appended in arrival order
     currentResponseWrapper = document.createElement('div');
     currentResponseWrapper.className = 'response-wrapper';
-    currentResponseWrapper.innerHTML = `
-      <details class="tool-activity" open>
-        <summary class="tool-activity-summary">
-          <span class="tool-activity-icon">⟳</span>
-          <span class="tool-activity-label">Working…</span>
-        </summary>
-        <div class="tool-activity-items" id="current-tool-activity-items"></div>
-      </details>
-      <div class="message assistant">
-        <div class="message-role">Fluxo</div>
-        <div class="message-bubble" id="streaming-bubble"></div>
-      </div>
-    `;
     messagesEl.appendChild(currentResponseWrapper);
-    currentBubble = currentResponseWrapper.querySelector('#streaming-bubble');
-    currentToolActivityItems = currentResponseWrapper.querySelector('#current-tool-activity-items');
+    currentToolActivityItems = currentResponseWrapper;
     showStatus('Working…', true);
     scrollToBottom();
   }
 
   function handleStreamChunk(text) {
     document.getElementById('thinking-bubble')?.remove();
-    if (currentBubble) {
-      currentStreamText += text;
-      currentBubble.innerHTML = renderMarkdown(currentStreamText) + '<span class="streaming-cursor"></span>';
-      scrollToBottom();
+    currentStreamText += text;
+
+    if (!currentBubble) {
+      // Lazily create a text bubble in the sequential flow (after any tool cards)
+      currentBubbleText = '';
+      const msgEl = document.createElement('div');
+      msgEl.className = 'message assistant';
+      msgEl.innerHTML = '<div class="message-role">Fluxo</div><div class="message-bubble" id="streaming-bubble"></div>';
+      (currentResponseWrapper || messagesEl).appendChild(msgEl);
+      currentBubble = msgEl.querySelector('#streaming-bubble');
     }
+
+    currentBubbleText += text;
+    currentBubble.innerHTML = renderMarkdown(currentBubbleText) + '<span class="streaming-cursor"></span>';
+    scrollToBottom();
   }
 
   function handleStreamEnd() {
     isStreaming = false;
+    isUserScrolling = false;  // reset: response complete, snap to bottom
     document.getElementById('thinking-bubble')?.remove();
 
     if (currentBubble) {
-      currentBubble.innerHTML = renderMarkdown(currentStreamText);
+      currentBubble.innerHTML = renderMarkdown(currentBubbleText);
       attachCodeListeners(currentBubble);
+      attachFileLinkListeners(currentBubble);
       currentBubble.removeAttribute('id');
       chatHistory.push({ role: 'assistant', content: currentStreamText });
+      visualEvents.push({ type: 'assistant', content: currentStreamText });
+      saveState();
       updateTokenWheel();
     }
 
-    // Finalize tool activity section
-    if (currentResponseWrapper) {
-      const details = currentResponseWrapper.querySelector('.tool-activity');
-      if (details) {
-        if (hasToolCalls) {
-          details.open = false;
-          const count = currentToolActivityItems
-            ? currentToolActivityItems.querySelectorAll('.tool-call-card').length : 0;
-          const lbl = currentResponseWrapper.querySelector('.tool-activity-label');
-          const ico = currentResponseWrapper.querySelector('.tool-activity-icon');
-          if (lbl) lbl.textContent = `${count} tool${count !== 1 ? 's' : ''} used`;
-          if (ico) ico.textContent = '🔧';
-        } else {
-          details.remove();
-        }
-      }
-      currentResponseWrapper = null;
-      currentToolActivityItems = null;
-    }
+    currentResponseWrapper = null;
+    currentToolActivityItems = null;
+    currentBubble = null;
+    currentBubbleText = '';
 
     sendBtn.disabled = false;
     sendBtn.classList.remove('hidden');
     cancelBtn.classList.add('hidden');
     document.querySelector('.input-wrapper')?.classList.remove('swarm-active');
     hideStatus();
-    currentBubble = null;
+    clearContextBar();
     scrollToBottom();
   }
 
   function handleStreamCancelled() {
     isStreaming = false;
     document.getElementById('thinking-bubble')?.remove();
-    if (currentResponseWrapper) {
-      const details = currentResponseWrapper.querySelector('.tool-activity');
-      if (details && !hasToolCalls) details.remove();
-      currentResponseWrapper = null;
-      currentToolActivityItems = null;
-    }
+    currentResponseWrapper = null;
+    currentToolActivityItems = null;
+    currentBubble = null;
+    currentBubbleText = '';
     sendBtn.disabled = false;
     sendBtn.classList.remove('hidden');
     cancelBtn.classList.add('hidden');
     document.querySelector('.input-wrapper')?.classList.remove('swarm-active');
     hideStatus();
-    currentBubble = null;
+    clearContextBar();
   }
 
   function createUserBubble(text) {
@@ -860,6 +951,8 @@ npm run watch
     messagesEl.appendChild(userEl);
 
     chatHistory.push({ role: 'user', content: text });
+    visualEvents.push({ type: 'user', content: text });
+    saveState();
     updateTokenWheel();
 
     promptInput.value = '';
@@ -895,6 +988,8 @@ npm run watch
     div.style.setProperty('--agent-color', data.color);
     div.innerHTML = `<span>${data.emoji} ${data.agentName}</span>`;
     messagesEl.appendChild(div);
+    visualEvents.push({ type: 'agentDivider', emoji: data.emoji, agentName: data.agentName, color: data.color });
+    saveState();
     scrollToBottom();
   }
 
@@ -930,9 +1025,16 @@ npm run watch
   function handleToolCall(data) {
     document.getElementById('thinking-bubble')?.remove();
     hasToolCalls = true;
+    // Nullify current bubble — next streamChunk will create a new one below this tool card
+    currentBubble = null;
+    currentBubbleText = '';
 
     const args = data.args || {};
     const title = getToolTitle(data.name, args);
+
+    // Register in visual state (pending — result will update it)
+    visualEvents.push({ type: 'tool', name: data.name, title, status: 'pending', duration: null, diffLines: null, restOutput: null });
+    saveState();
 
     // Update context bar for file-touching tools
     if (FILE_TOOL_ACTIONS[data.name] && args.path) {
@@ -971,11 +1073,6 @@ npm run watch
     el.querySelector('.tool-header').addEventListener('click', () => el.classList.toggle('collapsed'));
 
     (currentToolActivityItems || messagesEl).appendChild(el);
-
-    if (currentResponseWrapper) {
-      const lbl = currentResponseWrapper.querySelector('.tool-activity-label');
-      if (lbl) lbl.textContent = 'Tool activity';
-    }
     scrollToBottom();
   }
 
@@ -1003,7 +1100,32 @@ npm run watch
          : null)
         : null;
 
-      if (removedMarker && !isEngineError) {
+      // Detect ```diff block — render with syntax-colored lines
+      const diffBlockMatch = (data.success && typeof data.output === 'string')
+        ? data.output.match(/^```diff\n([\s\S]*?)```\n\n([\s\S]*)/)
+        : null;
+
+      if (diffBlockMatch) {
+        const diffLines = diffBlockMatch[1].split('\n');
+        const rest = diffBlockMatch[2].trim();
+        const diffEl = document.createElement('pre');
+        diffEl.className = 'tool-diff-block';
+        diffLines.forEach(line => {
+          const span = document.createElement('span');
+          span.className = (line.startsWith('+ ') || line === '+') ? 'diff-add'
+                         : (line.startsWith('- ') || line === '-') ? 'diff-remove'
+                         : 'diff-ctx';
+          span.textContent = line + '\n';
+          diffEl.appendChild(span);
+        });
+        details.appendChild(diffEl);
+        if (rest) {
+          const restEl = document.createElement('div');
+          restEl.className = 'tool-output';
+          restEl.textContent = rest;
+          details.appendChild(restEl);
+        }
+      } else if (removedMarker && !isEngineError) {
         const markerIdx   = data.output.indexOf(removedMarker);
         const summaryText = data.output.slice(0, markerIdx).trim();
         const removedText = data.output.slice(markerIdx + removedMarker.length)
@@ -1037,6 +1159,20 @@ npm run watch
           link.addEventListener('click', () => vscode.postMessage({ type: 'openFile', path: pathMatch[1] }));
           details.appendChild(link);
         }
+      }
+
+      // Persist tool result — update the last pending tool in visualEvents
+      const lastPendingTool = [...visualEvents].reverse().find(m => m.type === 'tool' && m.status === 'pending');
+      if (lastPendingTool) {
+        lastPendingTool.status = data.success ? 'success' : 'failed';
+        lastPendingTool.duration = data.duration || null;
+        if (diffBlockMatch) {
+          lastPendingTool.diffLines = diffBlockMatch[1].split('\n');
+          lastPendingTool.restOutput = (diffBlockMatch[2] || '').trim().slice(0, 300);
+        } else if (typeof data.output === 'string') {
+          lastPendingTool.restOutput = data.output.slice(0, 300);
+        }
+        saveState();
       }
     }
     scrollToBottom();
@@ -1085,6 +1221,8 @@ npm run watch
 
   function handleChatCleared() {
     chatHistory = [];
+    visualEvents = [];
+    saveState();
     messagesEl.innerHTML = '';
     renderWelcome();
     updateTokenWheel();
@@ -1125,7 +1263,7 @@ npm run watch
       <div class="welcome-card">
         <div class="welcome-logo">🐾</div>
         <h2 class="welcome-title">Fluxo AI</h2>
-        <p class="welcome-subtitle">Persistent Agent Swarm v7.8.2</p>
+        <p class="welcome-subtitle">Persistent Agent Swarm v7.9.4</p>
         <div class="welcome-tips">
           <div class="tip"><span class="tip-key">↵</span> Send</div>
           <div class="tip-sep">·</div>
@@ -1185,7 +1323,19 @@ npm run watch
       const c = code.trimEnd();
       const placeholder = `{{CODE_BLOCK_${codeBlocks.length}}}`;
       const rawC = c.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-      codeBlocks.push(`<div class="code-block"><div class="code-header"><span class="code-lang">${lang || 'txt'}</span><button class="code-btn copy-btn" data-code="${encodeURIComponent(rawC)}">Copy</button></div><pre><code>${c}</code></pre></div>`);
+
+      let innerHtml;
+      if (lang === 'diff') {
+        innerHtml = c.split('\n').map(line => {
+          if (line.startsWith('+ ') || line === '+') return `<span class="diff-add">${line}</span>`;
+          if (line.startsWith('- ') || line === '-') return `<span class="diff-remove">${line}</span>`;
+          return `<span class="diff-ctx">${line}</span>`;
+        }).join('\n');
+      } else {
+        innerHtml = c;
+      }
+
+      codeBlocks.push(`<div class="code-block"><div class="code-header"><span class="code-lang">${lang || 'txt'}</span><button class="code-btn copy-btn" data-code="${encodeURIComponent(rawC)}">Copy</button></div><pre><code>${innerHtml}</code></pre></div>`);
       return placeholder;
     });
 
@@ -1195,6 +1345,14 @@ npm run watch
       codeBlocks.push(`<code>${code}</code>`);
       return placeholder;
     });
+
+    // 2.5. Magic Links — detect file paths and render as clickable buttons
+    // Matches: src/foo/bar.ts · .fluxo/memory.md · path/to/file.ext
+    // Skipped: already-protected {{CODE_BLOCK_N}} placeholders, URLs (http://)
+    const FILE_PATH_RE = /(?<![/"'`(\\:])(?:\.?\/?[\w-][\w.-]*\/)+[\w-][\w.-]*\.(?:ts|tsx|js|jsx|mjs|cjs|md|json|css|scss|html|py|txt|env|svg|png|jpg|vue|yaml|yml|toml)\b/g;
+    html = html.replace(FILE_PATH_RE, match =>
+      `<button class="file-link-btn" data-path="${match}" title="Open ${match}">${match}</button>`
+    );
 
     // 3. Render other markdown
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
@@ -1213,14 +1371,12 @@ npm run watch
   function escapeHtml(str) { return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
   function scrollToBottom() {
+    if (isUserScrolling) return;
     const container = document.getElementById('chat-container');
     if (!container) return;
-    const threshold = 150;
-    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
-
     if (isStreaming) {
       container.scrollTop = container.scrollHeight;
-    } else if (isAtBottom) {
+    } else {
       container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
     }
   }
@@ -1264,6 +1420,14 @@ npm run watch
     });
   }
 
+  function attachFileLinkListeners(el) {
+    el.querySelectorAll('.file-link-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        vscode.postMessage({ type: 'open_file', path: btn.dataset.path });
+      });
+    });
+  }
+
   // ─── Listeners ─────────────────────────────────────────────────────────────
   sendBtn.addEventListener('click', sendMessage);
   promptInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
@@ -1275,6 +1439,18 @@ npm run watch
   cancelBtn.addEventListener('click', () => vscode.postMessage({ type: 'cancelStream' }));
   sentinelBtn?.addEventListener('click', () => vscode.postMessage({ type: 'sentinelToggle' }));
   document.getElementById('streaming-info-btn')?.addEventListener('click', () => vscode.postMessage({ type: 'showStreamingInfo' }));
+  modelSelect.addEventListener('change', () => vscode.postMessage({ type: 'saveModel', model: modelSelect.value }));
+
+  // ─── Smart Scroll ────────────────────────────────────────────────────────────
+  // If the user scrolls up while the agent is working, pause auto-scroll.
+  // Resume as soon as they return to the bottom (within 120 px threshold).
+  const chatContainer = document.getElementById('chat-container');
+  if (chatContainer) {
+    chatContainer.addEventListener('scroll', () => {
+      const { scrollTop, clientHeight, scrollHeight } = chatContainer;
+      isUserScrolling = (scrollHeight - scrollTop - clientHeight) > 120;
+    });
+  }
 
 })();
 
@@ -1979,6 +2155,35 @@ body { display: flex; flex-direction: column; height: 100vh; }
   user-select: none;
 }
 
+/* ─── Magic File Links ──────────────────────────────────────────────────────── */
+.file-link-btn {
+  display: inline;
+  background: none;
+  border: none;
+  padding: 0 2px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  color: #60a5fa;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: rgba(96, 165, 250, 0.5);
+  cursor: pointer;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
+}
+.file-link-btn:hover {
+  color: #93c5fd;
+  background: rgba(96, 165, 250, 0.1);
+  text-decoration-color: #93c5fd;
+}
+
+/* ─── Chat Diff Rendering ────────────────────────────────────────────────────── */
+.diff-add  { display: block; background: var(--diff-add-bg); color: var(--diff-add-text); white-space: pre; padding: 0 8px; margin: 0; }
+.diff-remove { display: block; background: var(--diff-rem-bg); color: var(--diff-rem-text); white-space: pre; padding: 0 8px; margin: 0; }
+.diff-ctx  { display: block; color: inherit; white-space: pre; padding: 0 8px; margin: 0; opacity: 0.65; }
+.tool-diff-block { font-family: var(--font-mono); font-size: 11px; line-height: 1.5; background: var(--code-bg); border-radius: 6px; overflow: hidden; margin: 6px 0; padding: 4px 0; }
+
 ```
 
 ### 📁 FILE: `package.json`
@@ -1987,7 +2192,7 @@ body { display: flex; flex-direction: column; height: 100vh; }
   "name": "fluxo-ai",
   "displayName": "Fluxo AI — Agent Swarm",
   "description": "Autonomous AI coding agent powered by OpenRouter. Writes files, runs commands, routes to specialized agents (Coder, Designer, Dashboard, Payments).",
-  "version": "7.8.2",
+  "version": "7.9.4",
   "publisher": "fluxotechai",
   "repository": { "type": "git", "url": "https://github.com/fluxotechai/fluxo-ai" },
   "icon": "media/icon.png",
@@ -2391,8 +2596,33 @@ export async function* runAgentLoop(
     .slice(-12)
     .filter(m => m.role === 'user' || m.role === 'assistant');
 
+  // Workspace Memory injection — read .fluxo/memory.md once per session
+  let workspaceMemoryBlock = '';
+  if (workspacePath) {
+    const memoryFilePath = path.join(workspacePath, '.fluxo', 'memory.md');
+    try {
+      if (fs.existsSync(memoryFilePath)) {
+        const memoryContent = fs.readFileSync(memoryFilePath, 'utf-8').trim();
+        if (memoryContent) {
+          workspaceMemoryBlock =
+            '\n\n--- WORKSPACE MEMORY & RULES ---\n' +
+            'The following rules and conventions were set by the user for this workspace. ' +
+            'They are BINDING — apply them automatically on every task without being asked:\n\n' +
+            memoryContent +
+            '\n--- END OF WORKSPACE MEMORY ---';
+          debugLog(workspacePath, `Workspace memory loaded: ${memoryContent.length} chars`);
+        }
+      }
+    } catch { /* memory file unreadable — proceed without it */ }
+  }
+
+  const baseSystemPrompt = buildAgentSystemPrompt(agentId);
+  const systemPrompt = workspaceMemoryBlock
+    ? baseSystemPrompt + workspaceMemoryBlock
+    : baseSystemPrompt;
+
   const messages: ChatMessage[] = [
-    { role: 'system', content: buildAgentSystemPrompt(agentId) },
+    { role: 'system', content: systemPrompt },
     ...prunedHistory,
     { role: 'user', content: userMessage },
   ];
@@ -2478,9 +2708,13 @@ export async function* runAgentLoop(
       }
 
       // ── PLAN VERIFICATION SHIELD ─────────────────────────────────────────────
-      // Allow clean exit if the agent explicitly confirmed plan completion.
-      if (textContent && /\bALL\s+STEPS\s+COMPLETE\b/i.test(textContent)) {
-        debugLog(workspacePath, 'Plan Verification: ALL STEPS COMPLETE confirmed — exiting loop');
+      // Allow clean exit if the agent explicitly confirmed plan completion
+      // OR delivered its Orchestrator's Report (both are valid completion signals).
+      if (textContent && (
+        /\bALL\s+STEPS\s+COMPLETE\b/i.test(textContent) ||
+        /ORCHESTRATOR['']S\s+REPORT/i.test(textContent)
+      )) {
+        debugLog(workspacePath, 'Plan Verification: completion signal confirmed — exiting loop');
         yield { type: 'streamEnd' };
         return;
       }
@@ -2514,7 +2748,6 @@ export async function* runAgentLoop(
         /\btarea\s+completada\b/i,
         /\btask\s+completed\b/i,
         /✅.*(completad|tarea|task\s+done|updated|edited|modificado|actualizado)/i,
-        /ORCHESTRATOR'S REPORT/i,
       ];
       if (textContent && GHOST_SIGNALS.some(re => re.test(textContent)) && toolCallHistory.length === 0) {
         consecutiveGhostCount++;
@@ -3132,6 +3365,8 @@ RULE 2 (STRICT IMPORTS): If you call an external function, hook, or utility (e.g
 
 RULE 3 (NO PLACEHOLDERS): It is STRICTLY PROHIBITED to use hardcoded URLs (e.g., "yourwebsite.com", "example.com", "localhost:3000"), fake emails, or placeholder data in any deliverable code. Always use window.location.origin for base URLs and dynamic routing for paths. If a real value is unknown, insert a clearly-marked TODO comment and tell the user explicitly.
 
+RULE 4 (MODAL COLLISION AVOIDANCE): Before modifying the opening logic of any Modal, Dialog, Sheet, or Drawer component, you MUST first call search_in_files with the component name to verify its full render chain and who imports it. It is STRICTLY PROHIBITED to nest modals (Modal-in-Modal inception). If the target component already lives inside a modal, use a Multi-Step pattern (internal state changes: e.g., a 'step' variable or conditional sections within the same modal) instead of opening a new modal on top.
+
 GIT AUTONOMY:
 - If 'git pull' fails with "no tracking information", use 'git remote -v' to find the remote (e.g., origin) and use 'git pull origin master' (or the current branch).
 - Use 'git status' and 'git checkout' to restore missing files.
@@ -3261,7 +3496,7 @@ ${WEB_ARCHITECTURE_SOP}`,
     emoji: '🧭',
     color: '#8b5cf6',
     description: 'Orchestration, complex planning, and emergency debugging',
-    tools: ['read_file', 'write_file', 'search_and_replace', 'replace_lines', 'replace_block', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval'],
+    tools: ['read_file', 'write_file', 'search_and_replace', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'update_memory'],
     keywords: [
       'manager', 'gestiona', 'organiza', 'planifica', 'proyecto',
       'architect', 'arquitecto', 'debug', 'investiga', 'loop',
@@ -3396,6 +3631,8 @@ Watch for these CRITICAL ERRORS:
 6. REDUNDANCY CHECK: Compare the current tool calls with the "PRIOR COMPLETED TOOLS" section. If the agent is attempting to re-declare a hook (useParams, useState, useEffect, useRef, useContext, useMemo, useCallback, etc.) or a variable (const, let, var declarations) that was already successfully injected in a previous turn of this same session, output:
    ERROR: REDUNDANT_DECLARATION — '[identifier]' was already declared in a prior turn. Re-declaring it will cause a Runtime Crash (duplicate identifier). The agent must skip this injection and proceed to the next pending step.
    SCOPE: ONLY check the actual code logic inside "new_content". DO NOT flag tool names like "replace_block" or "read_file" as redundant declarations. Ignore tool names completely in this check.
+7. MODAL COLLISION: Agent's tool call modifies the open/toggle/trigger logic of a Modal, Dialog, Sheet, or Drawer component, WITHOUT a prior search_in_files call that verified the component's full render chain and confirmed it is NOT already nested inside another modal.
+   When detected: "ERROR: Modal Collision Risk — '{ComponentName}' may already render inside a modal. Agent must call search_in_files('{ComponentName}') to verify the full render chain before editing modal-open logic. If nesting is confirmed, a Multi-Step (internal state) pattern is required instead of opening a new modal."
 
 NOTE: Ghost Execution, Sentinel/Build blocking, and brace-balance validation are now handled deterministically by the engine and ReplaceLinesTool — do NOT attempt to count characters or flag syntax errors here.
 
@@ -3772,10 +4009,13 @@ async function _handleMessage(msg: any, context: vscode.ExtensionContext): Promi
       break;
 
     case 'openFile':
+    case 'open_file': {
       if (msg.path) {
         const folders = vscode.workspace.workspaceFolders;
         if (folders?.length) {
-          const fullPath = path.join(folders[0].uri.fsPath, msg.path);
+          const fullPath = path.isAbsolute(msg.path)
+            ? msg.path
+            : path.join(folders[0].uri.fsPath, msg.path);
           try {
             const doc = await vscode.workspace.openTextDocument(fullPath);
             await vscode.window.showTextDocument(doc);
@@ -3784,6 +4024,11 @@ async function _handleMessage(msg: any, context: vscode.ExtensionContext): Promi
           }
         }
       }
+      break;
+    }
+
+    case 'saveModel':
+      if (msg.model) { context.globalState.update('fluxo.selectedModel', msg.model); }
       break;
 
     case 'openSettings':
@@ -4076,6 +4321,20 @@ function fuzzyFindOffsets(
   return { startIndex, length };
 }
 
+const MAX_DIFF_LINES = 25;
+function buildNativeDiffBlock(search: string, replace: string): string {
+  const norm = (s: string) => s.replace(/\r\n/g, '\n').trimEnd();
+  const remLines = norm(search).split('\n');
+  const addLines = replace === '' ? [] : norm(replace).split('\n');
+  const remSection = remLines.length > MAX_DIFF_LINES
+    ? [...remLines.slice(0, MAX_DIFF_LINES).map(l => `- ${l}`), `- … (+${remLines.length - MAX_DIFF_LINES} lines not shown)`]
+    : remLines.map(l => `- ${l}`);
+  const addSection = addLines.length > MAX_DIFF_LINES
+    ? [...addLines.slice(0, MAX_DIFF_LINES).map(l => `+ ${l}`), `+ … (+${addLines.length - MAX_DIFF_LINES} lines not shown)`]
+    : addLines.map(l => `+ ${l}`);
+  return '```diff\n' + [...remSection, ...addSection].join('\n') + '\n```';
+}
+
 async function applyNativeEdit(
   relPath: string,
   searchSnippet: string,
@@ -4123,12 +4382,10 @@ async function applyNativeEdit(
     return { success: false, output: `VS Code WorkspaceEdit failed for ${relPath}. The file may be read-only.` };
   }
 
+  const diffBlock = buildNativeDiffBlock(searchSnippet, replaceSnippet);
   return {
     success: true,
-    output: `search_and_replace: ${relPath} — edit applied in VS Code editor (file is unsaved).\n\n` +
-            `EDIT APPLIED. The change is visible in the editor tab marked with a dot (●). ` +
-            `Tell the user: "Cambio aplicado en el editor. Revísalo y presiona Ctrl+S para guardar, o dime si necesitas correcciones." ` +
-            `Do NOT apply further edits to this file until the user confirms.`,
+    output: `${diffBlock}\n\n**${relPath}** — edit applied in VS Code editor (file is unsaved).\n\nCambio aplicado en el editor. Revisa el Diff arriba y presiona Ctrl+S en el archivo para guardar.\n\nDo NOT apply further edits to this file until the user confirms.`,
   };
 }
 
@@ -4163,7 +4420,7 @@ function _buildHtml(webview: vscode.Webview): string {
         <div class="logo-dot"></div>
       </div>
       <span class="header-title">Fluxo AI</span>
-      <span class="header-subtitle">v7.8.2</span>
+      <span class="header-subtitle">v7.9.4</span>
       <span id="agent-badge" class="agent-badge hidden"></span>
     </div>
     <div class="header-right">
@@ -4322,7 +4579,7 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  console.log('[Fluxo AI] v7.8.2 — The Contextual Grip release');
+  console.log('[Fluxo AI] v7.9.4 — Visual State Persistence & Sherlock Rules release');
 }
 
 export function deactivate(): void {
@@ -4768,6 +5025,7 @@ import * as SearchInFilesTool from './SearchInFilesTool';
 import * as SearchImagesTool  from './SearchImagesTool';
 import * as AskApprovalTool    from './AskApprovalTool';
 import * as SearchReplaceTool  from './SearchReplaceTool';
+import * as UpdateMemoryTool   from './UpdateMemoryTool';
 import { ToolResult, NativeTool } from './shared';
 
 export { ToolResult, NativeTool };
@@ -4789,6 +5047,7 @@ const ALL_TOOLS = [
   SearchInFilesTool,
   SearchImagesTool,
   AskApprovalTool,
+  UpdateMemoryTool,
 ];
 
 export const TOOL_DEFINITIONS: NativeTool[] = ALL_TOOLS.map(t => t.TOOL_DEF);
@@ -5475,6 +5734,25 @@ function findMatch(fileContent: string, snippet: string): MatchResult {
   return { kind: 'fuzzy', start: matches[0], end: matches[0] + n - 1 };
 }
 
+// ─── Diff Builder ─────────────────────────────────────────────────────────────
+
+const MAX_DIFF_LINES = 25;
+
+function buildDiffBlock(search: string, replace: string): string {
+  const norm = (s: string) => s.replace(/\r\n/g, '\n').trimEnd();
+  const remLines = norm(search).split('\n');
+  const addLines = replace === '' ? [] : norm(replace).split('\n');
+
+  const remSection = remLines.length > MAX_DIFF_LINES
+    ? [...remLines.slice(0, MAX_DIFF_LINES).map(l => `- ${l}`), `- … (+${remLines.length - MAX_DIFF_LINES} lines not shown)`]
+    : remLines.map(l => `- ${l}`);
+  const addSection = addLines.length > MAX_DIFF_LINES
+    ? [...addLines.slice(0, MAX_DIFF_LINES).map(l => `+ ${l}`), `+ … (+${addLines.length - MAX_DIFF_LINES} lines not shown)`]
+    : addLines.map(l => `+ ${l}`);
+
+  return '```diff\n' + [...remSection, ...addSection].join('\n') + '\n```';
+}
+
 // ─── Disk-based fallback executor (used when VS Code native edit is unavailable) ─
 
 export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
@@ -5544,9 +5822,10 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   fs.writeFileSync(fp, updated, 'utf-8');
 
   const matchNote = match.kind === 'fuzzy' ? ` [fuzzy match, line ${startLine}]` : ` [exact match, line ${startLine}]`;
+  const diffBlock = buildDiffBlock(args.search_snippet, args.replace_snippet);
   return {
     success: true,
-    output: `search_and_replace: ${args.path} — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nBLOCK REMOVED:\n${removedPreview}\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
+    output: `${diffBlock}\n\n**${args.path}** — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nCambio aplicado en el editor. Revisa el Diff arriba y presiona Ctrl+S en el archivo para guardar.\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
   };
 }
 
@@ -5622,6 +5901,55 @@ export function searchRecursive(
       } catch { /* binary file */ }
     }
   }
+}
+
+```
+
+### 📁 FILE: `src\tools\UpdateMemoryTool\index.ts`
+```typescript
+import * as fs from 'fs';
+import * as path from 'path';
+import { NativeTool, ToolResult } from '../shared';
+
+const MEMORY_PATH = '.fluxo/memory.md';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'update_memory',
+    description:
+      'Create or overwrite the workspace memory file (.fluxo/memory.md). ' +
+      'Use this tool when the user explicitly asks you to "remember" a rule, preference, or convention, ' +
+      'OR when you and the user agree on an important architectural decision that should persist across sessions. ' +
+      'Always include the full desired memory content — this overwrites the file completely. ' +
+      'Read the existing memory first (if any) so you can merge old rules with new ones before writing.',
+    parameters: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description:
+            'Full markdown content for .fluxo/memory.md. Use headings (##) to organize rules by category. ' +
+            'Example sections: ## Coding Conventions, ## Architecture Decisions, ## User Preferences.',
+        },
+      },
+      required: ['content'],
+    },
+  },
+};
+
+export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  if (typeof args.content !== 'string' || args.content.trim() === '') {
+    return { success: false, output: 'CRITICAL ERROR: "content" is missing or empty.' };
+  }
+  const memoryFilePath = path.join(workspacePath, MEMORY_PATH);
+  fs.mkdirSync(path.dirname(memoryFilePath), { recursive: true });
+  fs.writeFileSync(memoryFilePath, args.content, 'utf-8');
+  const size = Buffer.byteLength(args.content, 'utf-8');
+  return {
+    success: true,
+    output: `Workspace memory updated: ${MEMORY_PATH} (${size} bytes). Rules will be injected into all agents on the next session.`,
+  };
 }
 
 ```

@@ -1,11 +1,321 @@
 [SYSTEM_MANIFEST]
 APP_NAME: fluxo-ai
-APP_VERSION: 7.8.2
+APP_VERSION: 7.9.4
 PART: 2
-GENERATED_AT: 2026-04-27T00:22:02.338Z
+GENERATED_AT: 2026-04-27T02:05:14.800Z
 [/SYSTEM_MANIFEST]
 
 [CODEBASE_START]
+
+================================================================================
+FILE PATH: out\tools\ReplaceLinesTool\index.js
+================================================================================
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.TOOL_DEF = void 0;
+exports.execute = execute;
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const shared_1 = require("../shared");
+exports.TOOL_DEF = {
+    type: 'function',
+    function: {
+        name: 'replace_lines',
+        description: `Replace an exact range of lines in a file using coordinate-based targeting.
+MANDATORY WORKFLOW: (1) Call read_file to get current line numbers. (2) Identify start_line and end_line for the block to replace. (3) Call replace_lines with new_content.
+CRITICAL: Line numbers shift after every edit — always call read_file again before a subsequent replace_lines on the same file.
+Use new_content = "" to delete the line range without inserting anything.
+NEVER skip read_file — guessing line numbers without reading first is PROHIBITED.
+TO INSERT NEW LINES WITHOUT DELETING: Set start_line and end_line to the exact same number (the line you want to target). In new_content, write the original text of that line, add a newline character (\\n), and then write your new code.`,
+        parameters: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'File path relative to workspace root.' },
+                start_line: { type: 'number', description: '1-based line number where the replacement begins (inclusive). Must come from a preceding read_file call.' },
+                end_line: { type: 'number', description: '1-based line number where the replacement ends (inclusive). Must be >= start_line.' },
+                new_content: { type: 'string', description: 'Text to insert in place of the removed lines. Pass an empty string "" to delete the range. Do NOT add a trailing newline — the engine handles line endings.' },
+                healing_mode: { type: 'boolean', description: 'Set to true ONLY if you are fixing a syntax error, unbalanced brace, or AST corruption. This temporarily disables the syntax and AST guards to allow surgical fixes on already broken files.' },
+            },
+            required: ['path', 'start_line', 'end_line', 'new_content'],
+        },
+    },
+};
+function execute(args, workspacePath) {
+    const fp = (0, shared_1.safePath)(workspacePath, args.path);
+    if (!fs.existsSync(fp)) {
+        return { success: false, output: `File not found: ${args.path}. Use list_dir to verify the path.` };
+    }
+    const startLine = Number(args.start_line);
+    const endLine = Number(args.end_line);
+    if (!Number.isInteger(startLine) || startLine < 1) {
+        return { success: false, output: `CRITICAL ERROR: start_line must be a positive integer >= 1 (received: ${args.start_line}). Call read_file first to get correct line numbers.` };
+    }
+    if (!Number.isInteger(endLine) || endLine < startLine) {
+        return { success: false, output: `CRITICAL ERROR: end_line (${endLine}) must be an integer >= start_line (${startLine}). Call read_file to verify current line numbers.` };
+    }
+    if (typeof args.new_content !== 'string') {
+        return { success: false, output: 'CRITICAL ERROR: new_content must be a string. Use an empty string "" to delete lines without inserting anything.' };
+    }
+    const original = fs.readFileSync(fp, 'utf-8');
+    // Black Box auto-backup — save original before any modification
+    try {
+        const backupDir = path.join(workspacePath, '.fluxo', 'backups');
+        fs.mkdirSync(backupDir, { recursive: true });
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const backupName = `${path.basename(fp)}_${timestamp}.bak`;
+        fs.writeFileSync(path.join(backupDir, backupName), original, 'utf-8');
+    }
+    catch {
+        // Backup failure is non-fatal — edit proceeds regardless
+    }
+    const lines = original.split('\n');
+    const totalLines = lines.length;
+    if (startLine > totalLines) {
+        return { success: false, output: `CRITICAL ERROR: start_line (${startLine}) exceeds file length (${totalLines} lines). Call read_file to get updated line numbers.` };
+    }
+    const clampedEnd = Math.min(endLine, totalLines);
+    const clampNote = endLine > totalLines ? ` (end_line ${endLine} clamped to file length ${totalLines})` : '';
+    // Split new_content into lines. Strip trailing \n to avoid phantom blank line.
+    const newLines = args.new_content === '' ? [] : args.new_content.replace(/\n$/, '').split('\n');
+    const resultLines = [
+        ...lines.slice(0, startLine - 1),
+        ...newLines,
+        ...lines.slice(clampedEnd),
+    ];
+    const updated = resultLines.join('\n');
+    if (updated.trim() === '' && original.trim() !== '') {
+        return { success: false, output: 'SAFETY ABORT: replacement would produce an empty file. Verify your line range and new_content.' };
+    }
+    const JS_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx'];
+    const fileExt = path.extname(fp).toLowerCase();
+    if (!args.healing_mode) {
+        // Deterministic brace-balance guard — runs before writing to disk
+        if (JS_EXTENSIONS.includes(fileExt)) {
+            const openCount = (updated.match(/\{/g) || []).length;
+            const closeCount = (updated.match(/\}/g) || []).length;
+            if (openCount !== closeCount) {
+                return {
+                    success: false,
+                    output: `CRITICAL SYNTAX ERROR: Tu 'new_content' tiene llaves desequilibradas (${openCount} "{" vs ${closeCount} "}"). El archivo NO fue modificado.\nANTI-PANIC DIRECTIVE: ESTÁ ESTRICTAMENTE PROHIBIDO enviar el mismo código de nuevo. Tu bloque es demasiado grande.\nNUEVA ESTRATEGIA OBLIGATORIA: Divide la inserción. Primero inserta solo el esqueleto vacío del componente o función. En la SIGUIENTE iteración, rellena el contenido. No intentes inyectar más de 20 líneas de lógica de una sola vez.\nSi estás intentando arreglar un archivo YA corrupto, usa "healing_mode: true" para desactivar los guards.`,
+                };
+            }
+        }
+        // JSX/AST integrity guard — prevents orphaned or crossed tags in React files
+        const JSX_EXTENSIONS_AST = ['.tsx', '.jsx'];
+        if (JSX_EXTENSIONS_AST.includes(fileExt)) {
+            const jsxBalance = (code) => {
+                const opens = (code.match(/<[A-Za-z]/g) || []).length;
+                const closes = (code.match(/<\/[A-Za-z]/g) || []).length;
+                const selfClose = (code.match(/\/>/g) || []).length;
+                return opens - closes - selfClose;
+            };
+            const origBalance = jsxBalance(original);
+            const updatedBalance = jsxBalance(updated);
+            if (origBalance !== updatedBalance) {
+                return {
+                    success: false,
+                    output: `CRITICAL SYNTAX ERROR: AST/JSX Corruption detected. Etiquetas HTML/JSX desbalanceadas. El archivo NO fue modificado. ESTRATEGIA: Selecciona el bloque JSX completo desde su apertura hasta su cierre.\nSi estás intentando arreglar un archivo YA corrupto, usa "healing_mode: true" para desactivar los guards.`,
+                };
+            }
+        }
+    }
+    const removedLines = lines.slice(startLine - 1, clampedEnd);
+    const linesRemoved = clampedEnd - startLine + 1;
+    const linesAdded = newLines.length;
+    // Anti-Mass-Deletion guard — blocks accidental truncation before the file is written
+    if (linesRemoved > 50 && linesAdded < linesRemoved * 0.2) {
+        return {
+            success: false,
+            output: `CRITICAL WARNING: ANTI-MASS-DELETION GUARD. Estás intentando eliminar ${linesRemoved} líneas pero solo insertando ${linesAdded}. ` +
+                `Esto suele ser un error de truncamiento del modelo. Si realmente deseas hacer este borrado masivo, ` +
+                `el motor requiere que lo dividas en bloques más pequeños o confirmes la acción. ` +
+                `(Nota: la herramienta falla, no escribe el archivo, y obliga al agente a reconsiderar).`,
+        };
+    }
+    fs.writeFileSync(fp, updated, 'utf-8');
+    // Build a compact preview of removed content for auto-verification
+    const removedText = removedLines.join('\n');
+    const removedPreview = removedText.length > 300
+        ? removedText.slice(0, 300) + '\n…(truncated)'
+        : removedText;
+    return {
+        success: true,
+        output: `replace_lines: ${args.path} — replaced lines ${startLine}–${clampedEnd} (${linesRemoved} line${linesRemoved !== 1 ? 's' : ''} → ${linesAdded} line${linesAdded !== 1 ? 's' : ''})${clampNote}.\n\nLINES REMOVED:\n${removedPreview}\n\nEDICIÓN EXITOSA — Verifica que las líneas eliminadas son las correctas. Si la tarea no está completa, llama la SIGUIENTE herramienta ahora.`,
+    };
+}
+//# sourceMappingURL=index.js.map
+
+
+================================================================================
+FILE PATH: out\tools\RunCommandTool\index.js
+================================================================================
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.TOOL_DEF = void 0;
+exports.execute = execute;
+const child_process_1 = require("child_process");
+exports.TOOL_DEF = {
+    type: 'function',
+    function: {
+        name: 'run_command',
+        description: 'Execute a shell command in the workspace. On Windows, always quote paths containing spaces.',
+        parameters: {
+            type: 'object',
+            properties: {
+                command: { type: 'string', description: 'The shell command to execute.' },
+            },
+            required: ['command'],
+        },
+    },
+};
+function execute(args, workspacePath) {
+    const cmd = args.command;
+    const timeout = args.timeout || 30000;
+    const BLOCKED = [/rm\s+-rf\s+[/\\~]/, /format\s+[a-z]:/, /del\s+\/[fs]/i, /mkfs/, /dd\s+if=/];
+    if (BLOCKED.some(b => b.test(cmd))) {
+        return { success: false, output: `Blocked dangerous command: ${cmd}` };
+    }
+    // Block persistent dev-server processes — they hang spawnSync and cause ETIMEDOUT loops.
+    const PERSISTENT_PATTERNS = [
+        /\bnpm\s+run\s+dev\b/,
+        /\bnpm\s+start\b/,
+        /\bnpm\s+run\s+start\b/,
+        /\byarn\s+dev\b/,
+        /\byarn\s+start\b/,
+        /\bpnpm\s+dev\b/,
+        /\bpnpm\s+start\b/,
+        /\bnodemon\b/,
+        /\bnext\s+dev\b/,
+        /\bvite\b(?!\s+build)/,
+        /\bwebpack\s+--watch\b/,
+        /\bng\s+serve\b/,
+    ];
+    if (PERSISTENT_PATTERNS.some(p => p.test(cmd))) {
+        return {
+            success: false,
+            output: `CRITICAL: Persistent servers like "npm run dev" hang the swarm. DIRECTIVE: Do not panic. Immediately use "npm run build" instead to verify your changes and continue the workflow.`,
+        };
+    }
+    const output = (0, child_process_1.execSync)(cmd, {
+        cwd: workspacePath,
+        encoding: 'utf-8',
+        timeout,
+        maxBuffer: 1024 * 1024 * 4,
+    });
+    return { success: true, output: output || '(command completed with no output)' };
+}
+//# sourceMappingURL=index.js.map
+
+
+================================================================================
+FILE PATH: out\tools\SearchImagesTool\index.js
+================================================================================
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.TOOL_DEF = void 0;
+exports.execute = execute;
+exports.TOOL_DEF = {
+    type: 'function',
+    function: {
+        name: 'search_images',
+        description: 'Get free stock image URLs for a given subject from Lorem Picsum.',
+        parameters: {
+            type: 'object',
+            properties: {
+                query: { type: 'string', description: 'Subject or keywords for the image search.' },
+                count: { type: 'number', description: 'Number of URLs to return (1-10, default 5).' },
+            },
+            required: ['query'],
+        },
+    },
+};
+function execute(args, _workspacePath) {
+    const query = encodeURIComponent(String(args.query || 'nature'));
+    const count = Math.min(Math.max(Number(args.count) || 5, 1), 10);
+    const urls = [];
+    for (let i = 1; i <= count; i++) {
+        urls.push(`https://picsum.photos/seed/${query}${i}/1400/900`);
+    }
+    return {
+        success: true,
+        output: [
+            `Free image URLs for "${args.query}":`,
+            ...urls.map((u, i) => `${i + 1}. ${u}`),
+            '',
+            'Usage: <img src="URL_HERE" alt="description" />',
+        ].join('\n'),
+    };
+}
+//# sourceMappingURL=index.js.map
+
+
+================================================================================
+FILE PATH: out\tools\SearchInFilesTool\index.js
+================================================================================
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.TOOL_DEF = void 0;
+exports.execute = execute;
+const shared_1 = require("../shared");
+exports.TOOL_DEF = {
+    type: 'function',
+    function: {
+        name: 'search_in_files',
+        description: 'Search for a text pattern across workspace files. Returns matching file:line results.',
+        parameters: {
+            type: 'object',
+            properties: {
+                pattern: { type: 'string', description: 'The text pattern to search for (case-insensitive).' },
+                directory: { type: 'string', description: 'Subdirectory to restrict the search. Defaults to workspace root.' },
+            },
+            required: ['pattern'],
+        },
+    },
+};
+function execute(args, workspacePath) {
+    const searchRoot = (0, shared_1.safePath)(workspacePath, args.directory || '.');
+    const results = [];
+    (0, shared_1.searchRecursive)(searchRoot, workspacePath, String(args.pattern || ''), results, 0);
+    if (results.length === 0) {
+        return { success: true, output: 'No matches found.' };
+    }
+    return { success: true, output: results.slice(0, 60).join('\n') };
+}
+//# sourceMappingURL=index.js.map
+
 
 ================================================================================
 FILE PATH: out\tools\SearchReplaceTool\index.js
@@ -125,6 +435,20 @@ function findMatch(fileContent, snippet) {
     }
     return { kind: 'fuzzy', start: matches[0], end: matches[0] + n - 1 };
 }
+// ─── Diff Builder ─────────────────────────────────────────────────────────────
+const MAX_DIFF_LINES = 25;
+function buildDiffBlock(search, replace) {
+    const norm = (s) => s.replace(/\r\n/g, '\n').trimEnd();
+    const remLines = norm(search).split('\n');
+    const addLines = replace === '' ? [] : norm(replace).split('\n');
+    const remSection = remLines.length > MAX_DIFF_LINES
+        ? [...remLines.slice(0, MAX_DIFF_LINES).map(l => `- ${l}`), `- … (+${remLines.length - MAX_DIFF_LINES} lines not shown)`]
+        : remLines.map(l => `- ${l}`);
+    const addSection = addLines.length > MAX_DIFF_LINES
+        ? [...addLines.slice(0, MAX_DIFF_LINES).map(l => `+ ${l}`), `+ … (+${addLines.length - MAX_DIFF_LINES} lines not shown)`]
+        : addLines.map(l => `+ ${l}`);
+    return '```diff\n' + [...remSection, ...addSection].join('\n') + '\n```';
+}
 // ─── Disk-based fallback executor (used when VS Code native edit is unavailable) ─
 function execute(args, workspacePath) {
     const fp = (0, shared_1.safePath)(workspacePath, args.path);
@@ -187,9 +511,10 @@ function execute(args, workspacePath) {
     catch { /* non-fatal */ }
     fs.writeFileSync(fp, updated, 'utf-8');
     const matchNote = match.kind === 'fuzzy' ? ` [fuzzy match, line ${startLine}]` : ` [exact match, line ${startLine}]`;
+    const diffBlock = buildDiffBlock(args.search_snippet, args.replace_snippet);
     return {
         success: true,
-        output: `search_and_replace: ${args.path} — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nBLOCK REMOVED:\n${removedPreview}\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
+        output: `${diffBlock}\n\n**${args.path}** — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nCambio aplicado en el editor. Revisa el Diff arriba y presiona Ctrl+S en el archivo para guardar.\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
     };
 }
 //# sourceMappingURL=index.js.map
@@ -290,13 +615,94 @@ function searchRecursive(dir, root, pattern, results, depth) {
 
 
 ================================================================================
+FILE PATH: out\tools\UpdateMemoryTool\index.js
+================================================================================
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.TOOL_DEF = void 0;
+exports.execute = execute;
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const MEMORY_PATH = '.fluxo/memory.md';
+exports.TOOL_DEF = {
+    type: 'function',
+    function: {
+        name: 'update_memory',
+        description: 'Create or overwrite the workspace memory file (.fluxo/memory.md). ' +
+            'Use this tool when the user explicitly asks you to "remember" a rule, preference, or convention, ' +
+            'OR when you and the user agree on an important architectural decision that should persist across sessions. ' +
+            'Always include the full desired memory content — this overwrites the file completely. ' +
+            'Read the existing memory first (if any) so you can merge old rules with new ones before writing.',
+        parameters: {
+            type: 'object',
+            properties: {
+                content: {
+                    type: 'string',
+                    description: 'Full markdown content for .fluxo/memory.md. Use headings (##) to organize rules by category. ' +
+                        'Example sections: ## Coding Conventions, ## Architecture Decisions, ## User Preferences.',
+                },
+            },
+            required: ['content'],
+        },
+    },
+};
+function execute(args, workspacePath) {
+    if (typeof args.content !== 'string' || args.content.trim() === '') {
+        return { success: false, output: 'CRITICAL ERROR: "content" is missing or empty.' };
+    }
+    const memoryFilePath = path.join(workspacePath, MEMORY_PATH);
+    fs.mkdirSync(path.dirname(memoryFilePath), { recursive: true });
+    fs.writeFileSync(memoryFilePath, args.content, 'utf-8');
+    const size = Buffer.byteLength(args.content, 'utf-8');
+    return {
+        success: true,
+        output: `Workspace memory updated: ${MEMORY_PATH} (${size} bytes). Rules will be injected into all agents on the next session.`,
+    };
+}
+//# sourceMappingURL=index.js.map
+
+
+================================================================================
 FILE PATH: package.json
 ================================================================================
 {
   "name": "fluxo-ai",
   "displayName": "Fluxo AI — Agent Swarm",
   "description": "Autonomous AI coding agent powered by OpenRouter. Writes files, runs commands, routes to specialized agents (Coder, Designer, Dashboard, Payments).",
-  "version": "7.8.2",
+  "version": "7.9.4",
   "publisher": "fluxotechai",
   "repository": { "type": "git", "url": "https://github.com/fluxotechai/fluxo-ai" },
   "icon": "media/icon.png",
@@ -702,8 +1108,33 @@ export async function* runAgentLoop(
     .slice(-12)
     .filter(m => m.role === 'user' || m.role === 'assistant');
 
+  // Workspace Memory injection — read .fluxo/memory.md once per session
+  let workspaceMemoryBlock = '';
+  if (workspacePath) {
+    const memoryFilePath = path.join(workspacePath, '.fluxo', 'memory.md');
+    try {
+      if (fs.existsSync(memoryFilePath)) {
+        const memoryContent = fs.readFileSync(memoryFilePath, 'utf-8').trim();
+        if (memoryContent) {
+          workspaceMemoryBlock =
+            '\n\n--- WORKSPACE MEMORY & RULES ---\n' +
+            'The following rules and conventions were set by the user for this workspace. ' +
+            'They are BINDING — apply them automatically on every task without being asked:\n\n' +
+            memoryContent +
+            '\n--- END OF WORKSPACE MEMORY ---';
+          debugLog(workspacePath, `Workspace memory loaded: ${memoryContent.length} chars`);
+        }
+      }
+    } catch { /* memory file unreadable — proceed without it */ }
+  }
+
+  const baseSystemPrompt = buildAgentSystemPrompt(agentId);
+  const systemPrompt = workspaceMemoryBlock
+    ? baseSystemPrompt + workspaceMemoryBlock
+    : baseSystemPrompt;
+
   const messages: ChatMessage[] = [
-    { role: 'system', content: buildAgentSystemPrompt(agentId) },
+    { role: 'system', content: systemPrompt },
     ...prunedHistory,
     { role: 'user', content: userMessage },
   ];
@@ -1447,6 +1878,8 @@ RULE 2 (STRICT IMPORTS): If you call an external function, hook, or utility (e.g
 
 RULE 3 (NO PLACEHOLDERS): It is STRICTLY PROHIBITED to use hardcoded URLs (e.g., "yourwebsite.com", "example.com", "localhost:3000"), fake emails, or placeholder data in any deliverable code. Always use window.location.origin for base URLs and dynamic routing for paths. If a real value is unknown, insert a clearly-marked TODO comment and tell the user explicitly.
 
+RULE 4 (MODAL COLLISION AVOIDANCE): Before modifying the opening logic of any Modal, Dialog, Sheet, or Drawer component, you MUST first call search_in_files with the component name to verify its full render chain and who imports it. It is STRICTLY PROHIBITED to nest modals (Modal-in-Modal inception). If the target component already lives inside a modal, use a Multi-Step pattern (internal state changes: e.g., a 'step' variable or conditional sections within the same modal) instead of opening a new modal on top.
+
 GIT AUTONOMY:
 - If 'git pull' fails with "no tracking information", use 'git remote -v' to find the remote (e.g., origin) and use 'git pull origin master' (or the current branch).
 - Use 'git status' and 'git checkout' to restore missing files.
@@ -1576,7 +2009,7 @@ ${WEB_ARCHITECTURE_SOP}`,
     emoji: '🧭',
     color: '#8b5cf6',
     description: 'Orchestration, complex planning, and emergency debugging',
-    tools: ['read_file', 'write_file', 'search_and_replace', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval'],
+    tools: ['read_file', 'write_file', 'search_and_replace', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'update_memory'],
     keywords: [
       'manager', 'gestiona', 'organiza', 'planifica', 'proyecto',
       'architect', 'arquitecto', 'debug', 'investiga', 'loop',
@@ -1711,6 +2144,8 @@ Watch for these CRITICAL ERRORS:
 6. REDUNDANCY CHECK: Compare the current tool calls with the "PRIOR COMPLETED TOOLS" section. If the agent is attempting to re-declare a hook (useParams, useState, useEffect, useRef, useContext, useMemo, useCallback, etc.) or a variable (const, let, var declarations) that was already successfully injected in a previous turn of this same session, output:
    ERROR: REDUNDANT_DECLARATION — '[identifier]' was already declared in a prior turn. Re-declaring it will cause a Runtime Crash (duplicate identifier). The agent must skip this injection and proceed to the next pending step.
    SCOPE: ONLY check the actual code logic inside "new_content". DO NOT flag tool names like "replace_block" or "read_file" as redundant declarations. Ignore tool names completely in this check.
+7. MODAL COLLISION: Agent's tool call modifies the open/toggle/trigger logic of a Modal, Dialog, Sheet, or Drawer component, WITHOUT a prior search_in_files call that verified the component's full render chain and confirmed it is NOT already nested inside another modal.
+   When detected: "ERROR: Modal Collision Risk — '{ComponentName}' may already render inside a modal. Agent must call search_in_files('{ComponentName}') to verify the full render chain before editing modal-open logic. If nesting is confirmed, a Multi-Step (internal state) pattern is required instead of opening a new modal."
 
 NOTE: Ghost Execution, Sentinel/Build blocking, and brace-balance validation are now handled deterministically by the engine and ReplaceLinesTool — do NOT attempt to count characters or flag syntax errors here.
 
@@ -2088,10 +2523,13 @@ async function _handleMessage(msg: any, context: vscode.ExtensionContext): Promi
       break;
 
     case 'openFile':
+    case 'open_file': {
       if (msg.path) {
         const folders = vscode.workspace.workspaceFolders;
         if (folders?.length) {
-          const fullPath = path.join(folders[0].uri.fsPath, msg.path);
+          const fullPath = path.isAbsolute(msg.path)
+            ? msg.path
+            : path.join(folders[0].uri.fsPath, msg.path);
           try {
             const doc = await vscode.workspace.openTextDocument(fullPath);
             await vscode.window.showTextDocument(doc);
@@ -2100,6 +2538,11 @@ async function _handleMessage(msg: any, context: vscode.ExtensionContext): Promi
           }
         }
       }
+      break;
+    }
+
+    case 'saveModel':
+      if (msg.model) { context.globalState.update('fluxo.selectedModel', msg.model); }
       break;
 
     case 'openSettings':
@@ -2392,6 +2835,20 @@ function fuzzyFindOffsets(
   return { startIndex, length };
 }
 
+const MAX_DIFF_LINES = 25;
+function buildNativeDiffBlock(search: string, replace: string): string {
+  const norm = (s: string) => s.replace(/\r\n/g, '\n').trimEnd();
+  const remLines = norm(search).split('\n');
+  const addLines = replace === '' ? [] : norm(replace).split('\n');
+  const remSection = remLines.length > MAX_DIFF_LINES
+    ? [...remLines.slice(0, MAX_DIFF_LINES).map(l => `- ${l}`), `- … (+${remLines.length - MAX_DIFF_LINES} lines not shown)`]
+    : remLines.map(l => `- ${l}`);
+  const addSection = addLines.length > MAX_DIFF_LINES
+    ? [...addLines.slice(0, MAX_DIFF_LINES).map(l => `+ ${l}`), `+ … (+${addLines.length - MAX_DIFF_LINES} lines not shown)`]
+    : addLines.map(l => `+ ${l}`);
+  return '```diff\n' + [...remSection, ...addSection].join('\n') + '\n```';
+}
+
 async function applyNativeEdit(
   relPath: string,
   searchSnippet: string,
@@ -2439,12 +2896,10 @@ async function applyNativeEdit(
     return { success: false, output: `VS Code WorkspaceEdit failed for ${relPath}. The file may be read-only.` };
   }
 
+  const diffBlock = buildNativeDiffBlock(searchSnippet, replaceSnippet);
   return {
     success: true,
-    output: `search_and_replace: ${relPath} — edit applied in VS Code editor (file is unsaved).\n\n` +
-            `EDIT APPLIED. The change is visible in the editor tab marked with a dot (●). ` +
-            `Tell the user: "Cambio aplicado en el editor. Revísalo y presiona Ctrl+S para guardar, o dime si necesitas correcciones." ` +
-            `Do NOT apply further edits to this file until the user confirms.`,
+    output: `${diffBlock}\n\n**${relPath}** — edit applied in VS Code editor (file is unsaved).\n\nCambio aplicado en el editor. Revisa el Diff arriba y presiona Ctrl+S en el archivo para guardar.\n\nDo NOT apply further edits to this file until the user confirms.`,
   };
 }
 
@@ -2479,7 +2934,7 @@ function _buildHtml(webview: vscode.Webview): string {
         <div class="logo-dot"></div>
       </div>
       <span class="header-title">Fluxo AI</span>
-      <span class="header-subtitle">v7.8.2</span>
+      <span class="header-subtitle">v7.9.4</span>
       <span id="agent-badge" class="agent-badge hidden"></span>
     </div>
     <div class="header-right">
@@ -2638,7 +3093,7 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  console.log('[Fluxo AI] v7.8.2 — The Contextual Grip release');
+  console.log('[Fluxo AI] v7.9.4 — Visual State Persistence & Sherlock Rules release');
 }
 
 export function deactivate(): void {
@@ -3093,6 +3548,7 @@ import * as SearchInFilesTool from './SearchInFilesTool';
 import * as SearchImagesTool  from './SearchImagesTool';
 import * as AskApprovalTool    from './AskApprovalTool';
 import * as SearchReplaceTool  from './SearchReplaceTool';
+import * as UpdateMemoryTool   from './UpdateMemoryTool';
 import { ToolResult, NativeTool } from './shared';
 
 export { ToolResult, NativeTool };
@@ -3114,6 +3570,7 @@ const ALL_TOOLS = [
   SearchInFilesTool,
   SearchImagesTool,
   AskApprovalTool,
+  UpdateMemoryTool,
 ];
 
 export const TOOL_DEFINITIONS: NativeTool[] = ALL_TOOLS.map(t => t.TOOL_DEF);
@@ -3808,6 +4265,25 @@ function findMatch(fileContent: string, snippet: string): MatchResult {
   return { kind: 'fuzzy', start: matches[0], end: matches[0] + n - 1 };
 }
 
+// ─── Diff Builder ─────────────────────────────────────────────────────────────
+
+const MAX_DIFF_LINES = 25;
+
+function buildDiffBlock(search: string, replace: string): string {
+  const norm = (s: string) => s.replace(/\r\n/g, '\n').trimEnd();
+  const remLines = norm(search).split('\n');
+  const addLines = replace === '' ? [] : norm(replace).split('\n');
+
+  const remSection = remLines.length > MAX_DIFF_LINES
+    ? [...remLines.slice(0, MAX_DIFF_LINES).map(l => `- ${l}`), `- … (+${remLines.length - MAX_DIFF_LINES} lines not shown)`]
+    : remLines.map(l => `- ${l}`);
+  const addSection = addLines.length > MAX_DIFF_LINES
+    ? [...addLines.slice(0, MAX_DIFF_LINES).map(l => `+ ${l}`), `+ … (+${addLines.length - MAX_DIFF_LINES} lines not shown)`]
+    : addLines.map(l => `+ ${l}`);
+
+  return '```diff\n' + [...remSection, ...addSection].join('\n') + '\n```';
+}
+
 // ─── Disk-based fallback executor (used when VS Code native edit is unavailable) ─
 
 export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
@@ -3877,9 +4353,10 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   fs.writeFileSync(fp, updated, 'utf-8');
 
   const matchNote = match.kind === 'fuzzy' ? ` [fuzzy match, line ${startLine}]` : ` [exact match, line ${startLine}]`;
+  const diffBlock = buildDiffBlock(args.search_snippet, args.replace_snippet);
   return {
     success: true,
-    output: `search_and_replace: ${args.path} — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nBLOCK REMOVED:\n${removedPreview}\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
+    output: `${diffBlock}\n\n**${args.path}** — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nCambio aplicado en el editor. Revisa el Diff arriba y presiona Ctrl+S en el archivo para guardar.\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
   };
 }
 
@@ -3956,6 +4433,56 @@ export function searchRecursive(
       } catch { /* binary file */ }
     }
   }
+}
+
+
+
+================================================================================
+FILE PATH: src\tools\UpdateMemoryTool\index.ts
+================================================================================
+import * as fs from 'fs';
+import * as path from 'path';
+import { NativeTool, ToolResult } from '../shared';
+
+const MEMORY_PATH = '.fluxo/memory.md';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'update_memory',
+    description:
+      'Create or overwrite the workspace memory file (.fluxo/memory.md). ' +
+      'Use this tool when the user explicitly asks you to "remember" a rule, preference, or convention, ' +
+      'OR when you and the user agree on an important architectural decision that should persist across sessions. ' +
+      'Always include the full desired memory content — this overwrites the file completely. ' +
+      'Read the existing memory first (if any) so you can merge old rules with new ones before writing.',
+    parameters: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description:
+            'Full markdown content for .fluxo/memory.md. Use headings (##) to organize rules by category. ' +
+            'Example sections: ## Coding Conventions, ## Architecture Decisions, ## User Preferences.',
+        },
+      },
+      required: ['content'],
+    },
+  },
+};
+
+export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  if (typeof args.content !== 'string' || args.content.trim() === '') {
+    return { success: false, output: 'CRITICAL ERROR: "content" is missing or empty.' };
+  }
+  const memoryFilePath = path.join(workspacePath, MEMORY_PATH);
+  fs.mkdirSync(path.dirname(memoryFilePath), { recursive: true });
+  fs.writeFileSync(memoryFilePath, args.content, 'utf-8');
+  const size = Buffer.byteLength(args.content, 'utf-8');
+  return {
+    success: true,
+    output: `Workspace memory updated: ${MEMORY_PATH} (${size} bytes). Rules will be injected into all agents on the next session.`,
+  };
 }
 
 

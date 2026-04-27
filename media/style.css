@@ -694,3 +694,32 @@ body { display: flex; flex-direction: column; height: 100vh; }
   color: #f87171; font-weight: 700;
   user-select: none;
 }
+
+/* ─── Magic File Links ──────────────────────────────────────────────────────── */
+.file-link-btn {
+  display: inline;
+  background: none;
+  border: none;
+  padding: 0 2px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  color: #60a5fa;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: rgba(96, 165, 250, 0.5);
+  cursor: pointer;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
+}
+.file-link-btn:hover {
+  color: #93c5fd;
+  background: rgba(96, 165, 250, 0.1);
+  text-decoration-color: #93c5fd;
+}
+
+/* ─── Chat Diff Rendering ────────────────────────────────────────────────────── */
+.diff-add  { display: block; background: var(--diff-add-bg); color: var(--diff-add-text); white-space: pre; padding: 0 8px; margin: 0; }
+.diff-remove { display: block; background: var(--diff-rem-bg); color: var(--diff-rem-text); white-space: pre; padding: 0 8px; margin: 0; }
+.diff-ctx  { display: block; color: inherit; white-space: pre; padding: 0 8px; margin: 0; opacity: 0.65; }
+.tool-diff-block { font-family: var(--font-mono); font-size: 11px; line-height: 1.5; background: var(--code-bg); border-radius: 6px; overflow: hidden; margin: 6px 0; padding: 4px 0; }

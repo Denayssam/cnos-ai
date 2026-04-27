@@ -107,8 +107,32 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
     const prunedHistory = conversationHistory
         .slice(-12)
         .filter(m => m.role === 'user' || m.role === 'assistant');
+    // Workspace Memory injection — read .fluxo/memory.md once per session
+    let workspaceMemoryBlock = '';
+    if (workspacePath) {
+        const memoryFilePath = path.join(workspacePath, '.fluxo', 'memory.md');
+        try {
+            if (fs.existsSync(memoryFilePath)) {
+                const memoryContent = fs.readFileSync(memoryFilePath, 'utf-8').trim();
+                if (memoryContent) {
+                    workspaceMemoryBlock =
+                        '\n\n--- WORKSPACE MEMORY & RULES ---\n' +
+                            'The following rules and conventions were set by the user for this workspace. ' +
+                            'They are BINDING — apply them automatically on every task without being asked:\n\n' +
+                            memoryContent +
+                            '\n--- END OF WORKSPACE MEMORY ---';
+                    debugLog(workspacePath, `Workspace memory loaded: ${memoryContent.length} chars`);
+                }
+            }
+        }
+        catch { /* memory file unreadable — proceed without it */ }
+    }
+    const baseSystemPrompt = (0, agents_1.buildAgentSystemPrompt)(agentId);
+    const systemPrompt = workspaceMemoryBlock
+        ? baseSystemPrompt + workspaceMemoryBlock
+        : baseSystemPrompt;
     const messages = [
-        { role: 'system', content: (0, agents_1.buildAgentSystemPrompt)(agentId) },
+        { role: 'system', content: systemPrompt },
         ...prunedHistory,
         { role: 'user', content: userMessage },
     ];
@@ -184,9 +208,21 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 continue;
             }
             // ── PLAN VERIFICATION SHIELD ─────────────────────────────────────────────
-            // Allow clean exit if the agent explicitly confirmed plan completion.
-            if (textContent && /\bALL\s+STEPS\s+COMPLETE\b/i.test(textContent)) {
-                debugLog(workspacePath, 'Plan Verification: ALL STEPS COMPLETE confirmed — exiting loop');
+            // Allow clean exit if the agent explicitly confirmed plan completion
+            // OR delivered its Orchestrator's Report (both are valid completion signals).
+            if (textContent && (/\bALL\s+STEPS\s+COMPLETE\b/i.test(textContent) ||
+                /ORCHESTRATOR['']S\s+REPORT/i.test(textContent))) {
+                // Security guard: completion signals are only valid after real work was done.
+                // An agent that hallucinates the report phrase on turn 1 (zero tool calls) is blocked.
+                if (toolCallHistory.length === 0) {
+                    debugLog(workspacePath, 'Plan Verification: completion signal with zero tool calls — intercepting hallucination');
+                    messages.push({
+                        role: 'user',
+                        content: 'SYSTEM: No puedes emitir el reporte final sin haber ejecutado tareas. Usa herramientas para completar la misión.',
+                    });
+                    continue;
+                }
+                debugLog(workspacePath, 'Plan Verification: completion signal confirmed — exiting loop');
                 yield { type: 'streamEnd' };
                 return;
             }
@@ -218,7 +254,6 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 /\btarea\s+completada\b/i,
                 /\btask\s+completed\b/i,
                 /✅.*(completad|tarea|task\s+done|updated|edited|modificado|actualizado)/i,
-                /ORCHESTRATOR'S REPORT/i,
             ];
             if (textContent && GHOST_SIGNALS.some(re => re.test(textContent)) && toolCallHistory.length === 0) {
                 consecutiveGhostCount++;

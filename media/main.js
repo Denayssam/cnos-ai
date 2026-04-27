@@ -1,5 +1,5 @@
 /* global acquireVsCodeApi */
-// ─── Fluxo AI v7.8.2 — The Contextual Grip ───────────────────────────────────
+// ─── Fluxo AI v7.9.8 — Auto-Save & Git Safety Net ───────────────────────────
 (function () {
   'use strict';
 
@@ -27,14 +27,17 @@
 
   // ─── State ─────────────────────────────────────────────────────────────────
   let isStreaming = false;
+  let isUserScrolling = false;   // true when user scrolled up to read; suppresses auto-scroll
   let currentBubble = null;
-  let currentStreamText = '';
+  let currentStreamText = '';    // full accumulated text for history
+  let currentBubbleText = '';    // text for the currently active visual bubble
   let currentResponseWrapper = null;
   let currentToolActivityItems = null;
   let hasToolCalls = false;
   let agents = [];
   let currentAgentId = 'coder';
   let chatHistory = [];
+  let visualEvents = [];         // ordered visual log: persisted via vscode.setState for reload recovery
   const CONTEXT_LIMIT = 120000;
 
   // ─── Init ──────────────────────────────────────────────────────────────────
@@ -106,17 +109,36 @@
     else if (data.model) { modelSelect.value = data.model; }
     apiKeyWarning.classList.toggle('hidden', !!data.hasApiKey);
     if (data.agents) { agents = data.agents; buildAgentPills(); }
-    if (data.history && data.history.length) {
-      chatHistory = data.history;
-      renderHistory();
-      updateTokenWheel();
-    } else {
-      renderWelcome();
+
+    // Try to restore full visual state (tool cards + messages) from webview storage first.
+    // vscode.setState persists across Developer: Reload Window via the WebviewPanelSerializer.
+    let restoredFromState = false;
+    try {
+      const saved = vscode.getState();
+      if (saved && saved.visualEvents && saved.visualEvents.length) {
+        visualEvents = saved.visualEvents;
+        chatHistory = saved.chatHistory || [];
+        renderVisualHistory();
+        updateTokenWheel();
+        restoredFromState = true;
+      }
+    } catch {}
+
+    if (!restoredFromState) {
+      if (data.history && data.history.length) {
+        chatHistory = data.history;
+        renderHistory();
+        updateTokenWheel();
+      } else {
+        renderWelcome();
+      }
     }
   }
 
   function handleHistorySync(data) {
     chatHistory = data.history || [];
+    visualEvents = []; // compression replaces history — old tool cards are stale
+    saveState();
     renderHistory();
     updateTokenWheel();
     hideStatus(); // clear any pending status (e.g. "Compressing context…")
@@ -141,6 +163,89 @@
       }
       messagesEl.appendChild(el);
       attachCodeListeners(el);
+      attachFileLinkListeners(el);
+    });
+    scrollToBottom();
+  }
+
+  // ─── Visual State Persistence ────────────────────────────────────────────────
+
+  function saveState() {
+    try { vscode.setState({ visualEvents, chatHistory }); } catch {}
+  }
+
+  function renderVisualHistory() {
+    messagesEl.innerHTML = '';
+    visualEvents.forEach(evt => {
+      if (evt.type === 'user') {
+        const el = document.createElement('div');
+        el.className = 'message user';
+        el.innerHTML = '<div class="message-role">You</div>';
+        el.appendChild(createUserBubble(evt.content));
+        messagesEl.appendChild(el);
+
+      } else if (evt.type === 'assistant') {
+        const el = document.createElement('div');
+        el.className = 'message assistant';
+        el.innerHTML = '<div class="message-role">Fluxo</div>';
+        const bbl = document.createElement('div');
+        bbl.className = 'message-bubble';
+        bbl.innerHTML = renderMarkdown(evt.content);
+        el.appendChild(bbl);
+        messagesEl.appendChild(el);
+        attachCodeListeners(el);
+        attachFileLinkListeners(el);
+
+      } else if (evt.type === 'agentDivider') {
+        const div = document.createElement('div');
+        div.className = 'agent-divider';
+        div.style.setProperty('--agent-color', evt.color);
+        div.innerHTML = `<span>${evt.emoji} ${escapeHtml(evt.agentName)}</span>`;
+        messagesEl.appendChild(div);
+
+      } else if (evt.type === 'tool') {
+        const statusIcon = evt.status === 'success' ? '✅' : evt.status === 'failed' ? '❌' : '⟳';
+        const dur = evt.duration ? parseFloat(evt.duration) : 0;
+        const timeStr = evt.duration ? (dur < 0.1 ? `${Math.round(dur * 1000)}ms` : `${evt.duration}s`) : '';
+        const statusText = evt.status === 'pending' ? 'Working…' : `Worked (${timeStr})`;
+        const el = document.createElement('div');
+        el.className = `tool-call-card ${evt.status === 'success' ? 'success' : evt.status === 'failed' ? 'failed' : 'pending'} collapsed`;
+        el.innerHTML = `
+          <div class="tool-header">
+            <span class="tool-name">${escapeHtml(evt.title || evt.name)}</span>
+            <span class="tool-status-text">${statusText}</span>
+            <span class="tool-status-icon">${statusIcon}</span>
+          </div>
+          <div class="tool-details"></div>
+        `;
+        const details = el.querySelector('.tool-details');
+        if (evt.diffLines && evt.diffLines.length) {
+          const diffEl = document.createElement('pre');
+          diffEl.className = 'tool-diff-block';
+          evt.diffLines.forEach(line => {
+            const span = document.createElement('span');
+            span.className = (line.startsWith('+ ') || line === '+') ? 'diff-add'
+                           : (line.startsWith('- ') || line === '-') ? 'diff-remove'
+                           : 'diff-ctx';
+            span.textContent = line + '\n';
+            diffEl.appendChild(span);
+          });
+          details.appendChild(diffEl);
+          if (evt.restOutput) {
+            const restEl = document.createElement('div');
+            restEl.className = 'tool-output';
+            restEl.textContent = evt.restOutput;
+            details.appendChild(restEl);
+          }
+        } else if (evt.restOutput) {
+          const outEl = document.createElement('div');
+          outEl.className = 'tool-output';
+          outEl.textContent = evt.restOutput;
+          details.appendChild(outEl);
+        }
+        el.querySelector('.tool-header').addEventListener('click', () => el.classList.toggle('collapsed'));
+        messagesEl.appendChild(el);
+      }
     });
     scrollToBottom();
   }
@@ -162,12 +267,13 @@
 
   // ─── UI: Context Bar ────────────────────────────────────────────────────────
   const FILE_TOOL_ACTIONS = {
-    read_file:     'leyendo',
-    write_file:    'escribiendo',
-    replace_lines: 'editando',
-    replace_block: 'editando',
-    edit_file:     'editando',
-    delete_file:   'eliminando',
+    read_file:          'leyendo',
+    write_file:         'escribiendo',
+    search_and_replace: 'editando',
+    replace_lines:      'editando',
+    replace_block:      'editando',
+    edit_file:          'editando',
+    delete_file:        'eliminando',
   };
 
   function setContextFile(toolName, filePath) {
@@ -203,6 +309,8 @@
   function handleStreamStart() {
     isStreaming = true;
     currentStreamText = '';
+    currentBubbleText = '';
+    currentBubble = null;
     hasToolCalls = false;
     sendBtn.disabled = true;
     cancelBtn.classList.remove('hidden');
@@ -210,94 +318,77 @@
     document.querySelector('.input-wrapper')?.classList.add('swarm-active');
     messagesEl.querySelector('.welcome-card')?.remove();
 
-    // Build response wrapper: collapsible tool activity on top, text bubble below
+    // Sequential wrapper — tools and text bubbles are appended in arrival order
     currentResponseWrapper = document.createElement('div');
     currentResponseWrapper.className = 'response-wrapper';
-    currentResponseWrapper.innerHTML = `
-      <details class="tool-activity" open>
-        <summary class="tool-activity-summary">
-          <span class="tool-activity-icon">⟳</span>
-          <span class="tool-activity-label">Working…</span>
-        </summary>
-        <div class="tool-activity-items" id="current-tool-activity-items"></div>
-      </details>
-      <div class="message assistant">
-        <div class="message-role">Fluxo</div>
-        <div class="message-bubble" id="streaming-bubble"></div>
-      </div>
-    `;
     messagesEl.appendChild(currentResponseWrapper);
-    currentBubble = currentResponseWrapper.querySelector('#streaming-bubble');
-    currentToolActivityItems = currentResponseWrapper.querySelector('#current-tool-activity-items');
+    currentToolActivityItems = currentResponseWrapper;
     showStatus('Working…', true);
     scrollToBottom();
   }
 
   function handleStreamChunk(text) {
     document.getElementById('thinking-bubble')?.remove();
-    if (currentBubble) {
-      currentStreamText += text;
-      currentBubble.innerHTML = renderMarkdown(currentStreamText) + '<span class="streaming-cursor"></span>';
-      scrollToBottom();
+    currentStreamText += text;
+
+    if (!currentBubble) {
+      // Lazily create a text bubble in the sequential flow (after any tool cards)
+      currentBubbleText = '';
+      const msgEl = document.createElement('div');
+      msgEl.className = 'message assistant';
+      msgEl.innerHTML = '<div class="message-role">Fluxo</div><div class="message-bubble" id="streaming-bubble"></div>';
+      (currentResponseWrapper || messagesEl).appendChild(msgEl);
+      currentBubble = msgEl.querySelector('#streaming-bubble');
     }
+
+    currentBubbleText += text;
+    currentBubble.innerHTML = renderMarkdown(currentBubbleText) + '<span class="streaming-cursor"></span>';
+    scrollToBottom();
   }
 
   function handleStreamEnd() {
     isStreaming = false;
+    isUserScrolling = false;  // reset: response complete, snap to bottom
     document.getElementById('thinking-bubble')?.remove();
 
     if (currentBubble) {
-      currentBubble.innerHTML = renderMarkdown(currentStreamText);
+      currentBubble.innerHTML = renderMarkdown(currentBubbleText);
       attachCodeListeners(currentBubble);
+      attachFileLinkListeners(currentBubble);
       currentBubble.removeAttribute('id');
       chatHistory.push({ role: 'assistant', content: currentStreamText });
+      visualEvents.push({ type: 'assistant', content: currentStreamText });
+      saveState();
       updateTokenWheel();
     }
 
-    // Finalize tool activity section
-    if (currentResponseWrapper) {
-      const details = currentResponseWrapper.querySelector('.tool-activity');
-      if (details) {
-        if (hasToolCalls) {
-          details.open = false;
-          const count = currentToolActivityItems
-            ? currentToolActivityItems.querySelectorAll('.tool-call-card').length : 0;
-          const lbl = currentResponseWrapper.querySelector('.tool-activity-label');
-          const ico = currentResponseWrapper.querySelector('.tool-activity-icon');
-          if (lbl) lbl.textContent = `${count} tool${count !== 1 ? 's' : ''} used`;
-          if (ico) ico.textContent = '🔧';
-        } else {
-          details.remove();
-        }
-      }
-      currentResponseWrapper = null;
-      currentToolActivityItems = null;
-    }
+    currentResponseWrapper = null;
+    currentToolActivityItems = null;
+    currentBubble = null;
+    currentBubbleText = '';
 
     sendBtn.disabled = false;
     sendBtn.classList.remove('hidden');
     cancelBtn.classList.add('hidden');
     document.querySelector('.input-wrapper')?.classList.remove('swarm-active');
     hideStatus();
-    currentBubble = null;
+    clearContextBar();
     scrollToBottom();
   }
 
   function handleStreamCancelled() {
     isStreaming = false;
     document.getElementById('thinking-bubble')?.remove();
-    if (currentResponseWrapper) {
-      const details = currentResponseWrapper.querySelector('.tool-activity');
-      if (details && !hasToolCalls) details.remove();
-      currentResponseWrapper = null;
-      currentToolActivityItems = null;
-    }
+    currentResponseWrapper = null;
+    currentToolActivityItems = null;
+    currentBubble = null;
+    currentBubbleText = '';
     sendBtn.disabled = false;
     sendBtn.classList.remove('hidden');
     cancelBtn.classList.add('hidden');
     document.querySelector('.input-wrapper')?.classList.remove('swarm-active');
     hideStatus();
-    currentBubble = null;
+    clearContextBar();
   }
 
   function createUserBubble(text) {
@@ -332,6 +423,8 @@
     messagesEl.appendChild(userEl);
 
     chatHistory.push({ role: 'user', content: text });
+    visualEvents.push({ type: 'user', content: text });
+    saveState();
     updateTokenWheel();
 
     promptInput.value = '';
@@ -367,6 +460,8 @@
     div.style.setProperty('--agent-color', data.color);
     div.innerHTML = `<span>${data.emoji} ${data.agentName}</span>`;
     messagesEl.appendChild(div);
+    visualEvents.push({ type: 'agentDivider', emoji: data.emoji, agentName: data.agentName, color: data.color });
+    saveState();
     scrollToBottom();
   }
 
@@ -402,9 +497,16 @@
   function handleToolCall(data) {
     document.getElementById('thinking-bubble')?.remove();
     hasToolCalls = true;
+    // Nullify current bubble — next streamChunk will create a new one below this tool card
+    currentBubble = null;
+    currentBubbleText = '';
 
     const args = data.args || {};
     const title = getToolTitle(data.name, args);
+
+    // Register in visual state (pending — result will update it)
+    visualEvents.push({ type: 'tool', name: data.name, title, status: 'pending', duration: null, diffLines: null, restOutput: null });
+    saveState();
 
     // Update context bar for file-touching tools
     if (FILE_TOOL_ACTIONS[data.name] && args.path) {
@@ -443,11 +545,6 @@
     el.querySelector('.tool-header').addEventListener('click', () => el.classList.toggle('collapsed'));
 
     (currentToolActivityItems || messagesEl).appendChild(el);
-
-    if (currentResponseWrapper) {
-      const lbl = currentResponseWrapper.querySelector('.tool-activity-label');
-      if (lbl) lbl.textContent = 'Tool activity';
-    }
     scrollToBottom();
   }
 
@@ -475,7 +572,32 @@
          : null)
         : null;
 
-      if (removedMarker && !isEngineError) {
+      // Detect ```diff block — render with syntax-colored lines
+      const diffBlockMatch = (data.success && typeof data.output === 'string')
+        ? data.output.match(/^```diff\n([\s\S]*?)```\n\n([\s\S]*)/)
+        : null;
+
+      if (diffBlockMatch) {
+        const diffLines = diffBlockMatch[1].split('\n');
+        const rest = diffBlockMatch[2].trim();
+        const diffEl = document.createElement('pre');
+        diffEl.className = 'tool-diff-block';
+        diffLines.forEach(line => {
+          const span = document.createElement('span');
+          span.className = (line.startsWith('+ ') || line === '+') ? 'diff-add'
+                         : (line.startsWith('- ') || line === '-') ? 'diff-remove'
+                         : 'diff-ctx';
+          span.textContent = line + '\n';
+          diffEl.appendChild(span);
+        });
+        details.appendChild(diffEl);
+        if (rest) {
+          const restEl = document.createElement('div');
+          restEl.className = 'tool-output';
+          restEl.textContent = rest;
+          details.appendChild(restEl);
+        }
+      } else if (removedMarker && !isEngineError) {
         const markerIdx   = data.output.indexOf(removedMarker);
         const summaryText = data.output.slice(0, markerIdx).trim();
         const removedText = data.output.slice(markerIdx + removedMarker.length)
@@ -509,6 +631,20 @@
           link.addEventListener('click', () => vscode.postMessage({ type: 'openFile', path: pathMatch[1] }));
           details.appendChild(link);
         }
+      }
+
+      // Persist tool result — update the last pending tool in visualEvents
+      const lastPendingTool = [...visualEvents].reverse().find(m => m.type === 'tool' && m.status === 'pending');
+      if (lastPendingTool) {
+        lastPendingTool.status = data.success ? 'success' : 'failed';
+        lastPendingTool.duration = data.duration || null;
+        if (diffBlockMatch) {
+          lastPendingTool.diffLines = diffBlockMatch[1].split('\n');
+          lastPendingTool.restOutput = (diffBlockMatch[2] || '').trim().slice(0, 300);
+        } else if (typeof data.output === 'string') {
+          lastPendingTool.restOutput = data.output.slice(0, 300);
+        }
+        saveState();
       }
     }
     scrollToBottom();
@@ -557,6 +693,8 @@
 
   function handleChatCleared() {
     chatHistory = [];
+    visualEvents = [];
+    saveState();
     messagesEl.innerHTML = '';
     renderWelcome();
     updateTokenWheel();
@@ -597,7 +735,7 @@
       <div class="welcome-card">
         <div class="welcome-logo">🐾</div>
         <h2 class="welcome-title">Fluxo AI</h2>
-        <p class="welcome-subtitle">Persistent Agent Swarm v7.8.2</p>
+        <p class="welcome-subtitle">Persistent Agent Swarm v7.9.8</p>
         <div class="welcome-tips">
           <div class="tip"><span class="tip-key">↵</span> Send</div>
           <div class="tip-sep">·</div>
@@ -657,7 +795,19 @@
       const c = code.trimEnd();
       const placeholder = `{{CODE_BLOCK_${codeBlocks.length}}}`;
       const rawC = c.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-      codeBlocks.push(`<div class="code-block"><div class="code-header"><span class="code-lang">${lang || 'txt'}</span><button class="code-btn copy-btn" data-code="${encodeURIComponent(rawC)}">Copy</button></div><pre><code>${c}</code></pre></div>`);
+
+      let innerHtml;
+      if (lang === 'diff') {
+        innerHtml = c.split('\n').map(line => {
+          if (line.startsWith('+ ') || line === '+') return `<span class="diff-add">${line}</span>`;
+          if (line.startsWith('- ') || line === '-') return `<span class="diff-remove">${line}</span>`;
+          return `<span class="diff-ctx">${line}</span>`;
+        }).join('\n');
+      } else {
+        innerHtml = c;
+      }
+
+      codeBlocks.push(`<div class="code-block"><div class="code-header"><span class="code-lang">${lang || 'txt'}</span><button class="code-btn copy-btn" data-code="${encodeURIComponent(rawC)}">Copy</button></div><pre><code>${innerHtml}</code></pre></div>`);
       return placeholder;
     });
 
@@ -667,6 +817,14 @@
       codeBlocks.push(`<code>${code}</code>`);
       return placeholder;
     });
+
+    // 2.5. Magic Links — detect file paths and render as clickable buttons
+    // Matches: src/foo/bar.ts · .fluxo/memory.md · path/to/file.ext
+    // Skipped: already-protected {{CODE_BLOCK_N}} placeholders, URLs (http://)
+    const FILE_PATH_RE = /(?<![/"'`(\\:])(?:\.?\/?[\w-][\w.-]*\/)+[\w-][\w.-]*\.(?:ts|tsx|js|jsx|mjs|cjs|md|json|css|scss|html|py|txt|env|svg|png|jpg|vue|yaml|yml|toml)\b/g;
+    html = html.replace(FILE_PATH_RE, match =>
+      `<button class="file-link-btn" data-path="${match}" title="Open ${match}">${match}</button>`
+    );
 
     // 3. Render other markdown
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
@@ -685,14 +843,12 @@
   function escapeHtml(str) { return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
   function scrollToBottom() {
+    if (isUserScrolling) return;
     const container = document.getElementById('chat-container');
     if (!container) return;
-    const threshold = 150;
-    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
-
     if (isStreaming) {
       container.scrollTop = container.scrollHeight;
-    } else if (isAtBottom) {
+    } else {
       container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
     }
   }
@@ -736,6 +892,14 @@
     });
   }
 
+  function attachFileLinkListeners(el) {
+    el.querySelectorAll('.file-link-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        vscode.postMessage({ type: 'open_file', path: btn.dataset.path });
+      });
+    });
+  }
+
   // ─── Listeners ─────────────────────────────────────────────────────────────
   sendBtn.addEventListener('click', sendMessage);
   promptInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
@@ -747,5 +911,17 @@
   cancelBtn.addEventListener('click', () => vscode.postMessage({ type: 'cancelStream' }));
   sentinelBtn?.addEventListener('click', () => vscode.postMessage({ type: 'sentinelToggle' }));
   document.getElementById('streaming-info-btn')?.addEventListener('click', () => vscode.postMessage({ type: 'showStreamingInfo' }));
+  modelSelect.addEventListener('change', () => vscode.postMessage({ type: 'saveModel', model: modelSelect.value }));
+
+  // ─── Smart Scroll ────────────────────────────────────────────────────────────
+  // If the user scrolls up while the agent is working, pause auto-scroll.
+  // Resume as soon as they return to the bottom (within 120 px threshold).
+  const chatContainer = document.getElementById('chat-container');
+  if (chatContainer) {
+    chatContainer.addEventListener('scroll', () => {
+      const { scrollTop, clientHeight, scrollHeight } = chatContainer;
+      isUserScrolling = (scrollHeight - scrollTop - clientHeight) > 120;
+    });
+  }
 
 })();

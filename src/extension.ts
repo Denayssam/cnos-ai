@@ -222,10 +222,13 @@ async function _handleMessage(msg: any, context: vscode.ExtensionContext): Promi
       break;
 
     case 'openFile':
+    case 'open_file': {
       if (msg.path) {
         const folders = vscode.workspace.workspaceFolders;
         if (folders?.length) {
-          const fullPath = path.join(folders[0].uri.fsPath, msg.path);
+          const fullPath = path.isAbsolute(msg.path)
+            ? msg.path
+            : path.join(folders[0].uri.fsPath, msg.path);
           try {
             const doc = await vscode.workspace.openTextDocument(fullPath);
             await vscode.window.showTextDocument(doc);
@@ -234,6 +237,11 @@ async function _handleMessage(msg: any, context: vscode.ExtensionContext): Promi
           }
         }
       }
+      break;
+    }
+
+    case 'saveModel':
+      if (msg.model) { context.globalState.update('fluxo.selectedModel', msg.model); }
       break;
 
     case 'openSettings':
@@ -356,25 +364,38 @@ async function _handleSendMessage(userText: string, model: string, context: vsco
 
 async function _handleCompression(context: vscode.ExtensionContext): Promise<void> {
   const config = await _buildConfig();
-  
-  if (!config.apiKey) {
-    vscode.window.showErrorMessage('API Key missing. Please configure it in settings.');
+
+  // Resolve the effective key for the currently selected model —
+  // mirrors resolveEndpointAndKey() logic in agentEngine.ts.
+  const isDeepseekDirect = !config.model.includes('/') && config.model.startsWith('deepseek-');
+  const isGeminiDirect   = !config.model.includes('/') && config.model.startsWith('gemini-');
+  const effectiveKey = isDeepseekDirect ? (config.deepseekApiKey || config.apiKey)
+    : isGeminiDirect   ? (config.geminiApiKey  || config.apiKey)
+    : config.apiKey;
+
+  if (!effectiveKey) {
+    // Always notify the webview so the token-wheel spinner stops.
+    _postToPanel({ type: 'error', text: '⚠️ No API key configured for the current model. Check Settings → Fluxo AI.' });
+    vscode.window.showErrorMessage('API Key missing for the current model. Configure it in Settings → Fluxo AI.');
     return;
   }
 
   if (_conversationHistory.length < 2) {
-    vscode.window.showInformationMessage('Not enough history to compress yet (minimum 2 messages).');
+    _postToPanel({ type: 'error', text: '⚠️ Not enough history to compress yet (minimum 2 messages).' });
     return;
   }
 
   _postToPanel({ type: 'thinking', text: 'Compressing context…' });
 
   try {
-    const summary = await summarizeHistory(_conversationHistory, { 
-      apiKey: config.apiKey, 
-      model: config.model, 
-      maxTokens: 1024, 
-      streamingEnabled: false 
+    // Pass the FULL config so resolveEndpointAndKey() picks the right provider.
+    const summary = await summarizeHistory(_conversationHistory, {
+      apiKey:          config.apiKey,
+      deepseekApiKey:  config.deepseekApiKey,
+      geminiApiKey:    config.geminiApiKey,
+      model:           config.model,
+      maxTokens:       1024,
+      streamingEnabled: false,
     });
 
     if (!summary) {
@@ -385,8 +406,8 @@ async function _handleCompression(context: vscode.ExtensionContext): Promise<voi
       { role: 'assistant', content: `🔄 **Context Compressed**. Previous conversation summary:\n\n${summary}` }
     ];
     context.workspaceState.update(STORAGE_KEY, _conversationHistory);
-    
-    _postToPanel({ type: 'chatCleared' }); // UI resets
+
+    _postToPanel({ type: 'chatCleared' });
     _postToPanel({ type: 'historySync', history: _conversationHistory });
     vscode.window.showInformationMessage('✓ Context compressed successfully.');
   } catch (err: any) {
@@ -526,6 +547,20 @@ function fuzzyFindOffsets(
   return { startIndex, length };
 }
 
+const MAX_DIFF_LINES = 25;
+function buildNativeDiffBlock(search: string, replace: string): string {
+  const norm = (s: string) => s.replace(/\r\n/g, '\n').trimEnd();
+  const remLines = norm(search).split('\n');
+  const addLines = replace === '' ? [] : norm(replace).split('\n');
+  const remSection = remLines.length > MAX_DIFF_LINES
+    ? [...remLines.slice(0, MAX_DIFF_LINES).map(l => `- ${l}`), `- … (+${remLines.length - MAX_DIFF_LINES} lines not shown)`]
+    : remLines.map(l => `- ${l}`);
+  const addSection = addLines.length > MAX_DIFF_LINES
+    ? [...addLines.slice(0, MAX_DIFF_LINES).map(l => `+ ${l}`), `+ … (+${addLines.length - MAX_DIFF_LINES} lines not shown)`]
+    : addLines.map(l => `+ ${l}`);
+  return '```diff\n' + [...remSection, ...addSection].join('\n') + '\n```';
+}
+
 async function applyNativeEdit(
   relPath: string,
   searchSnippet: string,
@@ -542,7 +577,6 @@ async function applyNativeEdit(
     return { success: false, output: `File not found: ${relPath}. Verify the path with list_dir.` };
   }
 
-  await vscode.window.showTextDocument(document, { preserveFocus: true });
   const text = document.getText();
 
   let startIndex = text.indexOf(searchSnippet);
@@ -573,12 +607,12 @@ async function applyNativeEdit(
     return { success: false, output: `VS Code WorkspaceEdit failed for ${relPath}. The file may be read-only.` };
   }
 
+  await document.save();
+
+  const diffBlock = buildNativeDiffBlock(searchSnippet, replaceSnippet);
   return {
     success: true,
-    output: `search_and_replace: ${relPath} — edit applied in VS Code editor (file is unsaved).\n\n` +
-            `EDIT APPLIED. The change is visible in the editor tab marked with a dot (●). ` +
-            `Tell the user: "Cambio aplicado en el editor. Revísalo y presiona Ctrl+S para guardar, o dime si necesitas correcciones." ` +
-            `Do NOT apply further edits to this file until the user confirms.`,
+    output: `${diffBlock}\n\n**${relPath}** — Cambio aplicado y guardado automáticamente. Continúa con tu siguiente paso.`,
   };
 }
 
@@ -613,7 +647,7 @@ function _buildHtml(webview: vscode.Webview): string {
         <div class="logo-dot"></div>
       </div>
       <span class="header-title">Fluxo AI</span>
-      <span class="header-subtitle">v7.8.2</span>
+      <span class="header-subtitle">v7.9.8</span>
       <span id="agent-badge" class="agent-badge hidden"></span>
     </div>
     <div class="header-right">
@@ -772,7 +806,7 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  console.log('[Fluxo AI] v7.8.2 — The Contextual Grip release');
+  console.log('[Fluxo AI] v7.9.8 — Auto-Save & Git Safety Net');
 }
 
 export function deactivate(): void {

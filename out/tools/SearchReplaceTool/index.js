@@ -113,6 +113,20 @@ function findMatch(fileContent, snippet) {
     }
     return { kind: 'fuzzy', start: matches[0], end: matches[0] + n - 1 };
 }
+// ─── Diff Builder ─────────────────────────────────────────────────────────────
+const MAX_DIFF_LINES = 25;
+function buildDiffBlock(search, replace) {
+    const norm = (s) => s.replace(/\r\n/g, '\n').trimEnd();
+    const remLines = norm(search).split('\n');
+    const addLines = replace === '' ? [] : norm(replace).split('\n');
+    const remSection = remLines.length > MAX_DIFF_LINES
+        ? [...remLines.slice(0, MAX_DIFF_LINES).map(l => `- ${l}`), `- … (+${remLines.length - MAX_DIFF_LINES} lines not shown)`]
+        : remLines.map(l => `- ${l}`);
+    const addSection = addLines.length > MAX_DIFF_LINES
+        ? [...addLines.slice(0, MAX_DIFF_LINES).map(l => `+ ${l}`), `+ … (+${addLines.length - MAX_DIFF_LINES} lines not shown)`]
+        : addLines.map(l => `+ ${l}`);
+    return '```diff\n' + [...remSection, ...addSection].join('\n') + '\n```';
+}
 // ─── Disk-based fallback executor (used when VS Code native edit is unavailable) ─
 function execute(args, workspacePath) {
     const fp = (0, shared_1.safePath)(workspacePath, args.path);
@@ -175,9 +189,10 @@ function execute(args, workspacePath) {
     catch { /* non-fatal */ }
     fs.writeFileSync(fp, updated, 'utf-8');
     const matchNote = match.kind === 'fuzzy' ? ` [fuzzy match, line ${startLine}]` : ` [exact match, line ${startLine}]`;
+    const diffBlock = buildDiffBlock(args.search_snippet, args.replace_snippet);
     return {
         success: true,
-        output: `search_and_replace: ${args.path} — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nBLOCK REMOVED:\n${removedPreview}\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
+        output: `${diffBlock}\n\n**${args.path}** — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nCambio aplicado en el editor. Revisa el Diff arriba y presiona Ctrl+S en el archivo para guardar.\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
     };
 }
 //# sourceMappingURL=index.js.map

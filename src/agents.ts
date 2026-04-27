@@ -134,6 +134,8 @@ RULE 2 (STRICT IMPORTS): If you call an external function, hook, or utility (e.g
 
 RULE 3 (NO PLACEHOLDERS): It is STRICTLY PROHIBITED to use hardcoded URLs (e.g., "yourwebsite.com", "example.com", "localhost:3000"), fake emails, or placeholder data in any deliverable code. Always use window.location.origin for base URLs and dynamic routing for paths. If a real value is unknown, insert a clearly-marked TODO comment and tell the user explicitly.
 
+RULE 4 (MODAL COLLISION AVOIDANCE): Before modifying the opening logic of any Modal, Dialog, Sheet, or Drawer component, you MUST first call search_in_files with the component name to verify its full render chain and who imports it. It is STRICTLY PROHIBITED to nest modals (Modal-in-Modal inception). If the target component already lives inside a modal, use a Multi-Step pattern (internal state changes: e.g., a 'step' variable or conditional sections within the same modal) instead of opening a new modal on top.
+
 GIT AUTONOMY:
 - If 'git pull' fails with "no tracking information", use 'git remote -v' to find the remote (e.g., origin) and use 'git pull origin master' (or the current branch).
 - Use 'git status' and 'git checkout' to restore missing files.
@@ -342,6 +344,8 @@ CRITICAL CONSTRAINTS:
 1. FULL COMMAND ACCESS: You have full access to 'run_command'.
 2. WINDOWS MASTERY: Quote all paths. Use 'delete_dir'.
 3. PIVOT AGGRESSIVELY: If an agent is stuck, take over and write the code yourself.
+
+RULE (GIT SAFETY NET): Como ahora guardamos los archivos automáticamente, el control de versiones es nuestra única red de seguridad. Antes de delegar tareas de programación pesadas en un nuevo proyecto, verifica o asume que el usuario está usando Git. Si el usuario reporta que una edición tuya rompió el código irremediablemente, recomiéndale usar el Source Control de VS Code para revertir los cambios del archivo.
 `,
   },
 
@@ -398,6 +402,8 @@ Watch for these CRITICAL ERRORS:
 6. REDUNDANCY CHECK: Compare the current tool calls with the "PRIOR COMPLETED TOOLS" section. If the agent is attempting to re-declare a hook (useParams, useState, useEffect, useRef, useContext, useMemo, useCallback, etc.) or a variable (const, let, var declarations) that was already successfully injected in a previous turn of this same session, output:
    ERROR: REDUNDANT_DECLARATION — '[identifier]' was already declared in a prior turn. Re-declaring it will cause a Runtime Crash (duplicate identifier). The agent must skip this injection and proceed to the next pending step.
    SCOPE: ONLY check the actual code logic inside "new_content". DO NOT flag tool names like "replace_block" or "read_file" as redundant declarations. Ignore tool names completely in this check.
+7. MODAL COLLISION: Agent's tool call modifies the open/toggle/trigger logic of a Modal, Dialog, Sheet, or Drawer component, WITHOUT a prior search_in_files call that verified the component's full render chain and confirmed it is NOT already nested inside another modal.
+   When detected: "ERROR: Modal Collision Risk — '{ComponentName}' may already render inside a modal. Agent must call search_in_files('{ComponentName}') to verify the full render chain before editing modal-open logic. If nesting is confirmed, a Multi-Step (internal state) pattern is required instead of opening a new modal."
 
 NOTE: Ghost Execution, Sentinel/Build blocking, and brace-balance validation are now handled deterministically by the engine and ReplaceLinesTool — do NOT attempt to count characters or flag syntax errors here.
 

@@ -248,6 +248,16 @@ export async function* runAgentLoop(
         /\bALL\s+STEPS\s+COMPLETE\b/i.test(textContent) ||
         /ORCHESTRATOR['']S\s+REPORT/i.test(textContent)
       )) {
+        // Security guard: completion signals are only valid after real work was done.
+        // An agent that hallucinates the report phrase on turn 1 (zero tool calls) is blocked.
+        if (toolCallHistory.length === 0) {
+          debugLog(workspacePath, 'Plan Verification: completion signal with zero tool calls — intercepting hallucination');
+          messages.push({
+            role: 'user',
+            content: 'SYSTEM: No puedes emitir el reporte final sin haber ejecutado tareas. Usa herramientas para completar la misión.',
+          });
+          continue;
+        }
         debugLog(workspacePath, 'Plan Verification: completion signal confirmed — exiting loop');
         yield { type: 'streamEnd' };
         return;

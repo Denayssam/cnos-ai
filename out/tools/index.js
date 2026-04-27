@@ -50,6 +50,7 @@ const SearchInFilesTool = __importStar(require("./SearchInFilesTool"));
 const SearchImagesTool = __importStar(require("./SearchImagesTool"));
 const AskApprovalTool = __importStar(require("./AskApprovalTool"));
 const SearchReplaceTool = __importStar(require("./SearchReplaceTool"));
+const UpdateMemoryTool = __importStar(require("./UpdateMemoryTool"));
 // ─── Tool Registry ────────────────────────────────────────────────────────────
 const ALL_TOOLS = [
     FileReadTool,
@@ -66,6 +67,7 @@ const ALL_TOOLS = [
     SearchInFilesTool,
     SearchImagesTool,
     AskApprovalTool,
+    UpdateMemoryTool,
 ];
 exports.TOOL_DEFINITIONS = ALL_TOOLS.map(t => t.TOOL_DEF);
 const TOOL_MAP = Object.fromEntries(ALL_TOOLS.map(t => [t.TOOL_DEF.function.name, t.execute]));
