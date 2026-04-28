@@ -1,0 +1,26 @@
+# ── Secrets & environment ────────────────────────────────────────────────────
+.env
+.env.*
+*.env
+secrets.*
+config.local.*
+credentials.*
+*.pem
+*.key
+*.cert
+
+# ── VS Code extension build artifacts ────────────────────────────────────────
+*.vsix
+
+# ── Node ─────────────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Fluxo runtime artifacts ───────────────────────────────────────────────────
+.fluxo/backups/
+.fluxo/worktrees/
+fluxo_agent.log
+fluxo_agent_old.log
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
