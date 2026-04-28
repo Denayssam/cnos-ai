@@ -53,6 +53,8 @@ const SearchReplaceTool = __importStar(require("./SearchReplaceTool"));
 const UpdateMemoryTool = __importStar(require("./UpdateMemoryTool"));
 const GetCodeStructureTool = __importStar(require("./GetCodeStructureTool"));
 const FetchDocumentationTool = __importStar(require("./FetchDocumentationTool"));
+const EnterWorktreeTool = __importStar(require("./EnterWorktreeTool"));
+const ExitWorktreeTool = __importStar(require("./ExitWorktreeTool"));
 // ─── Tool Registry ────────────────────────────────────────────────────────────
 const ALL_TOOLS = [
     FileReadTool,
@@ -72,6 +74,8 @@ const ALL_TOOLS = [
     UpdateMemoryTool,
     GetCodeStructureTool,
     FetchDocumentationTool,
+    EnterWorktreeTool,
+    ExitWorktreeTool,
 ];
 exports.TOOL_DEFINITIONS = ALL_TOOLS.map(t => t.TOOL_DEF);
 const TOOL_MAP = Object.fromEntries(ALL_TOOLS.map(t => [t.TOOL_DEF.function.name, t.execute]));

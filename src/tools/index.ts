@@ -15,6 +15,8 @@ import * as SearchReplaceTool  from './SearchReplaceTool';
 import * as UpdateMemoryTool      from './UpdateMemoryTool';
 import * as GetCodeStructureTool       from './GetCodeStructureTool';
 import * as FetchDocumentationTool from './FetchDocumentationTool';
+import * as EnterWorktreeTool     from './EnterWorktreeTool';
+import * as ExitWorktreeTool      from './ExitWorktreeTool';
 import { ToolResult, NativeTool } from './shared';
 
 export { ToolResult, NativeTool };
@@ -39,6 +41,8 @@ const ALL_TOOLS = [
   UpdateMemoryTool,
   GetCodeStructureTool,
   FetchDocumentationTool,
+  EnterWorktreeTool,
+  ExitWorktreeTool,
 ];
 
 export const TOOL_DEFINITIONS: NativeTool[] = ALL_TOOLS.map(t => t.TOOL_DEF);

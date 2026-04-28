@@ -2,6 +2,18 @@
 
 ---
 
+## [v8.0.0] - Aislamiento Estructural Absoluto (git worktree Sandbox)
+
+**Objetivo:** Erradicar los bugs destructivos en la rama `main` causados por refactorizaciones de alto riesgo que el agente ejecuta directamente sobre el código de producción. Cuando el LLM corrompe el AST o el build falla, no hay forma de revertir sin intervención manual del usuario. Esta versión introduce un sandbox de aislamiento completo basado en `git worktree`.
+
+- **`EnterWorktreeTool` (`src/tools/EnterWorktreeTool/index.ts`):** Nueva herramienta que ejecuta `git worktree add .fluxo/worktrees/<branch> -b <branch>` creando un checkout completo del HEAD actual en una rama fresca y aislada. Persiste el estado activo en `.fluxo/active_worktree.json`. Bloquea la creación de un segundo worktree si ya hay uno activo. Devuelve el path del worktree y las instrucciones de prefijo de ruta para el agente.
+- **`ExitWorktreeTool` (`src/tools/ExitWorktreeTool/index.ts`):** Herramienta de finalización con dos modos: `action='merge'` hace `git add -A && git commit` dentro del worktree y luego `git merge --no-ff` en el workspace principal; `action='discard'` ejecuta `git worktree remove --force` + `git branch -D` eliminando el sandbox sin tocar `main`. Ambos modos limpian el state file y ejecutan `git worktree prune`.
+- **`isolation: 'worktree'` en `AgentDefinition` (`src/agents.ts`):** Nueva propiedad opcional en la interfaz del agente. Coder y Manager tienen `isolation: 'worktree'` activado. Cuando está presente, el motor inyecta un turn de usuario `[ISOLATION MODE ACTIVE]` al inicio de la sesión, poniendo al LLM en modo de conciencia de aislamiento desde la primera iteración.
+- **`RULE (WORKTREE ISOLATION)` en Coder y Manager (`src/agents.ts`):** Nueva regla inyectada en los system prompts: obligatoria para refactorizaciones >50 líneas o multi-archivo; opcional para ediciones simples (<50 líneas, 1-2 archivos). Define el workflow completo: enter → edit → build → merge/discard.
+- **Registro de herramientas (`src/tools/index.ts`):** `EnterWorktreeTool` y `ExitWorktreeTool` añadidos al array `ALL_TOOLS` y al `TOOL_MAP`.
+
+---
+
 ## [v7.21.0] - Resilient Payload (replace_lines Array Normalizer)
 
 **Objetivo:** Eliminar el error `CRITICAL ERROR: new_content must be a string` que bloqueaba al agente cuando intentaba empaquetar bloques grandes de JSX en un único string JSON. Al escapar comillas y saltos de línea en bloques de 50+ líneas, el LLM comete errores de serialización o decide enviar el contenido como un `Array` de strings, lo que rompía la validación estricta de la herramienta.

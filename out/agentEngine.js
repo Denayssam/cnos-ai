@@ -215,9 +215,20 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
             systemPrompt += `\n\n[CRITICAL SYSTEM OVERRIDE]: EL USUARIO HA DESACTIVADO LA HERRAMIENTA '${toolName}'. ESTÁ ESTRICTAMENTE PROHIBIDO INTENTAR LLAMARLA, INCLUSO SI OTRAS REGLAS LA MENCIONAN. DEBES USAR UNA ESTRATEGIA ALTERNATIVA (EJ: si se prohibió search_and_replace, usa replace_lines).`;
         }
     }
+    // ── Worktree Isolation Directive ─────────────────────────────────────────────
+    // If the active agent declares isolation: 'worktree', prepend a user-turn notice
+    // so the LLM enters isolation-aware mode from the very first iteration.
+    const isolationNotice = agent.isolation === 'worktree' ? [{
+            role: 'user',
+            content: '[ISOLATION MODE ACTIVE]: This agent supports git worktree isolation. ' +
+                'For any refactoring that modifies >50 lines or touches multiple files, ' +
+                'you MUST call enter_worktree before editing. ' +
+                'For simple edits (<50 lines, 1-2 files), proceed directly without a worktree.',
+        }] : [];
     const messages = [
         { role: 'system', content: systemPrompt },
         ...prunedHistory,
+        ...isolationNotice,
         { role: 'user', content: userMessage },
     ];
     let iterations = 0;

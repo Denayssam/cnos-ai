@@ -100,7 +100,8 @@ exports.AGENTS = {
         emoji: '💻',
         color: '#3b82f6',
         description: 'General coding: creates files, runs commands, fixes bugs',
-        tools: ['read_file', 'write_file', 'search_and_replace', 'get_code_structure', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'fetch_documentation'],
+        tools: ['read_file', 'write_file', 'search_and_replace', 'get_code_structure', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'fetch_documentation', 'enter_worktree', 'exit_worktree'],
+        isolation: 'worktree',
         keywords: [
             'código', 'code', 'función', 'function', 'clase', 'class',
             'bug', 'error', 'fix', 'implementa', 'implement', 'crea',
@@ -191,6 +192,8 @@ BODYGUARD PROTOCOL — call ask_user_approval ONLY for high-risk operations:
 
 RULE (GRACEFUL DEGRADATION): Si el sistema activa un CIRCUIT BREAKER porque una herramienta falló múltiples veces, no entres en pánico ni intentes evadirlo con comandos de terminal. Tu prioridad es la experiencia del usuario. Cambia a una herramienta más precisa (como replace_lines) o simplemente detente y comunícale el problema al usuario de forma amigable.
 
+RULE (WORKTREE ISOLATION — FASE 1): Antes de ejecutar cualquier refactorización de alto riesgo (>50 líneas modificadas, cambios en múltiples archivos, reestructuración de imports, migración de arquitectura), DEBES llamar a enter_worktree con una breve 'reason'. Trabaja EXCLUSIVAMENTE dentro del path del worktree que te devuelve. Cuando npm run build pase sin errores dentro del worktree, llama exit_worktree con action='merge'. Si el worktree queda roto, llama exit_worktree con action='discard' — el código de producción del usuario en main permanece INTACTO. Para ediciones simples (1-2 archivos, <50 líneas), el worktree es OPCIONAL.
+
 RULE (EXTERNAL CONTEXT): Si el usuario te pide implementar una librería externa específica (ej. Stripe, React DnD, Firebase, Framer Motion, etc.) o cualquier concepto que requiera precisión técnica actualizada, TIENES PERMITIDO — y se RECOMIENDA — usar la herramienta fetch_documentation para leer el README oficial (ej. https://raw.githubusercontent.com/user/repo/main/README.md) o la documentación de npm (ej. https://www.npmjs.com/package/<nombre>) ANTES de escribir una sola línea de código. Esto evita el "Tutorial Bias" causado por conocimiento estático de entrenamiento. Prefiere siempre URLs de contenido raw (raw.githubusercontent.com) sobre páginas renderizadas para obtener texto más limpio.
 
 Act as a brilliant, silent, and lethal worker.
@@ -257,7 +260,8 @@ ${WEB_ARCHITECTURE_SOP}`,
         emoji: '🧭',
         color: '#8b5cf6',
         description: 'Orchestration, complex planning, and emergency debugging',
-        tools: ['read_file', 'write_file', 'search_and_replace', 'get_code_structure', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'update_memory', 'fetch_documentation'],
+        tools: ['read_file', 'write_file', 'search_and_replace', 'get_code_structure', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'update_memory', 'fetch_documentation', 'enter_worktree', 'exit_worktree'],
+        isolation: 'worktree',
         keywords: [
             'manager', 'gestiona', 'organiza', 'planifica', 'proyecto',
             'architect', 'arquitecto', 'debug', 'investiga', 'loop',

@@ -718,7 +718,7 @@ function _buildHtml(webview) {
         <div class="logo-dot"></div>
       </div>
       <span class="header-title">Fluxo AI</span>
-      <span class="header-subtitle">v7.21.0</span>
+      <span class="header-subtitle">v8.0.0</span>
       <span id="agent-badge" class="agent-badge hidden"></span>
     </div>
     <div class="header-right">
@@ -858,7 +858,7 @@ function activate(context) {
             _postToPanel({ type: 'modelsUpdate', models, model: cfg.model, workerModel: cfg.workerModel });
         }
     }));
-    console.log('[Fluxo AI] v7.21.0 — Resilient Payload: replace_lines Array Normalizer');
+    console.log('[Fluxo AI] v8.0.0 — Structural Isolation: git worktree sandbox');
 }
 function deactivate() {
     _currentAbortController?.abort();

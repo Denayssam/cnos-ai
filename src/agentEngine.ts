@@ -241,9 +241,22 @@ export async function* runAgentLoop(
     }
   }
 
+  // ── Worktree Isolation Directive ─────────────────────────────────────────────
+  // If the active agent declares isolation: 'worktree', prepend a user-turn notice
+  // so the LLM enters isolation-aware mode from the very first iteration.
+  const isolationNotice: ChatMessage[] = agent.isolation === 'worktree' ? [{
+    role: 'user',
+    content:
+      '[ISOLATION MODE ACTIVE]: This agent supports git worktree isolation. ' +
+      'For any refactoring that modifies >50 lines or touches multiple files, ' +
+      'you MUST call enter_worktree before editing. ' +
+      'For simple edits (<50 lines, 1-2 files), proceed directly without a worktree.',
+  }] : [];
+
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
     ...prunedHistory,
+    ...isolationNotice,
     { role: 'user', content: userMessage },
   ];
 

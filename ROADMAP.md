@@ -1,41 +1,30 @@
-# Fluxo AI - Architectural Roadmap
+# 🌌 FLUXO AI - Enterprise Architecture Roadmap (v8.0.0+)
+
+Este documento define la "Estrella del Norte" de FLUXO AI. Tras consolidar el Nivel 4 (LSP Semántico y MCP Fetching), el objetivo de las siguientes versiones es transformar el enjambre de una herramienta de edición reactiva a un **departamento de ingeniería de software asíncrono, paralelo y autónomo**.
 
 ---
 
-## Nivel 1: Memoria Persistente y Extracción de Contexto (memdir & extractMemories)
+## 🛡️ Fase 1: Aislamiento Estructural Absoluto (v8.0.0) ✅ COMPLETADA
+**Objetivo:** Erradicar los bugs destructivos y la corrupción en la rama principal (`main`) aislando los experimentos de la IA.
 
-**Lo que tienes:** Actualmente, tu botón Token Wheel comprime el contexto de la conversación actual.
-
-**La evolución (Monolito):** Claude Code tiene un sistema completo en `src/memdir/` y `src/services/extractMemories/`. En lugar de olvidar todo al cerrar VS Code, el agente extrae de manera proactiva lecciones aprendidas (ej. *'A este usuario no le gustan los default exports'*) y las guarda en una carpeta oculta (`.memdir`).
-
-**Cómo aplicarlo:** Tu agente Manager debe invocar una nueva herramienta invisible al final de cada sesión que redacte un resumen de las convenciones arquitectónicas acordadas y las guarde en memoria persistente.
-
----
-
-## Nivel 2: Visión Semántica con LSP (LSPTool)
-
-**Lo que tienes:** Usas `search_in_files` y dependes de que la IA acierte con los números de línea para usar `replace_lines`.
-
-**La evolución (Monolito):** El monolito tiene un `LSPTool` (Language Server Protocol) gestionado en `src/services/lsp/LSPClient.ts`. Esto significa que el agente no solo lee texto plano, sino que 'entiende' el código como el compilador (conoce dónde empieza y termina una función exacta, qué variables no se usan, etc.).
-
-**Cómo aplicarlo:** Integrar un cliente LSP ligero en tu extensión para que el agente Coder pueda consultar el árbol de sintaxis abstracta (AST), reduciendo a cero los errores de inyección de código.
+* **[x] Implementar `EnterWorktreeTool`:** `git worktree add .fluxo/worktrees/<branch> -b <branch>`. Estado persistido en `.fluxo/active_worktree.json`. Devuelve path e instrucciones de prefijo al agente.
+* **[x] Implementar `ExitWorktreeTool`:** `action='merge'` (commit + merge --no-ff en main) | `action='discard'` (worktree remove --force + branch -D). Main jamás es tocado en un discard.
+* **[x] Propiedad `isolation: worktree`:** Añadida a `AgentDefinition`. Coder y Manager la tienen activada. El motor inyecta `[ISOLATION MODE ACTIVE]` al inicio de sesión. `RULE (WORKTREE ISOLATION)` en system prompts: obligatoria >50 líneas, opcional para ediciones simples.
 
 ---
 
-## Nivel 3: Ejecución en Paralelo (TeamCreateTool & TaskCreateTool)
+## ⚡ Fase 2: Orquestación Paralela Asíncrona (v8.1.0)
+**Objetivo:** Eliminar el cuello de botella secuencial. Permitir que múltiples agentes trabajen al mismo tiempo sin destruir los archivos por colisión.
 
-**Lo que tienes:** Tus agentes trabajan de forma secuencial. El usuario pide algo, el Manager lo delega, espera y devuelve.
-
-**La evolución (Monolito):** Claude usa `src/tools/TeamCreateTool/` y `src/tools/TaskCreateTool/`. Puede instanciar 'equipos' que trabajan al mismo tiempo.
-
-**Cómo aplicarlo:** Si pides un *'Módulo de Login'*, el Manager usa `TeamCreateTool` para que el Designer programe la UI en React, mientras el Backend Dev programa la base de datos en paralelo, uniendo el trabajo al final.
+* **[ ] File System Locks (`lockfile.ts`):** Construir un sistema de cerrojos (Locks). Antes de que un agente ejecute `write_file` o `replace_lines`, debe solicitar un cerrojo sobre ese archivo. Si el archivo está en uso por otro subagente, debe entrar en cola de espera.
+* **[ ] Implementar `TeamCreateTool`:** Actualizar `agentEngine.ts` para usar `Promise.all()`. El Manager podrá instanciar hilos asíncronos paralelos (ej. Coder arreglando lógica y Designer ajustando CSS al mismo tiempo).
+* **[ ] Comunicación Inter-Agente (`SendMessageTool`):** Permitir que los workers intercambien contexto JSON en segundo plano (ej. el Coder le pasa el contrato de la API al Designer sin que el usuario tenga que leerlo en la UI de VS Code).
 
 ---
 
-## Nivel 4: Conexión con el Mundo Exterior (MCPTool e Integración de Navegador)
+## 🤖 Fase 3: Autonomía Proactiva & Daemon Mode (v9.0.0)
+**Objetivo:** Romper la barrera del editor. FLUXO AI funcionará de forma independiente a VS Code como un proceso de sistema.
 
-**Lo que tienes:** Agentes encerrados en tu editor de código.
-
-**La evolución (Monolito):** El monolito usa extensamente el Model Context Protocol (`src/services/mcp/`) y `src/tools/MCPTool/`.
-
-**Cómo aplicarlo:** Permitirá que tu agente se conecte a tu base de datos de producción para revisar esquemas, o que consulte directamente la documentación viva de herramientas como Stripe sin salir del entorno.
+* **[ ] Feature Flags Core (`DAEMON` / `PROACTIVE`):** Bifurcar la arquitectura del motor para que pueda compilarse y ejecutarse como un servicio nativo de Node.js en segundo plano (independiente de la Webview de VS Code).
+* **[ ] Implementar `SleepTool`:** Estado de muy bajo consumo de RAM donde el enjambre se queda "escuchando" eventos del sistema o webhooks.
+* **[ ] Implementar `CronCreateTool` (`cronScheduler`):** Capacidad del Manager para programar auto-escaneos. (Ej. Despertar cada 2 horas, correr los tests de la rama principal, arreglarlos en un worktree si fallan, y crear un PR de forma silenciosa).
