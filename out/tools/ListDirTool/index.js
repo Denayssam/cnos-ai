@@ -56,6 +56,17 @@ function execute(args, workspacePath) {
     if (!fs.existsSync(dp)) {
         return { success: false, output: `Directory not found: ${args.path}` };
     }
+    const stat = fs.statSync(dp);
+    if (stat.isFile()) {
+        const parentDir = (args.path || '.').split(/[\\/]/).slice(0, -1).join('/') || '.';
+        return {
+            success: false,
+            output: `ERROR: Has intentado listar un archivo ("${args.path}"). ` +
+                `list_dir solo opera sobre carpetas.\n` +
+                `• Para ver el contenido del archivo → usa read_file("${args.path}")\n` +
+                `• Para listar la carpeta que lo contiene → usa list_dir("${parentDir}")`,
+        };
+    }
     const entries = fs.readdirSync(dp, { withFileTypes: true });
     const lines = entries.map(e => `${e.isDirectory() ? '[DIR]' : '[FILE]'} ${e.name}`);
     return { success: true, output: lines.join('\n') || '(empty)' };

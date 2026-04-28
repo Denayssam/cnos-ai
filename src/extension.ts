@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { runAgentLoop, ChatMessage, EngineConfig, summarizeHistory } from './agentEngine';
 import { routeToAgent, getAgentList } from './agents';
 import { Sentinel } from './sentinel';
+import { McpSwarmClient } from './mcpClient';
 
 // ─── State Management ─────────────────────────────────────────────────────────
 
@@ -14,6 +15,7 @@ let _extensionUri: vscode.Uri;
 let _context: vscode.ExtensionContext;
 let _sentinel: Sentinel | undefined;
 let _sentinelHasError = false;
+let _mcpClient: McpSwarmClient;
 
 const STORAGE_KEY = 'fluxo.chatHistory';
 const LOG_FILE = 'fluxo_errors.log';
@@ -350,15 +352,45 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
 
     const getCodeStructureCallback = async (absolutePath: string): Promise<{ success: boolean; output: string }> => {
       try {
-        // Sanitize LLM Docker-bias hallucinations (/workspace/ prefix) before resolving.
+        // ── Robust Path Sanitization (v7.14.0) ──────────────────────────────
+        // Handles ALL known LLM path hallucinations:
+        //   1. Docker-bias:   /workspace/src/file.tsx
+        //   2. Overlap:       /workspace/d:\real\path\file.tsx  (Docker prefix + Windows absolute)
+        //   3. Pure relative: src/file.tsx
+        //   4. Pure absolute: d:\real\path\file.tsx (correct — no modification needed)
         let cleanPath = absolutePath;
-        if (cleanPath.startsWith('/workspace/'))    { cleanPath = cleanPath.substring(11); }
+
+        // Strip /workspace/ prefix (Docker-bias hallucination)
+        if (cleanPath.startsWith('/workspace/'))     { cleanPath = cleanPath.substring(11); }
         else if (cleanPath.startsWith('workspace/')) { cleanPath = cleanPath.substring(10); }
         else if (cleanPath.startsWith('\\workspace\\')) { cleanPath = cleanPath.substring(11); }
+
+        const driveIndex = cleanPath.search(/[a-zA-Z]:/);
+        if (driveIndex > 0) {
+          cleanPath = cleanPath.substring(driveIndex);
+        }
+
         cleanPath = path.normalize(cleanPath);
-        const finalPath = cleanPath.startsWith(workspacePath)
-          ? cleanPath
-          : path.join(workspacePath, cleanPath);
+
+        // Resolve to an absolute path inside the workspace
+        let finalPath: string;
+        const resolvedClean = path.resolve(cleanPath);
+        const resolvedWs    = path.resolve(workspacePath);
+
+        // Case-insensitive comparison on Windows (d: vs D:)
+        if (resolvedClean.toLowerCase().startsWith(resolvedWs.toLowerCase())) {
+          finalPath = resolvedClean;  // Already inside the workspace — use as-is
+        } else if (path.isAbsolute(cleanPath)) {
+          // Absolute path outside the workspace — reject to prevent LSP scope escape
+          return {
+            success: false,
+            output: `PATH ERROR: "${absolutePath}" apunta fuera del workspace actual. ` +
+              `Usa una ruta relativa al workspace (ej. "src/pages/MiArchivo.jsx") o llama list_dir(".") para descubrir la estructura real.`,
+          };
+        } else {
+          finalPath = path.join(workspacePath, cleanPath);
+        }
+
         const uri = vscode.Uri.file(finalPath);
         await vscode.workspace.openTextDocument(uri);
 
@@ -404,6 +436,8 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
       }
     };
 
+    const mcpTools = _mcpClient.getMcpTools();
+
     for await (const event of runAgentLoop(
       userText,
       agentId,
@@ -414,7 +448,9 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
       _sentinelHasError,
       approvalCallback,
       nativeEditCallback,
-      getCodeStructureCallback
+      getCodeStructureCallback,
+      mcpTools,
+      async (name, args) => await _mcpClient.callMcpTool(name, args)
     )) {
       _postToPanel({ ...event });
       if (event.type === 'streamChunk') { fullAssistantText += event.text; }
@@ -735,7 +771,7 @@ function _buildHtml(webview: vscode.Webview): string {
         <div class="logo-dot"></div>
       </div>
       <span class="header-title">Fluxo AI</span>
-      <span class="header-subtitle">v7.12.4</span>
+      <span class="header-subtitle">v7.21.0</span>
       <span id="agent-badge" class="agent-badge hidden"></span>
     </div>
     <div class="header-right">
@@ -791,6 +827,9 @@ function _buildHtml(webview: vscode.Webview): string {
 export function activate(context: vscode.ExtensionContext): void {
   _extensionUri = context.extensionUri;
   _context = context;
+
+  _mcpClient = new McpSwarmClient();
+  _mcpClient.initialize();
 
   // Initialize conversation persistence
   _conversationHistory = context.workspaceState.get<ChatMessage[]>(STORAGE_KEY) || [];
@@ -900,9 +939,10 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  console.log('[Fluxo AI] v7.12.4 — Circuit Breaker & Graceful Degradation');
+  console.log('[Fluxo AI] v7.21.0 — Resilient Payload: replace_lines Array Normalizer');
 }
 
 export function deactivate(): void {
   _currentAbortController?.abort();
+  _mcpClient?.destroy();
 }

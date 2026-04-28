@@ -144,8 +144,7 @@ function execute(args, workspacePath) {
     if (match.kind === 'none') {
         return {
             success: false,
-            output: `MATCH ERROR: search_snippet not found in ${args.path} — exact and fuzzy matches both failed.\n` +
-                `Call read_file to get current content and re-copy the exact block verbatim.`,
+            output: `ERROR: El bloque exacto no se encontró (posible problema de indentación o archivo corrupto). Tienes PROHIBIDO volver a intentar search_and_replace en esta zona. DEBES usar la herramienta replace_lines inmediatamente usando los números de línea.`,
         };
     }
     if (match.kind === 'ambiguous') {

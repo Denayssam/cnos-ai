@@ -54,7 +54,7 @@ TO INSERT NEW LINES WITHOUT DELETING: Set start_line and end_line to the exact s
                 path: { type: 'string', description: 'File path relative to workspace root.' },
                 start_line: { type: 'number', description: '1-based line number where the replacement begins (inclusive). Must come from a preceding read_file call.' },
                 end_line: { type: 'number', description: '1-based line number where the replacement ends (inclusive). Must be >= start_line.' },
-                new_content: { type: 'string', description: 'Text to insert in place of the removed lines. Pass an empty string "" to delete the range. Do NOT add a trailing newline — the engine handles line endings.' },
+                new_content: { type: ['string', 'array'], description: 'El código a insertar en lugar de las líneas eliminadas. IMPORTANTE: Para evitar errores de escape JSON en bloques grandes de JSX/TSX, tienes PERMITIDO enviar este parámetro como un Array de strings (una línea de código por elemento). El motor lo unirá automáticamente con \\n. Pasa "" o [] para eliminar el rango sin insertar nada. Do NOT add a trailing newline — the engine handles line endings.' },
                 healing_mode: { type: 'boolean', description: 'Set to true ONLY if you are fixing a syntax error, unbalanced brace, or AST corruption. This temporarily disables the syntax and AST guards to allow surgical fixes on already broken files.' },
             },
             required: ['path', 'start_line', 'end_line', 'new_content'],
@@ -74,8 +74,24 @@ function execute(args, workspacePath) {
     if (!Number.isInteger(endLine) || endLine < startLine) {
         return { success: false, output: `CRITICAL ERROR: end_line (${endLine}) must be an integer >= start_line (${startLine}). Call read_file to verify current line numbers.` };
     }
+    // ── Payload Normalizer (v7.21.0) ─────────────────────────────────────────────
+    // The LLM sometimes sends new_content as an Array (one element per line) when
+    // JSON-escaping large JSX blocks, or as null/undefined when the payload breaks.
+    // Coerce silently before the strict check so those payloads still succeed.
+    if (Array.isArray(args.new_content)) {
+        args.new_content = args.new_content.join('\n');
+    }
+    else if (args.new_content === null || args.new_content === undefined) {
+        args.new_content = '';
+    }
+    else if (typeof args.new_content === 'object') {
+        // Object from a malformed parse — best-effort: join values or full JSON fallback
+        const vals = Object.values(args.new_content);
+        args.new_content = vals.length > 0 ? vals.map(String).join('\n') : JSON.stringify(args.new_content);
+    }
+    // ─────────────────────────────────────────────────────────────────────────────
     if (typeof args.new_content !== 'string') {
-        return { success: false, output: 'CRITICAL ERROR: new_content must be a string. Use an empty string "" to delete lines without inserting anything.' };
+        return { success: false, output: 'CRITICAL ERROR: new_content must be a string or Array of strings. Use an empty string "" to delete lines without inserting anything.' };
     }
     const original = fs.readFileSync(fp, 'utf-8');
     // Black Box auto-backup — save original before any modification

@@ -42,8 +42,12 @@ function safePath(workspacePath, p) {
     if (!p) {
         throw new Error('Path is required');
     }
-    // Strip LLM Docker-bias hallucinations (/workspace/ prefix) so path.resolve
-    // doesn't treat them as absolute and silently ignore the real workspace root.
+    // ── Robust Path Sanitization (v7.14.0) ──────────────────────────────
+    // Handles ALL known LLM path hallucinations:
+    //   1. Docker-bias:   /workspace/src/file.tsx
+    //   2. Overlap:       /workspace/d:\real\path\file.tsx  (Docker prefix + Windows absolute)
+    //   3. Pure relative: src/file.tsx
+    //   4. Pure absolute: d:\real\path\file.tsx (valid if inside workspace)
     let clean = p;
     if (clean.startsWith('/workspace/')) {
         clean = clean.substring(11);
@@ -54,12 +58,19 @@ function safePath(workspacePath, p) {
     else if (clean.startsWith('\\workspace\\')) {
         clean = clean.substring(11);
     }
-    clean = path.normalize(clean);
-    const resolved = path.resolve(workspacePath, clean);
-    if (!resolved.toLowerCase().startsWith(path.resolve(workspacePath).toLowerCase())) {
-        throw new Error(`Path traversal blocked: ${p}`);
+    const driveIndex = clean.search(/[a-zA-Z]:/);
+    if (driveIndex > 0) {
+        clean = clean.substring(driveIndex);
     }
-    return resolved;
+    clean = path.normalize(clean);
+    // Resolve to an absolute path
+    const resolvedWs = path.resolve(workspacePath);
+    const resolvedClean = path.resolve(workspacePath, clean);
+    // Case-insensitive comparison on Windows to ensure we are within the workspace root
+    if (!resolvedClean.toLowerCase().startsWith(resolvedWs.toLowerCase())) {
+        throw new Error(`Path traversal blocked or outside workspace: ${p}`);
+    }
+    return resolvedClean;
 }
 function searchRecursive(dir, root, pattern, results, depth) {
     if (depth > 6 || results.length > 100) {

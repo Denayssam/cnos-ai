@@ -41,6 +41,7 @@ const fs = __importStar(require("fs"));
 const agentEngine_1 = require("./agentEngine");
 const agents_1 = require("./agents");
 const sentinel_1 = require("./sentinel");
+const mcpClient_1 = require("./mcpClient");
 // ─── State Management ─────────────────────────────────────────────────────────
 let _panel;
 let _conversationHistory = [];
@@ -49,6 +50,7 @@ let _extensionUri;
 let _context;
 let _sentinel;
 let _sentinelHasError = false;
+let _mcpClient;
 const STORAGE_KEY = 'fluxo.chatHistory';
 const LOG_FILE = 'fluxo_errors.log';
 // ─── Sidebar Provider (Left Launcher) ─────────────────────────────────────────
@@ -343,8 +345,14 @@ async function _handleSendMessage(userText, model, workerModel, context) {
         const nativeEditCallback = async (relPath, searchSnippet, replaceSnippet) => applyNativeEdit(relPath, searchSnippet, replaceSnippet, workspacePath);
         const getCodeStructureCallback = async (absolutePath) => {
             try {
-                // Sanitize LLM Docker-bias hallucinations (/workspace/ prefix) before resolving.
+                // ── Robust Path Sanitization (v7.14.0) ──────────────────────────────
+                // Handles ALL known LLM path hallucinations:
+                //   1. Docker-bias:   /workspace/src/file.tsx
+                //   2. Overlap:       /workspace/d:\real\path\file.tsx  (Docker prefix + Windows absolute)
+                //   3. Pure relative: src/file.tsx
+                //   4. Pure absolute: d:\real\path\file.tsx (correct — no modification needed)
                 let cleanPath = absolutePath;
+                // Strip /workspace/ prefix (Docker-bias hallucination)
                 if (cleanPath.startsWith('/workspace/')) {
                     cleanPath = cleanPath.substring(11);
                 }
@@ -354,10 +362,30 @@ async function _handleSendMessage(userText, model, workerModel, context) {
                 else if (cleanPath.startsWith('\\workspace\\')) {
                     cleanPath = cleanPath.substring(11);
                 }
+                const driveIndex = cleanPath.search(/[a-zA-Z]:/);
+                if (driveIndex > 0) {
+                    cleanPath = cleanPath.substring(driveIndex);
+                }
                 cleanPath = path.normalize(cleanPath);
-                const finalPath = cleanPath.startsWith(workspacePath)
-                    ? cleanPath
-                    : path.join(workspacePath, cleanPath);
+                // Resolve to an absolute path inside the workspace
+                let finalPath;
+                const resolvedClean = path.resolve(cleanPath);
+                const resolvedWs = path.resolve(workspacePath);
+                // Case-insensitive comparison on Windows (d: vs D:)
+                if (resolvedClean.toLowerCase().startsWith(resolvedWs.toLowerCase())) {
+                    finalPath = resolvedClean; // Already inside the workspace — use as-is
+                }
+                else if (path.isAbsolute(cleanPath)) {
+                    // Absolute path outside the workspace — reject to prevent LSP scope escape
+                    return {
+                        success: false,
+                        output: `PATH ERROR: "${absolutePath}" apunta fuera del workspace actual. ` +
+                            `Usa una ruta relativa al workspace (ej. "src/pages/MiArchivo.jsx") o llama list_dir(".") para descubrir la estructura real.`,
+                    };
+                }
+                else {
+                    finalPath = path.join(workspacePath, cleanPath);
+                }
                 const uri = vscode.Uri.file(finalPath);
                 await vscode.workspace.openTextDocument(uri);
                 // Retry loop — TS/JS Language Server may not have finished parsing the AST yet.
@@ -399,7 +427,8 @@ async function _handleSendMessage(userText, model, workerModel, context) {
                 return { success: false, output: `get_code_structure error: ${err.message ?? String(err)}` };
             }
         };
-        for await (const event of (0, agentEngine_1.runAgentLoop)(userText, agentId, _conversationHistory, engineConfig, workspacePath, _currentAbortController.signal, _sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback)) {
+        const mcpTools = _mcpClient.getMcpTools();
+        for await (const event of (0, agentEngine_1.runAgentLoop)(userText, agentId, _conversationHistory, engineConfig, workspacePath, _currentAbortController.signal, _sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, async (name, args) => await _mcpClient.callMcpTool(name, args))) {
             _postToPanel({ ...event });
             if (event.type === 'streamChunk') {
                 fullAssistantText += event.text;
@@ -689,7 +718,7 @@ function _buildHtml(webview) {
         <div class="logo-dot"></div>
       </div>
       <span class="header-title">Fluxo AI</span>
-      <span class="header-subtitle">v7.12.4</span>
+      <span class="header-subtitle">v7.21.0</span>
       <span id="agent-badge" class="agent-badge hidden"></span>
     </div>
     <div class="header-right">
@@ -743,6 +772,8 @@ function _buildHtml(webview) {
 function activate(context) {
     _extensionUri = context.extensionUri;
     _context = context;
+    _mcpClient = new mcpClient_1.McpSwarmClient();
+    _mcpClient.initialize();
     // Initialize conversation persistence
     _conversationHistory = context.workspaceState.get(STORAGE_KEY) || [];
     // Session cleanup — trim logs and prune old backups on every new session
@@ -827,9 +858,10 @@ function activate(context) {
             _postToPanel({ type: 'modelsUpdate', models, model: cfg.model, workerModel: cfg.workerModel });
         }
     }));
-    console.log('[Fluxo AI] v7.12.4 — Circuit Breaker & Graceful Degradation');
+    console.log('[Fluxo AI] v7.21.0 — Resilient Payload: replace_lines Array Normalizer');
 }
 function deactivate() {
     _currentAbortController?.abort();
+    _mcpClient?.destroy();
 }
 //# sourceMappingURL=extension.js.map

@@ -34,6 +34,14 @@ function execute(args, workspacePath) {
             output: 'SYSTEM ERROR: Intento de lectura de archivo por terminal bloqueado. NO uses comandos de consola (cat, type, grep, etc.) para leer código. Usa las herramientas nativas read_file o search_in_files inmediatamente.',
         };
     }
+    // Evasion Block: prevent sed, awk, node -e, perl, python -c
+    const EVASION_TOOLS = /^\s*(sed|awk|node\s+-e|perl|python\s+-c)\b/i;
+    if (cmdSegments.some(seg => EVASION_TOOLS.test(seg))) {
+        return {
+            success: false,
+            output: 'SYSTEM SECURITY ALERT: Intento de evasión detectado. Tienes PROHIBIDO usar herramientas de CLI (sed, node, etc.) para manipular código. Usa read_file o search_and_replace inmediatamente.',
+        };
+    }
     // Block persistent dev-server processes — they hang spawnSync and cause ETIMEDOUT loops.
     const PERSISTENT_PATTERNS = [
         /\bnpm\s+run\s+dev\b/,

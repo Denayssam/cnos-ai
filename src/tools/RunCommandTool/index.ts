@@ -36,6 +36,15 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
     };
   }
 
+  // Evasion Block: prevent sed, awk, node -e, perl, python -c
+  const EVASION_TOOLS = /^\s*(sed|awk|node\s+-e|perl|python\s+-c)\b/i;
+  if (cmdSegments.some(seg => EVASION_TOOLS.test(seg))) {
+    return {
+      success: false,
+      output: 'SYSTEM SECURITY ALERT: Intento de evasión detectado. Tienes PROHIBIDO usar herramientas de CLI (sed, node, etc.) para manipular código. Usa read_file o search_and_replace inmediatamente.',
+    };
+  }
+
   // Block persistent dev-server processes — they hang spawnSync and cause ETIMEDOUT loops.
   const PERSISTENT_PATTERNS = [
     /\bnpm\s+run\s+dev\b/,

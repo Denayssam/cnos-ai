@@ -96,6 +96,12 @@ function debugLog(workspacePath: string, msg: string) {
 const TOOL_PRUNE_PLACEHOLDER = '[Contenido original truncado por el sistema para ahorrar tokens. El agente ya procesó esta información. Si es estrictamente necesario, vuelve a usar la herramienta.]';
 const MAX_TOOL_CONTENT_CHARS = 1500;
 
+// ─── Smart Memory Immunity List ─────────────────────────────────────────────
+// Tool names whose results are NEVER pruned from history.
+// These carry the agent's 'semantic compass' (code structure map + latest file
+// snapshot) — pruning them causes re-read loops and wasted iterations.
+const PRUNE_IMMUNE_TOOLS = new Set(['get_code_structure']);
+
 function pruneToolResults(messages: ChatMessage[]): ChatMessage[] {
   const turnStarts: number[] = [];
   for (let i = 0; i < messages.length; i++) {
@@ -106,10 +112,30 @@ function pruneToolResults(messages: ChatMessage[]): ChatMessage[] {
   }
   // Keep last 2 turns intact; prune everything before that
   const keepFromIdx = turnStarts.length >= 2 ? turnStarts[turnStarts.length - 2] : 0;
+
+  // Find the index of the LAST read_file tool result in the full message list.
+  // That result must never be pruned — it is the agent's current snapshot of a file.
+  let lastReadFileIdx = -1;
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role === 'tool' && messages[i].name === 'read_file') {
+      lastReadFileIdx = i;
+    }
+  }
+
   return messages.map((m, i) => {
-    if (i >= keepFromIdx) { return m; }
-    if (m.role !== 'tool') { return m; }
+    if (i >= keepFromIdx) { return m; }                          // recent turns: always intact
+    if (m.role !== 'tool') { return m; }                         // non-tool messages: never prune
+    if (PRUNE_IMMUNE_TOOLS.has(m.name ?? '')) { return m; }     // immune tools: always intact
+    if (i === lastReadFileIdx) { return m; }                     // last read_file: always intact
     const content = typeof m.content === 'string' ? m.content : '';
+    if (content.includes('SYSTEM ERROR') || 
+        content.includes('ERROR:') || 
+        content.includes('MATCH ERROR:') || 
+        content.includes('BUILD_FAILED') || 
+        content.includes('SYSTEM DIRECTIVE') || 
+        content.includes('[CIRCUIT Breaker ACTIVATED]')) { 
+      return m; 
+    }
     if (content.length <= MAX_TOOL_CONTENT_CHARS) { return m; }
     return { ...m, content: TOOL_PRUNE_PLACEHOLDER };
   });
@@ -127,7 +153,9 @@ export async function* runAgentLoop(
   sentinelHasError: boolean = false,
   approvalCallback?: (summary: string, details: string) => Promise<boolean>,
   nativeEditCallback?: (filePath: string, searchSnippet: string, replaceSnippet: string) => Promise<{ success: boolean; output: string }>,
-  getCodeStructureCallback?: (absolutePath: string) => Promise<{ success: boolean; output: string }>
+  getCodeStructureCallback?: (absolutePath: string) => Promise<{ success: boolean; output: string }>,
+  mcpTools: NativeTool[] = [],
+  callMcpToolCallback?: (name: string, args: any) => Promise<{ success: boolean; output: string }>
 ): AsyncGenerator<AgentEvent> {
 
   // 1. Intent Detection (Routing)
@@ -142,7 +170,24 @@ export async function* runAgentLoop(
   }
 
   const agent = AGENTS[agentId] || AGENTS.coder;
-  const agentTools: NativeTool[] = getNativeTools(agent.tools);
+  let agentTools: NativeTool[] = getNativeTools(agent.tools);
+  if (mcpTools && mcpTools.length > 0) {
+    agentTools.push(...mcpTools);
+  }
+
+  // ─── Tool Masker (Deep Masking v7.18.0) ────────────────────────────────────
+  // Extended regex handles intermediate text: "PROHIBIDO usar la herramienta search_and_replace"
+  const maskRegex = /(?:prohibido|no uses|don['']t use|do not use|stop using)[^\w]*(?:[\w]+\s+){0,3}([\w_]+)/gi;
+  let match;
+  const maskedTools = new Set<string>();
+  while ((match = maskRegex.exec(userMessage)) !== null) {
+    maskedTools.add(match[1].toLowerCase());
+  }
+  if (maskedTools.size > 0) {
+    agentTools = agentTools.filter(t => !maskedTools.has(t.function.name.toLowerCase()));
+    debugLog(workspacePath, `[Deep Masking] Tool Masker filtered out: ${Array.from(maskedTools).join(', ')}`);
+  }
+  // ────────────────────────────────────────────────────────────────────────────
 
   // Multi-brain routing: @manager uses config.model; all worker agents use config.workerModel (if set)
   const effectiveConfig: EngineConfig = {
@@ -184,9 +229,17 @@ export async function* runAgentLoop(
   }
 
   const baseSystemPrompt = buildAgentSystemPrompt(agentId);
-  const systemPrompt = workspaceMemoryBlock
+  let systemPrompt = workspaceMemoryBlock
     ? baseSystemPrompt + workspaceMemoryBlock
     : baseSystemPrompt;
+
+  // Deep Masking — inject CRITICAL SYSTEM OVERRIDE into the system prompt for each disabled tool.
+  // This prevents the LLM from calling masked tools even when its base rules mention them.
+  if (maskedTools.size > 0) {
+    for (const toolName of maskedTools) {
+      systemPrompt += `\n\n[CRITICAL SYSTEM OVERRIDE]: EL USUARIO HA DESACTIVADO LA HERRAMIENTA '${toolName}'. ESTÁ ESTRICTAMENTE PROHIBIDO INTENTAR LLAMARLA, INCLUSO SI OTRAS REGLAS LA MENCIONAN. DEBES USAR UNA ESTRATEGIA ALTERNATIVA (EJ: si se prohibió search_and_replace, usa replace_lines).`;
+    }
+  }
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
@@ -195,7 +248,8 @@ export async function* runAgentLoop(
   ];
 
   let iterations = 0;
-  const toolCallHistory: string[] = [];
+  const toolCallHistory: string[] = [];           // all attempted calls — used for loop detection
+  const successfulToolCallHistory: string[] = []; // only committed calls — fed to Sherlock as prior state
   const toolFailureTracker = new Map<string, number>();
   let buildFailureCtx = '';
   let lastEditedFile: string | null = null;
@@ -420,8 +474,8 @@ export async function* runAgentLoop(
         return `${i + 1}. ${tc.function.name}(${argsPreview})`;
       }).join('\n');
 
-      const priorHistory = toolCallHistory.length > 0
-        ? `\n\nPRIOR COMPLETED TOOLS (already executed successfully in this session — account for these before judging the current batch):\n${toolCallHistory.map((h, i) => `${i + 1}. ${h}`).join('\n')}`
+      const priorHistory = successfulToolCallHistory.length > 0
+        ? `\n\nPRIOR COMPLETED TOOLS (already executed successfully in this session — account for these before judging the current batch):\n${successfulToolCallHistory.map((h, i) => `${i + 1}. ${h}`).join('\n')}`
         : '';
 
       const revisorMessages: ChatMessage[] = [
@@ -474,6 +528,20 @@ export async function* runAgentLoop(
 
       const toolName = tc.function.name;
 
+      // ── Deep Masking: Soft Fail ───────────────────────────────────────────────
+      // If the LLM hallucinates a call to a disabled tool, intercept it before
+      // Sherlock or execution — return a corrective error, never a panic crash.
+      if (maskedTools.size > 0 && maskedTools.has(toolName.toLowerCase())) {
+        const softFailMsg = `SYSTEM OVERRIDE: Has intentado alucinar la herramienta [${toolName}] que está desactivada. Corrige tu estrategia inmediatamente usando las herramientas disponibles en tu esquema.`;
+        debugLog(workspacePath, `[Deep Masking] Soft Fail — intercepted hallucinated call to '${toolName}'`);
+        const sfDisplayArgs = Object.entries(args).filter(([k]) => k !== 'content').map(([k, v]) => `${k}: ${String(v).slice(0, 80)}`).join(', ');
+        yield { type: 'toolCall', name: toolName, args, displayArgs: sfDisplayArgs };
+        yield { type: 'toolResult', name: toolName, success: false, output: softFailMsg };
+        messages.push({ role: 'tool', tool_call_id: tc.id, name: toolName, content: softFailMsg });
+        continue;
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
       // Register in history (pre-flight check for future iterations)
       toolCallHistory.push(`${toolName}:${JSON.stringify(args)}`);
 
@@ -507,9 +575,29 @@ export async function* runAgentLoop(
             String(args.search_snippet ?? ''),
             String(args.replace_snippet ?? '')
           );
+          // ── Smart Failure Interceptor ──────────────────────────────────────
+          // Inject an engine-level hint BEFORE the Circuit Breaker can fire,
+          // steering the agent toward get_code_structure instead of blind retry.
+          if (!result.success) {
+            result = {
+              ...result,
+              output: result.output +
+                '\n\nCONSEJO DEL MOTOR: El texto no coincide exactamente. ' +
+                'Las causas más comunes son: indentación cambiada, líneas insertadas/eliminadas, o espacios invisibles. ' +
+                'SIGUIENTE PASO OBLIGATORIO: llama get_code_structure sobre el archivo para obtener el mapa de líneas actualizado, ' +
+                'luego usa read_file con el rango exacto (start_line/end_line) para ver el bloque real antes de reintentar.',
+            };
+          }
+          // ──────────────────────────────────────────────────────────────────
         } else if (toolName === 'get_code_structure' && getCodeStructureCallback) {
           yield { type: 'thinking', text: '🔭 Extracting code structure via LSP…' };
           result = await getCodeStructureCallback(String(args.absolute_path ?? ''));
+        } else if (toolName.startsWith('mcp_') && callMcpToolCallback) {
+          yield { type: 'thinking', text: `🔌 MCP: Calling external tool ${toolName}…` };
+          result = await callMcpToolCallback(toolName, args);
+        } else if (toolName === 'fetch_documentation') {
+          yield { type: 'thinking', text: '🌐 Fetching external documentation…' };
+          result = await fetchDocumentation(String(args.url ?? ''));
         } else {
           result = executeTool(toolName, args, workspacePath);
         }
@@ -540,21 +628,41 @@ export async function* runAgentLoop(
       // ─────────────────────────────────────────────────────────────────────────
 
       // ── Circuit Breaker — halts blind retries on repeated tool failure ───────
+      // replace_lines is the last-resort editing tool — it must NEVER be locked out.
       if (!result.success) {
-        const fails = (toolFailureTracker.get(toolName) || 0) + 1;
-        toolFailureTracker.set(toolName, fails);
-        if (fails >= 2) {
-          result = {
-            ...result,
-            output: `SYSTEM ERROR [CIRCUIT BREAKER ACTIVATED]: Has fallado ${fails} veces consecutivas intentando usar ${toolName}. ` +
-              `Tienes PROHIBIDO seguir intentándolo a ciegas. El error probablemente se deba a diferencias invisibles de espacios/indentación. ` +
-              `DEBES CAMBIAR DE ESTRATEGIA INMEDIATAMENTE (ej. usa replace_lines apoyándote en el LSP) o detente, ` +
-              `emite tu reporte y pídele ayuda al usuario para que ajuste el código manualmente.`,
-          };
-          debugLog(workspacePath, `Circuit Breaker activated for ${toolName} after ${fails} consecutive failures`);
+        if (toolName !== 'run_command' && toolName !== 'get_code_structure' && toolName !== 'replace_lines') {
+          const fails = (toolFailureTracker.get(toolName) || 0) + 1;
+          toolFailureTracker.set(toolName, fails);
+          if (fails >= 2) {
+            result = {
+              ...result,
+              output: `SYSTEM ERROR [CIRCUIT Breaker ACTIVATED]: Has fallado ${fails} veces consecutivas intentando usar ${toolName}. ` +
+                `Tienes PROHIBIDO seguir intentándolo a ciegas. El error probablemente se deba a diferencias invisibles de espacios/indentación. ` +
+                `DEBES CAMBIAR DE ESTRATEGIA INMEDIATAMENTE (ej. usa replace_lines apoyándote en el LSP) o detente, ` +
+                `emite tu reporte y pídele ayuda al usuario para que ajuste el código manualmente.`,
+            };
+            debugLog(workspacePath, `Circuit Breaker activated for ${toolName} after ${fails} consecutive failures`);
+          }
         }
       } else {
         toolFailureTracker.delete(toolName);
+        // Stateless Auditor: only commit to Sherlock's prior-state history on success.
+        // Failed calls stay in toolCallHistory (loop detection) but never reach Sherlock,
+        // preventing false REDUNDANT_DECLARATION positives on legitimate retries.
+        successfulToolCallHistory.push(`${toolName}:${JSON.stringify(args)}`);
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
+      // ── replace_lines Chunking Hint ──────────────────────────────────────────
+      // If replace_lines fails (e.g. malformed JSON from an overly long block),
+      // append a strict fragmentation directive so the LLM splits the edit instead
+      // of panicking or escalating to write_file.
+      if (!result.success && toolName === 'replace_lines') {
+        result = {
+          ...result,
+          output: result.output +
+            '\n\nERROR DE SINTAXIS/JSON. Si el bloque de código que intentas reemplazar es demasiado largo (más de 30-40 líneas), divídelo en fragmentos más pequeños. Haz un replace_lines para las líneas 50-60, luego otro para 61-70. NO intentes reemplazar todo de un solo golpe. Revisa tu sintaxis y reintenta usar replace_lines.',
+        };
       }
       // ─────────────────────────────────────────────────────────────────────────
 
@@ -845,4 +953,103 @@ export async function summarizeHistory(
   ];
   const result = await callOpenRouterBlocking(messages, config, new AbortController().signal);
   return result.content || '';
+}
+
+// ─── fetch_documentation helper ──────────────────────────────────────────────
+// Zero external dependencies: uses the native fetch API available in Node ≥18
+// and VS Code's built-in runtime. Cleans HTML to plain text via regex so the
+// LLM receives readable documentation without burning tokens on markup noise.
+
+const MAX_DOC_CHARS = 20_000;
+
+async function fetchDocumentation(url: string): Promise<{ success: boolean; output: string }> {
+  if (!url || !url.startsWith('http')) {
+    return { success: false, output: `[fetch_documentation] Invalid URL: "${url}". Must start with http:// or https://.` };
+  }
+
+  let rawText: string;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000); // 15 s timeout
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'FluxoAI-DocFetcher/1.0 (https://fluxotechai.com)' },
+    });
+    clearTimeout(timer);
+
+    if (!response.ok) {
+      return {
+        success: false,
+        output: `[fetch_documentation] HTTP ${response.status} ${response.statusText} — Could not fetch: ${url}`,
+      };
+    }
+
+    rawText = await response.text();
+  } catch (err: any) {
+    const isTimeout = err?.name === 'AbortError';
+    return {
+      success: false,
+      output: isTimeout
+        ? `[fetch_documentation] Timeout (15s) fetching: ${url}`
+        : `[fetch_documentation] Network error: ${err?.message ?? String(err)}`,
+    };
+  }
+
+  // ── HTML Cleaning Pipeline ────────────────────────────────────────────────
+  let cleaned = rawText;
+
+  // 1. Extract body content if HTML (skip for raw text/markdown responses)
+  const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (bodyMatch) { cleaned = bodyMatch[1]; }
+
+  // 2. Remove noise tags wholesale (scripts, styles, nav, header, footer, svg, forms)
+  cleaned = cleaned.replace(/<script[\s\S]*?<\/script>/gi, '');
+  cleaned = cleaned.replace(/<style[\s\S]*?<\/style>/gi, '');
+  cleaned = cleaned.replace(/<nav[\s\S]*?<\/nav>/gi, '');
+  cleaned = cleaned.replace(/<header[\s\S]*?<\/header>/gi, '');
+  cleaned = cleaned.replace(/<footer[\s\S]*?<\/footer>/gi, '');
+  cleaned = cleaned.replace(/<svg[\s\S]*?<\/svg>/gi, '');
+  cleaned = cleaned.replace(/<form[\s\S]*?<\/form>/gi, '');
+  cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, '');
+
+  // 3. Convert structural HTML tags to Markdown equivalents for readability
+  cleaned = cleaned.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, '\n# $1\n');
+  cleaned = cleaned.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, '\n## $1\n');
+  cleaned = cleaned.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, '\n### $1\n');
+  cleaned = cleaned.replace(/<h[4-6][^>]*>([\s\S]*?)<\/h[4-6]>/gi, '\n#### $1\n');
+  cleaned = cleaned.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, '\n- $1');
+  cleaned = cleaned.replace(/<br\s*\/?>/gi, '\n');
+  cleaned = cleaned.replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, '\n$1\n');
+  cleaned = cleaned.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, '\n```\n$1\n```\n');
+  cleaned = cleaned.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '`$1`');
+  cleaned = cleaned.replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
+
+  // 4. Strip all remaining HTML tags
+  cleaned = cleaned.replace(/<[^>]+>/g, ' ');
+
+  // 5. Decode common HTML entities
+  cleaned = cleaned
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#x27;/g, "'")
+    .replace(/&#x2F;/g, '/');
+
+  // 6. Normalize whitespace — collapse runs of blank lines to a single blank line
+  cleaned = cleaned.replace(/[ \t]+/g, ' ');
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  cleaned = cleaned.trim();
+
+  // 7. Truncate to stay within context budget
+  const truncated = cleaned.length > MAX_DOC_CHARS
+    ? cleaned.slice(0, MAX_DOC_CHARS) + `\n\n...[TRUNCATED — ${cleaned.length - MAX_DOC_CHARS} additional characters omitted to protect context window]`
+    : cleaned;
+
+  return {
+    success: true,
+    output: `[fetch_documentation] Source: ${url}\n\n${truncated}`,
+  };
 }
