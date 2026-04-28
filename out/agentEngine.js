@@ -80,8 +80,37 @@ function debugLog(workspacePath, msg) {
         console.error('[debugLog] Failed to write to fluxo_agent.log — path:', workspacePath, '— error:', e?.stack ?? e);
     }
 }
+// ─── Context Pruning ─────────────────────────────────────────────────────────
+// Truncates tool result messages from old turns to prevent context balloon.
+// Last 2 turns (assistant+tool pairs) are always kept intact.
+const TOOL_PRUNE_PLACEHOLDER = '[Contenido original truncado por el sistema para ahorrar tokens. El agente ya procesó esta información. Si es estrictamente necesario, vuelve a usar la herramienta.]';
+const MAX_TOOL_CONTENT_CHARS = 1500;
+function pruneToolResults(messages) {
+    const turnStarts = [];
+    for (let i = 0; i < messages.length; i++) {
+        const m = messages[i];
+        if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+            turnStarts.push(i);
+        }
+    }
+    // Keep last 2 turns intact; prune everything before that
+    const keepFromIdx = turnStarts.length >= 2 ? turnStarts[turnStarts.length - 2] : 0;
+    return messages.map((m, i) => {
+        if (i >= keepFromIdx) {
+            return m;
+        }
+        if (m.role !== 'tool') {
+            return m;
+        }
+        const content = typeof m.content === 'string' ? m.content : '';
+        if (content.length <= MAX_TOOL_CONTENT_CHARS) {
+            return m;
+        }
+        return { ...m, content: TOOL_PRUNE_PLACEHOLDER };
+    });
+}
 // ─── Agent Loop ───────────────────────────────────────────────────────────────
-async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, config, workspacePath, abortSignal, sentinelHasError = false, approvalCallback, nativeEditCallback) {
+async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, config, workspacePath, abortSignal, sentinelHasError = false, approvalCallback, nativeEditCallback, getCodeStructureCallback) {
     // 1. Intent Detection (Routing)
     yield { type: 'thinking', text: 'Detecting intent…' };
     let agentId = initialAgentId;
@@ -96,6 +125,11 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
     }
     const agent = agents_1.AGENTS[agentId] || agents_1.AGENTS.coder;
     const agentTools = (0, tools_1.getNativeTools)(agent.tools);
+    // Multi-brain routing: @manager uses config.model; all worker agents use config.workerModel (if set)
+    const effectiveConfig = {
+        ...config,
+        model: agentId === 'manager' ? config.model : (config.workerModel || config.model),
+    };
     yield {
         type: 'agentSelected',
         agentId: agent.id,
@@ -138,6 +172,7 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
     ];
     let iterations = 0;
     const toolCallHistory = [];
+    const toolFailureTracker = new Map();
     let buildFailureCtx = '';
     let lastEditedFile = null;
     let consecutiveGhostCount = 0;
@@ -157,12 +192,14 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
         yield { type: 'iterationCount', count: iterations, max: MAX_ITERATIONS };
         yield { type: 'thinking', text: iterations === 1 ? `Agent ${agent.name} is planning…` : `Iteration ${iterations}: processing…` };
         // API call — streaming when enabled (fallback to blocking if tools present)
+        // Apply context pruning before sending to avoid token balloon from large tool results.
+        const msgsToSend = pruneToolResults(messages);
         let apiResponse;
         let alreadyStreamedText = false;
         try {
-            if (config.streamingEnabled) {
+            if (effectiveConfig.streamingEnabled) {
                 const textChunks = [];
-                apiResponse = await callOpenRouterStreaming(messages, config, abortSignal, agentTools, (chunk) => textChunks.push(chunk), consecutiveGhostCount > 0);
+                apiResponse = await callOpenRouterStreaming(msgsToSend, effectiveConfig, abortSignal, agentTools, (chunk) => textChunks.push(chunk), consecutiveGhostCount > 0);
                 if (textChunks.length > 0) {
                     alreadyStreamedText = true;
                     for (const chunk of textChunks) {
@@ -171,7 +208,7 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 }
             }
             else {
-                apiResponse = await callOpenRouterBlocking(messages, config, abortSignal, agentTools, consecutiveGhostCount > 0);
+                apiResponse = await callOpenRouterBlocking(msgsToSend, effectiveConfig, abortSignal, agentTools, consecutiveGhostCount > 0);
             }
         }
         catch (err) {
@@ -437,6 +474,10 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                     yield { type: 'thinking', text: '🔍 Applying VS Code native edit…' };
                     result = await nativeEditCallback(String(args.path ?? ''), String(args.search_snippet ?? ''), String(args.replace_snippet ?? ''));
                 }
+                else if (toolName === 'get_code_structure' && getCodeStructureCallback) {
+                    yield { type: 'thinking', text: '🔭 Extracting code structure via LSP…' };
+                    result = await getCodeStructureCallback(String(args.absolute_path ?? ''));
+                }
                 else {
                     result = (0, tools_1.executeTool)(toolName, args, workspacePath);
                 }
@@ -447,6 +488,44 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
             const duration = ((Date.now() - startTime) / 1000).toFixed(1);
             yield { type: 'toolResult', name: toolName, success: result.success, output: result.output, duration };
             debugLog(workspacePath, `Tool ${toolName}: success=${result.success}${!result.success ? ` — ${result.output.slice(0, 300)}` : ''}`);
+            // ── Motor-level telemetry ────────────────────────────────────────────────
+            // Auto-log tool failures to .fluxo/improvements.md without relying on the agent.
+            if (!result.success && workspacePath && !result.output.startsWith('[LOOP_INTERCEPTED]')) {
+                try {
+                    const improvementsDir = path.join(workspacePath, '.fluxo');
+                    const improvementsPath = path.join(improvementsDir, 'improvements.md');
+                    fs.mkdirSync(improvementsDir, { recursive: true });
+                    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+                    const isNew = !fs.existsSync(improvementsPath);
+                    const header = isNew
+                        ? '# Fluxo AI — Friction & Improvement Log\n\n> Auto-generated by the engine. Tool failures are logged automatically.\n'
+                        : '';
+                    const argsSnippet = JSON.stringify(args).slice(0, 200);
+                    const entry = `\n---\n\n### [${ts}] \`tool_failure\`\n\n**Tool:** ${toolName}\n**Args:** ${argsSnippet}\n**Error:** ${result.output.slice(0, 400)}\n`;
+                    fs.appendFileSync(improvementsPath, header + entry, 'utf-8');
+                }
+                catch { /* telemetry must never interrupt execution */ }
+            }
+            // ─────────────────────────────────────────────────────────────────────────
+            // ── Circuit Breaker — halts blind retries on repeated tool failure ───────
+            if (!result.success) {
+                const fails = (toolFailureTracker.get(toolName) || 0) + 1;
+                toolFailureTracker.set(toolName, fails);
+                if (fails >= 2) {
+                    result = {
+                        ...result,
+                        output: `SYSTEM ERROR [CIRCUIT BREAKER ACTIVATED]: Has fallado ${fails} veces consecutivas intentando usar ${toolName}. ` +
+                            `Tienes PROHIBIDO seguir intentándolo a ciegas. El error probablemente se deba a diferencias invisibles de espacios/indentación. ` +
+                            `DEBES CAMBIAR DE ESTRATEGIA INMEDIATAMENTE (ej. usa replace_lines apoyándote en el LSP) o detente, ` +
+                            `emite tu reporte y pídele ayuda al usuario para que ajuste el código manualmente.`,
+                    };
+                    debugLog(workspacePath, `Circuit Breaker activated for ${toolName} after ${fails} consecutive failures`);
+                }
+            }
+            else {
+                toolFailureTracker.delete(toolName);
+            }
+            // ─────────────────────────────────────────────────────────────────────────
             // Track most recently edited file for SYNTAX_RECOVERY_DIRECTIVE
             if ((toolName === 'replace_lines' || toolName === 'write_file') && result.success) {
                 lastEditedFile = args.path || null;
@@ -489,7 +568,8 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
             // Only the history content is wrapped — prevents panic re-tries.
             const anchoredContent = (!result.success &&
                 !result.output.includes('BUILD_FAILED — MANDATORY FIX PROTOCOL') &&
-                !result.output.includes('[SYSTEM ENGINE ERROR]'))
+                !result.output.includes('[SYSTEM ENGINE ERROR]') &&
+                !result.output.includes('[CIRCUIT BREAKER ACTIVATED]'))
                 ? `MANAGER DIRECTIVE: The tool failed with the following error: ${result.output}\n\n` +
                     `Do not panic and DO NOT repeat the exact same call. ` +
                     `Review your plan, analyze the error, and formulate an alternative strategy to achieve the goal.`

@@ -24,6 +24,16 @@ function execute(args, workspacePath) {
     if (BLOCKED.some(b => b.test(cmd))) {
         return { success: false, output: `Blocked dangerous command: ${cmd}` };
     }
+    // Anti-Hacker Shield: block CLI file-reading commands (cat, type, grep, etc.).
+    // Agents must use read_file or search_in_files instead.
+    const CLI_FILE_READ = /^\s*(cat|tail|head|less|more|type|Get-Content|findstr|grep|wc)\b/i;
+    const cmdSegments = cmd.split(/\s*[|;&]+\s*/);
+    if (cmdSegments.some(seg => CLI_FILE_READ.test(seg))) {
+        return {
+            success: false,
+            output: 'SYSTEM ERROR: Intento de lectura de archivo por terminal bloqueado. NO uses comandos de consola (cat, type, grep, etc.) para leer código. Usa las herramientas nativas read_file o search_in_files inmediatamente.',
+        };
+    }
     // Block persistent dev-server processes — they hang spawnSync and cause ETIMEDOUT loops.
     const PERSISTENT_PATTERNS = [
         /\bnpm\s+run\s+dev\b/,

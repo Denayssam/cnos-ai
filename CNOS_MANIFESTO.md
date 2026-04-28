@@ -1,5 +1,5 @@
 # CNOS AI — Constitución del Sistema
-**Versión 3.4.0 · Documento Vinculante**
+**Versión 7.9.11 · Documento Vinculante**
 
 Este archivo es la fuente de autoridad para todos los agentes de CNOS AI. Cuando un agente tenga dudas sobre cómo editar, qué estilo de UI aplicar, o qué constituye una entrega válida, **debe leer este documento antes de actuar**.
 
@@ -13,21 +13,22 @@ Este archivo es la fuente de autoridad para todos los agentes de CNOS AI. Cuando
 
 | Situación | Herramienta obligatoria | Herramienta prohibida |
 |-----------|------------------------|-----------------------|
-| Modificar un archivo existente | `replace_lines` | `write_file` |
+| Modificar un archivo existente | `search_and_replace` | `write_file`, `replace_lines` |
 | Crear un archivo nuevo | `write_file` | — |
 | Localizar un bloque en archivo largo | `search_in_files` primero | `read_file` sin búsqueda previa |
 
 ### Flujo de Edición Canónico
 
 ```
-1. search_in_files  →  localizar la función/bloque exacto
-2. read_file        →  obtener los números de línea reales (output: "42 | const x = 1;")
-3. replace_lines    →  reemplazar únicamente las líneas N–M
-4. (si el archivo fue modificado previamente en esta tarea)
-   read_file de nuevo → refrescar números de línea antes del siguiente replace_lines
+1. search_in_files    →  localizar la función/bloque exacto
+2. read_file          →  obtener el contenido actual del bloque a modificar
+3. search_and_replace →  copiar el bloque exacto como search_snippet (2–3 líneas de contexto)
+                          definir replace_snippet con el nuevo contenido
+                          ⚡ El archivo se guarda automáticamente tras cada edición exitosa
+                          🔍 El Chat muestra un Diff rojo/verde de los cambios aplicados
 ```
 
-**Por qué**: `write_file` en un archivo existente fuerza al modelo a regenerar el archivo completo desde memoria de entrenamiento. Cuando el contexto es insuficiente o el archivo es largo, el modelo completa las secciones que no tiene en contexto con código inventado — importando paquetes equivocados, omitiendo funciones existentes, o introduciendo bugs que no existían. `replace_lines` opera solo sobre el bloque que el agente acaba de leer, eliminando este vector de error.
+**Por qué `search_and_replace` y no `write_file`**: `write_file` en un archivo existente fuerza al modelo a regenerar el archivo completo desde memoria de entrenamiento — con alta probabilidad de importar paquetes equivocados, omitir funciones existentes, o introducir bugs que no existían. `search_and_replace` opera exclusivamente sobre el bloque que el agente acaba de leer, con fuzzy-matching para tolerancia de indentación, backup automático en `.fluxo/backups/`, y visualización inmediata del diff al usuario.
 
 ---
 
@@ -45,8 +46,8 @@ El **Sherlock Auditor** es una capa de validación LLM independiente que se ejec
 | 4 | **LOOPING** — Repetir el mismo tool call con los mismos args | `ERROR:` + escalación al Manager |
 | 5 | **SILOED CHANGES** — Modificar sin buscar usages | `ERROR:` + bloqueo |
 | 6 | **TECH STACK DRIFT** — Importar paquetes que no existen en el codebase | `ERROR:` + bloqueo |
-| 7 | **WRITE_FILE FALLBACK** — Usar `write_file` en archivo existente | `ERROR:` + bloqueo |
-| 8 | **GHOST EXECUTION (narración)** — Frases "I will now", "Let me run" sin `<tool_call>` | `ERROR:` + retry forzado |
+| 7 | **WRITE_FILE FALLBACK** — Usar `write_file` en archivo existente (la herramienta correcta es `search_and_replace`) | `ERROR:` + bloqueo |
+| 8 | **GHOST EXECUTION (narración)** — Frases "I will now", "Let me run" sin tool call real | `ERROR:` + retry forzado |
 | 9 | **SENTINEL_BLOCK / BUILD_BLOCK** — Intentar cerrar tarea con build roto | `ERROR:` + bloqueo con output del compilador |
 
 ### Sentinel — Vigilante de Terminal en Tiempo Real
@@ -172,6 +173,43 @@ Cada respuesta del agente sigue esta estructura obligatoria:
 ```
 
 **Regla absoluta**: Si la respuesta contiene un `<tool_call>`, ese tag debe ser el **último contenido** del mensaje. Nada después.
+
+---
+
+## VI. SISTEMA `.fluxo/` — Memoria y Telemetría
+
+Fluxo AI mantiene una carpeta oculta `.fluxo/` en la raíz de cada workspace. Es la capa de persistencia del enjambre.
+
+| Archivo / Carpeta | Propósito | Quién escribe |
+|---|---|---|
+| `.fluxo/memory.md` | Reglas, convenciones y decisiones arquitectónicas del proyecto | Manager (`update_memory`) |
+| `.fluxo/improvements.md` | Bitácora de fricción y telemetría del enjambre | Motor (automático en cada fallo de herramienta) |
+| `.fluxo/backups/` | Backup automático de cada archivo editado con `search_and_replace` (máx. 30 archivos, rotación automática) | Motor (automático) |
+
+### Inyección de Memoria
+
+El contenido de `.fluxo/memory.md` se inyecta **automáticamente** al inicio de cada sesión en el `systemPrompt` de **todos** los agentes, bajo el encabezado `--- WORKSPACE MEMORY & RULES ---`. Las reglas ahí escritas son vinculantes sin que el usuario tenga que repetirlas.
+
+### Herramientas Exclusivas del Manager
+
+| Herramienta | Acción |
+|---|---|
+| `update_memory` | Crea o sobreescribe `.fluxo/memory.md` (merge manual antes de escribir) |
+| _(motor automático)_ | El engine registra cada `success: false` en `.fluxo/improvements.md` sin intervención del agente |
+
+---
+
+## VII. AGENTES DEL ENJAMBRE — Referencia Rápida
+
+| Agente | Herramientas exclusivas | Rol |
+|---|---|---|
+| **Coder** 💻 | `search_and_replace`, `propose_plan`, `ask_user_approval` | Edición de código, bugs, features |
+| **Designer** 🎨 | `search_images` | UI/UX, CSS, layouts |
+| **Dashboard** 📊 | — | Gráficas, analytics, KPIs |
+| **Payments** 💳 | — | Stripe, PayPal, pasarelas |
+| **Manager** 🧭 | `update_memory`, `search_and_replace`, `propose_plan`, `ask_user_approval` | Orquestación, debugging, telemetría |
+
+El **Router** (Gemini Flash) analiza cada mensaje y selecciona el agente. Las `@menciones` explícitas anulan el routing automático.
 
 ---
 

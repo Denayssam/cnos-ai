@@ -723,3 +723,30 @@ body { display: flex; flex-direction: column; height: 100vh; }
 .diff-remove { display: block; background: var(--diff-rem-bg); color: var(--diff-rem-text); white-space: pre; padding: 0 8px; margin: 0; }
 .diff-ctx  { display: block; color: inherit; white-space: pre; padding: 0 8px; margin: 0; opacity: 0.65; }
 .tool-diff-block { font-family: var(--font-mono); font-size: 11px; line-height: 1.5; background: var(--code-bg); border-radius: 6px; overflow: hidden; margin: 6px 0; padding: 4px 0; }
+
+/* ─── Working Tree Button ────────────────────────────────────────────────────── */
+.working-tree-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 8px 0 2px;
+  padding: 4px 12px;
+  background: rgba(96, 165, 250, 0.1);
+  border: 1px solid rgba(96, 165, 250, 0.28);
+  border-radius: 5px;
+  color: #60a5fa;
+  font-size: 11px;
+  font-family: var(--font-sans, sans-serif);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.working-tree-btn:hover {
+  background: rgba(96, 165, 250, 0.2);
+  border-color: rgba(96, 165, 250, 0.5);
+  color: #93c5fd;
+}
+
+/* ─── Multi-Brain Model Selectors ───────────────────────────────────────────── */
+.brain-selectors { display: flex; align-items: center; gap: 3px; }
+.brain-label { font-size: 12px; opacity: 0.75; user-select: none; cursor: default; }
+.brain-sep { color: rgba(255,255,255,0.2); font-size: 10px; padding: 0 2px; user-select: none; }

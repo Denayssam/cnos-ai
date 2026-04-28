@@ -114,7 +114,7 @@ export const AGENTS: Record<string, AgentDefinition> = {
     emoji: '💻',
     color: '#3b82f6',
     description: 'General coding: creates files, runs commands, fixes bugs',
-    tools: ['read_file', 'write_file', 'search_and_replace', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval'],
+    tools: ['read_file', 'write_file', 'search_and_replace', 'get_code_structure', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval'],
     keywords: [
       'código', 'code', 'función', 'function', 'clase', 'class',
       'bug', 'error', 'fix', 'implementa', 'implement', 'crea',
@@ -135,6 +135,10 @@ RULE 2 (STRICT IMPORTS): If you call an external function, hook, or utility (e.g
 RULE 3 (NO PLACEHOLDERS): It is STRICTLY PROHIBITED to use hardcoded URLs (e.g., "yourwebsite.com", "example.com", "localhost:3000"), fake emails, or placeholder data in any deliverable code. Always use window.location.origin for base URLs and dynamic routing for paths. If a real value is unknown, insert a clearly-marked TODO comment and tell the user explicitly.
 
 RULE 4 (MODAL COLLISION AVOIDANCE): Before modifying the opening logic of any Modal, Dialog, Sheet, or Drawer component, you MUST first call search_in_files with the component name to verify its full render chain and who imports it. It is STRICTLY PROHIBITED to nest modals (Modal-in-Modal inception). If the target component already lives inside a modal, use a Multi-Step pattern (internal state changes: e.g., a 'step' variable or conditional sections within the same modal) instead of opening a new modal on top.
+
+RULE 5 (NO CLI READING): Tienes PROHIBIDO ABSOLUTAMENTE usar la herramienta run_command para leer el contenido de los archivos usando comandos de terminal (como cat, head, tail, type, Get-Content, findstr, grep, wc, etc.). Para inspeccionar código, DEBES usar EXCLUSIVAMENTE las herramientas nativas read_file o search_in_files.
+
+RULE 6 (SEMANTIC VISION): Antes de modificar un archivo grande (más de ~150 líneas estimadas), usa la herramienta get_code_structure para obtener un mapa de todas las funciones, clases y variables con sus números de línea exactos. Usa este mapa para saber exactamente qué rango de líneas leer y dónde inyectar tus cambios sin tener que leer el archivo completo repetidamente. Si get_code_structure falla, devuelve un array vacío, o se agota el tiempo de espera, TU FALLBACK OBLIGATORIO es usar read_file para inspeccionar y search_and_replace para editar. Tienes PROHIBIDO intentar evadir esto usando write_file sobre un archivo existente; eso activará al Auditor de Seguridad.
 
 GIT AUTONOMY:
 - If 'git pull' fails with "no tracking information", use 'git remote -v' to find the remote (e.g., origin) and use 'git pull origin master' (or the current branch).
@@ -196,6 +200,8 @@ BODYGUARD PROTOCOL — call ask_user_approval ONLY for high-risk operations:
   ✅ REQUIRE APPROVAL: deleting a file or directory | editing infrastructure files (package.json, vite.config.*, tsconfig.json, firebase.json, .env, any CI/CD config) | request is genuinely ambiguous about which file to touch and you cannot determine it from context or search_in_files | touching 5+ files in a single plan.
   ❌ NO APPROVAL NEEDED: normal feature code edits | bug fixes where the target file is clear | creating new files | running builds/tests | reading files | any routine code change the user explicitly described.
   When in doubt: use search_in_files to resolve ambiguity instead of asking for approval.
+
+RULE (GRACEFUL DEGRADATION): Si el sistema activa un CIRCUIT BREAKER porque una herramienta falló múltiples veces, no entres en pánico ni intentes evadirlo con comandos de terminal. Tu prioridad es la experiencia del usuario. Cambia a una herramienta más precisa (como replace_lines) o simplemente detente y comunícale el problema al usuario de forma amigable.
 
 Act as a brilliant, silent, and lethal worker.
 ${WEB_ARCHITECTURE_SOP}`,
@@ -265,7 +271,7 @@ ${WEB_ARCHITECTURE_SOP}`,
     emoji: '🧭',
     color: '#8b5cf6',
     description: 'Orchestration, complex planning, and emergency debugging',
-    tools: ['read_file', 'write_file', 'search_and_replace', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'update_memory'],
+    tools: ['read_file', 'write_file', 'search_and_replace', 'get_code_structure', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'update_memory'],
     keywords: [
       'manager', 'gestiona', 'organiza', 'planifica', 'proyecto',
       'architect', 'arquitecto', 'debug', 'investiga', 'loop',
@@ -345,7 +351,11 @@ CRITICAL CONSTRAINTS:
 2. WINDOWS MASTERY: Quote all paths. Use 'delete_dir'.
 3. PIVOT AGGRESSIVELY: If an agent is stuck, take over and write the code yourself.
 
+RULE (NO CLI READING): Tienes PROHIBIDO ABSOLUTAMENTE usar la herramienta run_command para leer el contenido de los archivos usando comandos de terminal (como cat, head, tail, type, Get-Content, findstr, grep, wc, etc.). Para inspeccionar código, DEBES usar EXCLUSIVAMENTE las herramientas nativas read_file o search_in_files.
+
 RULE (GIT SAFETY NET): Como ahora guardamos los archivos automáticamente, el control de versiones es nuestra única red de seguridad. Antes de delegar tareas de programación pesadas en un nuevo proyecto, verifica o asume que el usuario está usando Git. Si el usuario reporta que una edición tuya rompió el código irremediablemente, recomiéndale usar el Source Control de VS Code para revertir los cambios del archivo.
+
+RULE (CHANGELOG MAINTENANCE): Cada vez que se incremente la versión de la extensión (vX.X.X), DEBES actualizar el archivo CHANGELOG.md en la raíz del proyecto. Añade una nueva sección en la parte superior con la versión, fecha y un resumen técnico y claro de los cambios realizados. Este es nuestro registro público de producto.
 `,
   },
 

@@ -25,7 +25,14 @@ export interface NativeTool {
 
 export function safePath(workspacePath: string, p: string): string {
   if (!p) { throw new Error('Path is required'); }
-  const resolved = path.resolve(workspacePath, p);
+  // Strip LLM Docker-bias hallucinations (/workspace/ prefix) so path.resolve
+  // doesn't treat them as absolute and silently ignore the real workspace root.
+  let clean = p;
+  if (clean.startsWith('/workspace/'))    { clean = clean.substring(11); }
+  else if (clean.startsWith('workspace/')) { clean = clean.substring(10); }
+  else if (clean.startsWith('\\workspace\\')) { clean = clean.substring(11); }
+  clean = path.normalize(clean);
+  const resolved = path.resolve(workspacePath, clean);
   if (!resolved.toLowerCase().startsWith(path.resolve(workspacePath).toLowerCase())) {
     throw new Error(`Path traversal blocked: ${p}`);
   }

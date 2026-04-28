@@ -1,5 +1,5 @@
 /* global acquireVsCodeApi */
-// ─── Fluxo AI v7.9.8 — Auto-Save & Git Safety Net ───────────────────────────
+// ─── Fluxo AI v7.12.4 — Circuit Breaker & Graceful Degradation ──────────────
 (function () {
   'use strict';
 
@@ -10,7 +10,8 @@
   const promptInput     = document.getElementById('prompt-input');
   const sendBtn         = document.getElementById('send-btn');
   const cancelBtn       = document.getElementById('cancel-btn');
-  const modelSelect     = document.getElementById('model-select');
+  const managerModelSelect = document.getElementById('manager-model-select');
+  const workerModelSelect  = document.getElementById('worker-model-select');
   const agentBadge      = document.getElementById('agent-badge');
   const agentPills      = document.getElementById('agent-pills');
   const statusBar       = document.getElementById('status-bar');
@@ -64,7 +65,7 @@
       case 'iterationCount':   handleIterationCount(data);                                break;
       case 'sentinelStatus':   handleSentinelStatus(data);                                break;
       case 'sentinelAlert':    handleSentinelAlert(data);                                 break;
-      case 'modelsUpdate':     populateModels(data.models, data.model);                   break;
+      case 'modelsUpdate':     populateModels(data.models, data.model, data.workerModel); break;
     }
   });
 
@@ -94,19 +95,27 @@
     'openai/gpt-4o-mini': 'GPT-4o Mini (OpenRouter)',
   };
 
-  function populateModels(models, preferred) {
+  function populateModels(models, managerModel, workerModel) {
     if (!models || !models.length) { return; }
-    const current = modelSelect.value;
-    modelSelect.innerHTML = models.map(m =>
-      `<option value="${m}">${MODEL_LABELS[m] || m}</option>`
-    ).join('');
-    const pick = models.includes(preferred) ? preferred : (models.includes(current) ? current : models[0]);
-    if (pick) { modelSelect.value = pick; }
+    const options = models.map(m => `<option value="${m}">${MODEL_LABELS[m] || m}</option>`).join('');
+
+    const curManager = managerModelSelect.value;
+    managerModelSelect.innerHTML = options;
+    const pickManager = models.includes(managerModel) ? managerModel : (models.includes(curManager) ? curManager : models[0]);
+    if (pickManager) { managerModelSelect.value = pickManager; }
+
+    const curWorker = workerModelSelect.value;
+    workerModelSelect.innerHTML = options;
+    const pickWorker = models.includes(workerModel) ? workerModel : (models.includes(curWorker) ? curWorker : pickManager || models[0]);
+    if (pickWorker) { workerModelSelect.value = pickWorker; }
   }
 
   function handleConfig(data) {
-    if (data.models) { populateModels(data.models, data.model); }
-    else if (data.model) { modelSelect.value = data.model; }
+    if (data.models) { populateModels(data.models, data.model, data.workerModel); }
+    else {
+      if (data.model && managerModelSelect) { managerModelSelect.value = data.model; }
+      if (data.workerModel && workerModelSelect) { workerModelSelect.value = data.workerModel; }
+    }
     apiKeyWarning.classList.toggle('hidden', !!data.hasApiKey);
     if (data.agents) { agents = data.agents; buildAgentPills(); }
 
@@ -430,7 +439,7 @@
     promptInput.value = '';
     autoResize();
     scrollToBottom();
-    vscode.postMessage({ type: 'sendMessage', text, model: modelSelect.value });
+    vscode.postMessage({ type: 'sendMessage', text, managerModel: managerModelSelect.value, workerModel: workerModelSelect.value });
   }
 
   // ─── Agent UI & Pills ──────────────────────────────────────────────────────
@@ -543,6 +552,7 @@
       <div class="tool-details">${argsHtml}</div>
     `;
     el.querySelector('.tool-header').addEventListener('click', () => el.classList.toggle('collapsed'));
+    if (args.path) { el.dataset.filePath = args.path; }
 
     (currentToolActivityItems || messagesEl).appendChild(el);
     scrollToBottom();
@@ -596,6 +606,15 @@
           restEl.className = 'tool-output';
           restEl.textContent = rest;
           details.appendChild(restEl);
+        }
+        // Working Tree button — opens VS Code's native git diff for this file
+        const filePath = card.dataset.filePath;
+        if (filePath) {
+          const wtBtn = document.createElement('button');
+          wtBtn.className = 'working-tree-btn';
+          wtBtn.textContent = '🔍 Ver Working Tree';
+          wtBtn.addEventListener('click', () => vscode.postMessage({ type: 'open_git_diff', path: filePath }));
+          details.appendChild(wtBtn);
         }
       } else if (removedMarker && !isEngineError) {
         const markerIdx   = data.output.indexOf(removedMarker);
@@ -735,7 +754,7 @@
       <div class="welcome-card">
         <div class="welcome-logo">🐾</div>
         <h2 class="welcome-title">Fluxo AI</h2>
-        <p class="welcome-subtitle">Persistent Agent Swarm v7.9.8</p>
+        <p class="welcome-subtitle">Persistent Agent Swarm v7.12.4</p>
         <div class="welcome-tips">
           <div class="tip"><span class="tip-key">↵</span> Send</div>
           <div class="tip-sep">·</div>
@@ -911,7 +930,8 @@
   cancelBtn.addEventListener('click', () => vscode.postMessage({ type: 'cancelStream' }));
   sentinelBtn?.addEventListener('click', () => vscode.postMessage({ type: 'sentinelToggle' }));
   document.getElementById('streaming-info-btn')?.addEventListener('click', () => vscode.postMessage({ type: 'showStreamingInfo' }));
-  modelSelect.addEventListener('change', () => vscode.postMessage({ type: 'saveModel', model: modelSelect.value }));
+  managerModelSelect.addEventListener('change', () => vscode.postMessage({ type: 'saveModel', managerModel: managerModelSelect.value }));
+  workerModelSelect.addEventListener('change', () => vscode.postMessage({ type: 'saveModel', workerModel: workerModelSelect.value }));
 
   // ─── Smart Scroll ────────────────────────────────────────────────────────────
   // If the user scrolls up while the agent is working, pause auto-scroll.

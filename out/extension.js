@@ -181,6 +181,7 @@ async function _handleMessage(msg, context) {
             _postToPanel({
                 type: 'config',
                 model: cfg.model,
+                workerModel: cfg.workerModel,
                 models,
                 hasApiKey: !!cfg.apiKey,
                 agents: (0, agents_1.getAgentList)(),
@@ -191,7 +192,7 @@ async function _handleMessage(msg, context) {
             break;
         }
         case 'sendMessage':
-            if (msg.text && msg.model) {
+            if (msg.text && (msg.model || msg.managerModel)) {
                 const txt = msg.text.trim().toLowerCase();
                 if (txt === '/new' || txt === '/clear') {
                     _conversationHistory = [];
@@ -199,7 +200,7 @@ async function _handleMessage(msg, context) {
                     _postToPanel({ type: 'chatCleared' });
                     break;
                 }
-                _handleSendMessage(msg.text, msg.model, context).catch(e => {
+                _handleSendMessage(msg.text, msg.managerModel || msg.model, msg.workerModel, context).catch(e => {
                     console.error('Send message error:', e);
                 });
             }
@@ -250,9 +251,38 @@ async function _handleMessage(msg, context) {
             }
             break;
         }
+        case 'open_git_diff': {
+            if (msg.path) {
+                const folders = vscode.workspace.workspaceFolders;
+                if (folders?.length) {
+                    const fullPath = path.isAbsolute(msg.path)
+                        ? msg.path
+                        : path.join(folders[0].uri.fsPath, msg.path);
+                    const fileUri = vscode.Uri.file(fullPath);
+                    try {
+                        // Opens VS Code's native Source Control diff view (Working Tree vs HEAD)
+                        await vscode.commands.executeCommand('git.openChange', fileUri);
+                    }
+                    catch {
+                        // Fallback: open the file in the editor if the Git extension is unavailable
+                        try {
+                            const doc = await vscode.workspace.openTextDocument(fileUri);
+                            await vscode.window.showTextDocument(doc);
+                        }
+                        catch {
+                            vscode.window.showWarningMessage(`Could not open git diff for: ${msg.path}`);
+                        }
+                    }
+                }
+            }
+            break;
+        }
         case 'saveModel':
-            if (msg.model) {
-                context.globalState.update('fluxo.selectedModel', msg.model);
+            if (msg.managerModel) {
+                context.globalState.update('fluxo.selectedModel', msg.managerModel);
+            }
+            if (msg.workerModel !== undefined) {
+                context.globalState.update('fluxo.workerModel', msg.workerModel || '');
             }
             break;
         case 'openSettings':
@@ -271,9 +301,12 @@ async function _handleMessage(msg, context) {
     }
 }
 // ─── Core: Engine Integration ───────────────────────────────────────────────
-async function _handleSendMessage(userText, model, context) {
+async function _handleSendMessage(userText, model, workerModel, context) {
     const config = await _buildConfig();
     config.model = model;
+    if (workerModel) {
+        config.workerModel = workerModel;
+    }
     const isDeepseek = model.startsWith('deepseek/') || (!model.includes('/') && model.startsWith('deepseek-'));
     const effectiveKey = isDeepseek
         ? (config.deepseekApiKey || config.apiKey)
@@ -296,6 +329,7 @@ async function _handleSendMessage(userText, model, context) {
         const engineConfig = {
             apiKey: config.apiKey,
             model: config.model,
+            workerModel: config.workerModel,
             maxTokens: config.maxTokens,
             streamingEnabled: config.streamingEnabled,
             deepseekApiKey: config.deepseekApiKey,
@@ -307,7 +341,65 @@ async function _handleSendMessage(userText, model, context) {
             return answer === '✅ Approve';
         };
         const nativeEditCallback = async (relPath, searchSnippet, replaceSnippet) => applyNativeEdit(relPath, searchSnippet, replaceSnippet, workspacePath);
-        for await (const event of (0, agentEngine_1.runAgentLoop)(userText, agentId, _conversationHistory, engineConfig, workspacePath, _currentAbortController.signal, _sentinelHasError, approvalCallback, nativeEditCallback)) {
+        const getCodeStructureCallback = async (absolutePath) => {
+            try {
+                // Sanitize LLM Docker-bias hallucinations (/workspace/ prefix) before resolving.
+                let cleanPath = absolutePath;
+                if (cleanPath.startsWith('/workspace/')) {
+                    cleanPath = cleanPath.substring(11);
+                }
+                else if (cleanPath.startsWith('workspace/')) {
+                    cleanPath = cleanPath.substring(10);
+                }
+                else if (cleanPath.startsWith('\\workspace\\')) {
+                    cleanPath = cleanPath.substring(11);
+                }
+                cleanPath = path.normalize(cleanPath);
+                const finalPath = cleanPath.startsWith(workspacePath)
+                    ? cleanPath
+                    : path.join(workspacePath, cleanPath);
+                const uri = vscode.Uri.file(finalPath);
+                await vscode.workspace.openTextDocument(uri);
+                // Retry loop — TS/JS Language Server may not have finished parsing the AST yet.
+                // Poll up to 4 times (2 s total) before giving up.
+                const MAX_LSP_ATTEMPTS = 4;
+                let symbols;
+                for (let attempt = 1; attempt <= MAX_LSP_ATTEMPTS; attempt++) {
+                    symbols = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', uri);
+                    if (symbols && symbols.length > 0) {
+                        break;
+                    }
+                    if (attempt < MAX_LSP_ATTEMPTS) {
+                        await new Promise(r => setTimeout(r, 500));
+                    }
+                }
+                if (!symbols || symbols.length === 0) {
+                    return {
+                        success: false,
+                        output: 'LSP ERROR: El servidor de lenguaje no pudo extraer los símbolos a tiempo. Usa read_file como fallback.',
+                    };
+                }
+                function mapSymbols(syms) {
+                    return syms.map(s => {
+                        const entry = {
+                            name: s.name,
+                            kind: vscode.SymbolKind[s.kind],
+                            start: s.range.start.line + 1,
+                            end: s.range.end.line + 1,
+                        };
+                        if (s.children && s.children.length > 0) {
+                            entry.children = mapSymbols(s.children);
+                        }
+                        return entry;
+                    });
+                }
+                return { success: true, output: JSON.stringify(mapSymbols(symbols), null, 2) };
+            }
+            catch (err) {
+                return { success: false, output: `get_code_structure error: ${err.message ?? String(err)}` };
+            }
+        };
+        for await (const event of (0, agentEngine_1.runAgentLoop)(userText, agentId, _conversationHistory, engineConfig, workspacePath, _currentAbortController.signal, _sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback)) {
             _postToPanel({ ...event });
             if (event.type === 'streamChunk') {
                 fullAssistantText += event.text;
@@ -463,11 +555,13 @@ async function _buildConfig() {
         }
     }
     const savedModel = _context?.globalState.get('fluxo.selectedModel');
+    const savedWorkerModel = _context?.globalState.get('fluxo.workerModel');
     return {
         apiKey,
         deepseekApiKey: deepseekApiKey || undefined,
         geminiApiKey: geminiApiKey || undefined,
         model: savedModel || vscodeConfig.get('defaultModel') || 'google/gemini-2.5-flash',
+        workerModel: savedWorkerModel || undefined,
         maxTokens: vscodeConfig.get('maxTokens') || 4096,
         streamingEnabled: vscodeConfig.get('streamingEnabled') ?? true,
     };
@@ -595,11 +689,17 @@ function _buildHtml(webview) {
         <div class="logo-dot"></div>
       </div>
       <span class="header-title">Fluxo AI</span>
-      <span class="header-subtitle">v7.9.8</span>
+      <span class="header-subtitle">v7.12.4</span>
       <span id="agent-badge" class="agent-badge hidden"></span>
     </div>
     <div class="header-right">
-      <select id="model-select" class="model-select"></select>
+      <div class="brain-selectors">
+        <span class="brain-label" title="Manager Model — @manager y Sherlock Auditor">🧭</span>
+        <select id="manager-model-select" class="model-select" title="Manager Model"></select>
+        <span class="brain-sep">|</span>
+        <span class="brain-label" title="Worker Model — @coder, @designer y demás agentes">💻</span>
+        <select id="worker-model-select" class="model-select" title="Worker Model"></select>
+      </div>
       <button id="sentinel-btn" class="header-btn sentinel-btn" title="Sentinel Guard — Protege contra comandos peligrosos. Click para activar/desactivar."><span class="sentinel-icon">👁</span><span class="sentinel-label">Guard</span></button>
       <button id="streaming-info-btn" class="header-btn" title="Streaming: Renderizado de texto en tiempo real. Las respuestas aparecen gradualmente mientras el modelo genera.">ⓘ</button>
       <button id="settings-btn" class="header-btn" title="Settings">⚙</button>
@@ -660,7 +760,7 @@ function activate(context) {
         const msg = `@manager 🔴 Sentinel detectó un error de compilación en la terminal:\n\n\`\`\`\n${errorText}\n\`\`\`\n\nToma el control. Identifica qué edición reciente causó este error y dirige al @coder para corregirlo de inmediato con read_file → replace_lines.`;
         // Small delay so the WebView renders the alert bubble before streamStart fires
         setTimeout(() => {
-            _handleSendMessage(msg, config.model, context).catch(console.error);
+            _handleSendMessage(msg, config.model, config.workerModel, context).catch(console.error);
         }, 150);
     });
     // Restore sentinel state from last session (default: off)
@@ -724,10 +824,10 @@ function activate(context) {
         if (e.affectsConfiguration('fluxo') && _panel) {
             const models = await _buildModelList();
             const cfg = await _buildConfig();
-            _postToPanel({ type: 'modelsUpdate', models, model: cfg.model });
+            _postToPanel({ type: 'modelsUpdate', models, model: cfg.model, workerModel: cfg.workerModel });
         }
     }));
-    console.log('[Fluxo AI] v7.9.8 — Auto-Save & Git Safety Net');
+    console.log('[Fluxo AI] v7.12.4 — Circuit Breaker & Graceful Degradation');
 }
 function deactivate() {
     _currentAbortController?.abort();
