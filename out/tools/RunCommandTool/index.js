@@ -7,7 +7,12 @@ exports.TOOL_DEF = {
     type: 'function',
     function: {
         name: 'run_command',
-        description: 'Execute a shell command in the workspace. On Windows, always quote paths containing spaces.',
+        description: 'Execute a shell command in the workspace directory. ' +
+            'On Windows use Windows commands (dir, del, move, copy) — never Linux commands (ls, rm -rf, mv, cp). ' +
+            'Always quote paths that contain spaces. ' +
+            'WORKTREE NOTE: If a Git Worktree is active, do NOT use "cd" to navigate into it. ' +
+            'All native tools (read_file, run_command, replace_block) already operate on the correct ' +
+            'workspace context automatically — attempting "cd <worktree-path>" will break the working directory.',
         parameters: {
             type: 'object',
             properties: {
@@ -20,29 +25,42 @@ exports.TOOL_DEF = {
 function execute(args, workspacePath) {
     const cmd = args.command;
     const timeout = args.timeout || 30000;
+    // ── Destructive command block ────────────────────────────────────────────────
     const BLOCKED = [/rm\s+-rf\s+[/\\~]/, /format\s+[a-z]:/, /del\s+\/[fs]/i, /mkfs/, /dd\s+if=/];
     if (BLOCKED.some(b => b.test(cmd))) {
         return { success: false, output: `Blocked dangerous command: ${cmd}` };
     }
-    // Anti-Hacker Shield: block CLI file-reading commands (cat, type, grep, etc.).
-    // Agents must use read_file or search_in_files instead.
+    // ── Anti-Hacker Shield: block CLI direct file-reading ───────────────────────
+    // Only the FIRST segment (before any pipe) is checked — this allows legitimate
+    // pipeline filtering like "npm run build | head -50" or "tsc 2>&1 | grep error".
+    // The filter in those cases processes STDIN (stdout from the prior command),
+    // not a file on disk. Direct usage as first command IS blocked.
+    //
+    // BLOCKED: grep "error" src/file.ts  |  head -100 src/file.ts  |  cat file.js
+    // ALLOWED: npm run build | grep error |  tsc | head -50         |  git log | tail -20
     const CLI_FILE_READ = /^\s*(cat|tail|head|less|more|type|Get-Content|findstr|grep|wc)\b/i;
     const cmdSegments = cmd.split(/\s*[|;&]+\s*/);
-    if (cmdSegments.some(seg => CLI_FILE_READ.test(seg))) {
+    const firstSegment = cmdSegments[0] ?? '';
+    if (CLI_FILE_READ.test(firstSegment)) {
         return {
             success: false,
-            output: 'SYSTEM ERROR: Intento de lectura de archivo por terminal bloqueado. NO uses comandos de consola (cat, type, grep, etc.) para leer código. Usa las herramientas nativas read_file o search_in_files inmediatamente.',
+            output: 'SYSTEM ERROR: Intento de lectura de archivo por terminal bloqueado. ' +
+                'NO uses comandos de consola (cat, type, grep, head, etc.) para leer código directamente. ' +
+                'Usa read_file o search_in_files. ' +
+                'Para filtrar OUTPUT de otro comando, usa el pipe: "npm run build | grep error" es VÁLIDO.',
         };
     }
-    // Evasion Block: prevent sed, awk, node -e, perl, python -c
+    // ── Evasion Block: prevent sed, awk, node -e, perl, python -c ───────────────
     const EVASION_TOOLS = /^\s*(sed|awk|node\s+-e|perl|python\s+-c)\b/i;
     if (cmdSegments.some(seg => EVASION_TOOLS.test(seg))) {
         return {
             success: false,
-            output: 'SYSTEM SECURITY ALERT: Intento de evasión detectado. Tienes PROHIBIDO usar herramientas de CLI (sed, node, etc.) para manipular código. Usa read_file o search_and_replace inmediatamente.',
+            output: 'SYSTEM SECURITY ALERT: Intento de evasión detectado. Tienes PROHIBIDO usar ' +
+                'herramientas de CLI (sed, awk, node -e, etc.) para manipular código. ' +
+                'Usa read_file y replace_block o replace_symbol inmediatamente.',
         };
     }
-    // Block persistent dev-server processes — they hang spawnSync and cause ETIMEDOUT loops.
+    // ── Persistent dev-server block ──────────────────────────────────────────────
     const PERSISTENT_PATTERNS = [
         /\bnpm\s+run\s+dev\b/,
         /\bnpm\s+start\b/,
@@ -60,15 +78,26 @@ function execute(args, workspacePath) {
     if (PERSISTENT_PATTERNS.some(p => p.test(cmd))) {
         return {
             success: false,
-            output: `CRITICAL: Persistent servers like "npm run dev" hang the swarm. DIRECTIVE: Do not panic. Immediately use "npm run build" instead to verify your changes and continue the workflow.`,
+            output: 'CRITICAL: Persistent servers like "npm run dev" hang the swarm. ' +
+                'DIRECTIVE: Do not panic. Use "npm run build" instead to verify your changes and continue.',
         };
     }
-    const output = (0, child_process_1.execSync)(cmd, {
-        cwd: workspacePath,
-        encoding: 'utf-8',
-        timeout,
-        maxBuffer: 1024 * 1024 * 4,
-    });
-    return { success: true, output: output || '(command completed with no output)' };
+    // ── Execute ──────────────────────────────────────────────────────────────────
+    try {
+        const output = (0, child_process_1.execSync)(cmd, {
+            cwd: workspacePath,
+            encoding: 'utf-8',
+            timeout,
+            maxBuffer: 1024 * 1024 * 4,
+        });
+        return { success: true, output: output || '(command completed with no output)' };
+    }
+    catch (err) {
+        // execSync throws on non-zero exit — capture both stdout and stderr from the error object
+        const stdout = err.stdout ? String(err.stdout).trim() : '';
+        const stderr = err.stderr ? String(err.stderr).trim() : '';
+        const combined = [stdout, stderr].filter(Boolean).join('\n').trim();
+        return { success: false, output: combined || err.message || 'Command failed with no output' };
+    }
 }
 //# sourceMappingURL=index.js.map

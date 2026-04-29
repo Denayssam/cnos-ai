@@ -2,6 +2,17 @@
 
 ---
 
+## [v8.7.0] - OS Awareness & Iron Curtain Tuning
+
+**Objetivo:** Eliminar la fricción severa detectada en `.fluxo/improvements.md` causada por dos fuentes: (1) el agente usando comandos Linux (`ls`, `rm`, `mv`) en un entorno Windows, y (2) la Cortina de Hierro de `RunCommandTool` bloqueando pipelines legítimos como `npm run build | head -50`.
+
+- **OS Awareness Directive (`src/agents.ts` — `OS_DIRECTIVE`):** Nueva constante computada una sola vez al cargar el módulo con `process.platform === 'win32'`. En Windows: directiva bilingüe con tabla de equivalencias exactas (dir/ls, del/rm, move/mv, copy/cp, md/mkdir -p), advertencia sobre rutas con backslash y comillas, y lista explícita de comandos Unix PROHIBIDOS. En Unix/Linux/macOS: directiva breve confirmando el entorno POSIX. Inyectada en `buildAgentSystemPrompt()` ÚNICAMENTE para agentes que tienen `run_command` en su toolset — `@planner` no recibe el bloque (es read-only y no usa terminal). Esta arquitectura es dinámica: si un nuevo agente recibe `run_command` en el futuro, hereda el bloque automáticamente sin ningún cambio adicional.
+- **Fine-tuning de la Cortina de Hierro (`src/tools/RunCommandTool/index.ts`):** Cambio quirúrgico en la lógica `CLI_FILE_READ`: de `.cmdSegments.some(seg => CLI_FILE_READ.test(seg))` a `.CLI_FILE_READ.test(firstSegment)`. El bloque ahora examina ÚNICAMENTE el primer segmento del comando (antes del primer `|`). Resultado: `npm run build | head -50`, `tsc 2>&1 | grep error`, `git log | tail -20` son PERMITIDOS (el filtro procesa stdin, no un archivo). `grep "error" src/file.ts`, `head -100 src/main.ts` siguen BLOQUEADOS (son el primer segmento, acceso directo a archivo). El mensaje de error actualizado explica la distinción: el pipe es válido, el acceso directo no.
+- **TOOL_DEF actualizado (`src/tools/RunCommandTool/index.ts`):** Descripción expandida con dos aclaraciones críticas: (1) diferencia de comandos Windows/Unix, y (2) la nota sobre Worktrees — si hay un Worktree activo, el agente NO debe intentar `cd` hacia él; todas las herramientas nativas (read_file, run_command, replace_block) ya operan sobre el contexto correcto automáticamente.
+- **Error capture mejorado (`src/tools/RunCommandTool/index.ts`):** Añadido `try-catch` alrededor de `execSync`. Cuando un comando retorna exit code ≠ 0, el error ahora captura `err.stdout` + `err.stderr` del objeto de error de Node.js y los combina en el output — el agente recibe el mensaje de compilación completo en lugar de solo `err.message` (que era el comportamiento anterior cuando el engine capturaba el throw).
+
+---
+
 ## [v8.6.0] - Community Skills System
 
 **Objetivo:** Dar a Fluxo AI una biblioteca de recetas de implementación comunitarias. Un Skill es un archivo JSON en `src/skills/` que contiene el blueprint completo de una integración estándar (Stripe, Firebase, etc.). En lugar de pedirle al `@planner` que analice el código desde cero, el `@manager` puede buscar un skill existente y aplicarlo directamente — el engine inyecta la receta en `.fluxo/IMPLEMENTATION_PLAN.md` en milisegundos.

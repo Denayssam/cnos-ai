@@ -1,10 +1,48 @@
 "use strict";
-// ─── Agent Definitions ────────────────────────────────────────────────────────
+// ─── OS Awareness Directive (v8.7.0) ─────────────────────────────────────────
+// Computed once at module load — process.platform never changes during a session.
+// Injected into the system prompt of any agent that has run_command in its toolset.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SUMMARIZER_PROMPT = exports.REVISOR_PROMPT = exports.ROUTER_PROMPT = exports.AGENTS = void 0;
 exports.routeToAgent = routeToAgent;
 exports.buildAgentSystemPrompt = buildAgentSystemPrompt;
 exports.getAgentList = getAgentList;
+const _isWindows = process.platform === 'win32';
+const OS_DIRECTIVE = _isWindows
+    ? `
+─── ENTORNO WINDOWS — OS Awareness (v8.7.0) ────────────────────────────────────
+
+CRÍTICO: Estás operando en un sistema Windows. Usa ÚNICAMENTE comandos de Windows.
+
+COMANDOS CORRECTOS en run_command:
+  ✅ dir                       → lista archivos         (NO: ls)
+  ✅ del "ruta\\archivo"       → elimina archivo        (NO: rm)
+  ✅ move "origen" "destino"   → mueve/renombra         (NO: mv)
+  ✅ copy "origen" "destino"   → copia archivo          (NO: cp)
+  ✅ md "carpeta"              → crea directorio        (NO: mkdir -p)
+  ✅ npm run build             → compilación            (igual en todos los OS)
+  ✅ git status / git log      → git                   (igual en todos los OS)
+  ✅ powershell -Command "..." → operaciones avanzadas
+
+RUTAS EN WINDOWS:
+  • Separador: backslash →  src\\components\\Button.tsx
+  • Con espacios: SIEMPRE entre comillas → "C:\\Users\\mi proyecto\\src"
+  • El motor normaliza rutas automáticamente — usa siempre rutas RELATIVAS.
+
+ABSOLUTAMENTE PROHIBIDO en Windows: ls, pwd, cat, rm -rf, mv, cp, chmod, touch.
+Estos son comandos Unix — fallarán con "no se reconoce como un comando".
+
+─────────────────────────────────────────────────────────────────────────────────
+`
+    : `
+─── ENTORNO UNIX/LINUX/macOS — OS Awareness (v8.7.0) ───────────────────────────
+
+Estás operando en un sistema Unix/Linux/macOS.
+Usa comandos POSIX estándar: ls, rm, mv, cp, mkdir -p.
+Separador de rutas: forward slash → src/components/Button.tsx
+
+─────────────────────────────────────────────────────────────────────────────────
+`;
 // ─── Manifesto Reference (injected at the top of every agent system prompt) ──
 const MANIFESTO_REF = `CNOS_MANIFESTO: This workspace contains CNOS_MANIFESTO.md at its root. ` +
     `It is the binding constitutional document for all code produced by Fluxo AI — covering ` +
@@ -711,7 +749,10 @@ function routeToAgent(message) {
 /** Build full system prompt for an agent including tools and the shared separation protocol */
 function buildAgentSystemPrompt(agentId) {
     const agent = exports.AGENTS[agentId] || exports.AGENTS.coder;
-    return `${MANIFESTO_REF}${agent.systemPrompt}\n${SEPARATION_PROTOCOL}`;
+    // Inject OS_DIRECTIVE only for agents that have access to run_command.
+    // This avoids polluting read-only agents (@planner) with OS-specific command advice.
+    const osBlock = agent.tools.includes('run_command') ? OS_DIRECTIVE : '';
+    return `${MANIFESTO_REF}${agent.systemPrompt}${osBlock}\n${SEPARATION_PROTOCOL}`;
 }
 /** Get all agents as a list for UI display */
 function getAgentList() {
