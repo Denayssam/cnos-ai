@@ -2,6 +2,19 @@
 
 ---
 
+## [v8.8.0] - Worktree Structural Isolation (Automatic Path Redirect)
+
+**Objetivo:** Completar la Fase 1 del Enterprise Roadmap — Aislamiento Estructural con Git Worktrees. Las herramientas `enter_worktree` y `exit_worktree` ya existían desde v8.0.0, pero el agente tenía que prefijar MANUALMENTE cada ruta con la ruta del worktree. La v8.8.0 hace esta redirección INVISIBLE: el agente escribe `read_file("src/App.tsx")` y el motor silenciosamente lee `.fluxo/worktrees/branch/src/App.tsx`.
+
+- **`activeWorktreePath` Session State (`src/agentEngine.ts`):** Nueva variable `let activeWorktreePath: string | null = null` inicializada al inicio de `runAgentLoop` leyendo `.fluxo/active_worktree.json`. Si el archivo existe y la ruta del worktree existe en disco, la variable se inicializa automáticamente — esto garantiza que el contexto de worktree sobrevive rearranques de sesión y es heredado por sub-agentes (planner, swarm) que leen el mismo JSON al iniciarse.
+- **`effectiveWorkspacePath` Redirect Middleware (`src/agentEngine.ts`):** Calculado antes del bloque `try { execute }` para cada tool call: si `activeWorktreePath` está activo Y el tool no es `enter_worktree`/`exit_worktree`/`skill`/`enter_plan_mode` (herramientas que operan en el workspace principal para operaciones git y de planificación), entonces `effectiveWorkspacePath = activeWorktreePath`. En todos los demás casos, `effectiveWorkspacePath = workspacePath`. El `executeTool(toolName, args, workspacePath)` del `else` final fue cambiado a `executeTool(toolName, args, effectiveWorkspacePath)`. `debugLog` registra cada redirección para trazabilidad.
+- **Worktree State Sync (`src/agentEngine.ts`):** En el success handler (bloque `else` del circuit breaker): después de un `enter_worktree` exitoso se lee el state file y se actualiza `activeWorktreePath`; después de `exit_worktree` exitoso (merge o discard) se resetea a `null`. Esto cubre también el flujo de Human Review (v8.3.0) donde el `worktreeReviewCallback` ejecuta `exit_worktree` — el `toolName` sigue siendo `'exit_worktree'` en el success check.
+- **`EnterWorktreeTool` output actualizado (`src/tools/EnterWorktreeTool/index.ts`):** El mensaje de éxito ahora dice "PATH REDIRECT ACTIVE — Continue using NORMAL relative paths (e.g. 'src/App.tsx'). The engine automatically redirects ALL file operations to the worktree." Esto evita que el LLM siga prefijando rutas manualmente (comportamiento previo que causaba path-not-found errors).
+- **`isolationNotice` actualizado (`src/agentEngine.ts`):** El mensaje inyectado al inicio de sesión para agentes con `isolation: 'worktree'` ahora menciona la redirección automática explícitamente.
+- **Regla WORKTREE ISOLATION en Manager (`src/agents.ts`):** Nueva regla `RULE (WORKTREE ISOLATION — v8.8.0)`: para tareas >1 archivo o refactorizaciones complejas, `enter_worktree` antes de `create_team`. Merge si build pasa, discard si falla irremediablemente. El código en main queda INTACTO en ambos casos.
+
+---
+
 ## [v8.7.1] - Clean Output Rendering (CoT Leak Fix)
 
 **Objetivo:** Eliminar el "Message Accumulation" y "CoT Leak" donde el motor concatenaba monólogos internos del agente (planning, razonamiento intermedio) en la burbuja de chat final, produciendo respuestas largas y confusas mezclando pensamiento con resultado.

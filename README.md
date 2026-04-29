@@ -2,8 +2,8 @@
 
 Fluxo AI no es solo otro autocompletador de código. Es un **Motor Cognitivo (Tier-1)** integrado nativamente en Visual Studio Code, diseñado para Managers, Arquitectos y Tech Leads que requieren una colaboración segura y guiada (Human-in-the-Loop) con modelos de lenguaje.
 
-![Version](https://img.shields.io/badge/version-v8.7.1-blue)
-![Architecture](https://img.shields.io/badge/architecture-Orchestration_Core-orange)
+![Version](https://img.shields.io/badge/version-v8.8.0-blue)
+![Architecture](https://img.shields.io/badge/architecture-Structural_Isolation-orange)
 ![Status](https://img.shields.io/badge/status-Active_Development-success)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -15,7 +15,7 @@ Los LLMs actuales son brillantes creando código desde cero, pero deficientes ha
 
 ---
 
-## 🚀 Características Principales (Motor v8.7.1)
+## 🚀 Características Principales (Motor v8.8.0)
 
 | Característica | Descripción |
 |---|---|
@@ -24,6 +24,7 @@ Los LLMs actuales son brillantes creando código desde cero, pero deficientes ha
 | 🧩 **Community Skills (v8.6.0)** | Biblioteca de recetas JSON en `skills/`. El `@manager` detecta integraciones conocidas (Stripe, Firebase…) y aplica el blueprint completo con un solo `skill(action='apply')`. |
 | 🖥️ **OS Awareness (v8.7.0)** | Detección dinámica de `process.platform` — en Windows inyecta tabla de equivalencias (dir/ls, del/rm, move/mv) y prohibición de comandos Unix. Pipe-filtering (`build \| grep`) desbloqueado. |
 | 🧹 **Clean Output Rendering (v8.7.1)** | Texto intermedio (CoT leak) redirigido al status bar. Bloques `<thinking>` renderizados como acordeón colapsable. La burbuja de chat solo muestra el Orchestrator's Report final. |
+| 🌳 **Structural Isolation (v8.8.0)** | `enter_worktree` activa un sandbox git aislado. El motor redirige silenciosamente TODAS las operaciones de archivo al worktree — el agente usa rutas normales. `exit_worktree(merge/discard)` con Human Review. |
 | 🔬 **AST-Native Editing (v8.5.0)** | `replace_symbol` delega la localización de bloques al Language Server Protocol (LSP) de VS Code — el agente nombra el símbolo, el LSP calcula el rango exacto. Cero riesgo de llaves desbalanceadas. |
 | 🌳 **Git Worktree Isolation** | `enter_worktree` crea un branch aislado antes de refactorizaciones de alto riesgo. `exit_worktree(merge/discard)` incluye Human Review con diff nativo de VS Code. |
 | 🛡️ **Sherlock Auditor** | Doble capa de seguridad: bloquea re-declaraciones redundantes, Tech Stack Drift, Modal Collision y Ghost Loops antes de escribir al disco. |

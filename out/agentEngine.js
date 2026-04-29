@@ -260,9 +260,11 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
     // so the LLM enters isolation-aware mode from the very first iteration.
     const isolationNotice = agent.isolation === 'worktree' ? [{
             role: 'user',
-            content: '[ISOLATION MODE ACTIVE]: This agent supports git worktree isolation. ' +
-                'For any refactoring that modifies >50 lines or touches multiple files, ' +
-                'you MUST call enter_worktree before editing. ' +
+            content: '[ISOLATION MODE ACTIVE — v8.8.0]: This agent has automatic git worktree isolation. ' +
+                'For high-risk refactoring (>50 lines, multiple files): call enter_worktree with a reason. ' +
+                'Once active, continue using NORMAL relative paths (e.g. src/App.tsx) — the engine ' +
+                'automatically redirects ALL file operations (read_file, write_file, run_command, etc.) ' +
+                'to the worktree sandbox. The user\'s production code on main is fully protected. ' +
                 'For simple edits (<50 lines, 1-2 files), proceed directly without a worktree.',
         }] : [];
     const messages = [
@@ -280,6 +282,22 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
     let consecutiveGhostCount = 0;
     let ghostRetries = 0;
     let planCheckCount = 0;
+    // ── Worktree Session State (v8.8.0) ──────────────────────────────────────────
+    // Initialized from disk so worktree context survives across iterations and is
+    // inherited by sub-agents (planner, swarm) spawned from this session.
+    let activeWorktreePath = null;
+    const wtStateFile = path.join(workspacePath, '.fluxo', 'active_worktree.json');
+    if (workspacePath && fs.existsSync(wtStateFile)) {
+        try {
+            const wts = JSON.parse(fs.readFileSync(wtStateFile, 'utf-8'));
+            if (wts.worktreePath && fs.existsSync(wts.worktreePath)) {
+                activeWorktreePath = wts.worktreePath;
+                debugLog(workspacePath, `[Worktree] Session restored — branch: ${wts.branchName} → ${wts.worktreePath}`);
+            }
+        }
+        catch { /* corrupted state — proceed without worktree context */ }
+    }
+    // ─────────────────────────────────────────────────────────────────────────────
     // ─── v4.0 Hook: context_indexing_hook ─────────────────────────────────────
     // Reserved for Vector Memory integration.
     // Example: await contextIndexer.index(messages, workspacePath);
@@ -624,6 +642,20 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 .map(([k, v]) => `${k}: ${String(v).slice(0, 80)}`)
                 .join(', ');
             yield { type: 'toolCall', name: toolName, args, displayArgs };
+            // ── Worktree Path Redirect (v8.8.0) ──────────────────────────────────────
+            // When a git worktree is active, ALL file and command operations are silently
+            // redirected to the worktree directory. The LLM uses normal relative paths
+            // (e.g. "src/App.tsx") and the engine maps them transparently — no prefix needed.
+            // Worktree management tools and planning tools always use the main workspace.
+            const _wtExcluded = toolName === 'enter_worktree' || toolName === 'exit_worktree' ||
+                toolName === 'skill' || toolName === 'enter_plan_mode';
+            const effectiveWorkspacePath = (activeWorktreePath && !_wtExcluded)
+                ? activeWorktreePath
+                : workspacePath;
+            if (activeWorktreePath && effectiveWorkspacePath !== workspacePath) {
+                debugLog(workspacePath, `[Worktree Redirect] ${toolName} → ${effectiveWorkspacePath}`);
+            }
+            // ─────────────────────────────────────────────────────────────────────────
             // Execute
             const startTime = Date.now();
             let result;
@@ -850,7 +882,7 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                     // ─────────────────────────────────────────────────────────────────────────
                 }
                 else {
-                    result = (0, tools_1.executeTool)(toolName, args, workspacePath);
+                    result = (0, tools_1.executeTool)(toolName, args, effectiveWorkspacePath);
                 }
             }
             catch (err) {
@@ -913,6 +945,20 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 // Failed calls stay in toolCallHistory (loop detection) but never reach Sherlock,
                 // preventing false REDUNDANT_DECLARATION positives on legitimate retries.
                 successfulToolCallHistory.push(`${toolName}:${JSON.stringify(args)}`);
+                // ── Worktree State Sync (v8.8.0) ────────────────────────────────────────
+                if (toolName === 'enter_worktree') {
+                    try {
+                        const wts = JSON.parse(fs.readFileSync(wtStateFile, 'utf-8'));
+                        activeWorktreePath = wts.worktreePath || null;
+                        debugLog(workspacePath, `[Worktree] Activated: ${wts.branchName} → ${activeWorktreePath}`);
+                    }
+                    catch { /* state file not written — no worktree context */ }
+                }
+                else if (toolName === 'exit_worktree') {
+                    activeWorktreePath = null;
+                    debugLog(workspacePath, '[Worktree] Deactivated — path redirect cleared');
+                }
+                // ─────────────────────────────────────────────────────────────────────────
             }
             // ─────────────────────────────────────────────────────────────────────────
             // ── replace_lines Chunking Hint ──────────────────────────────────────────

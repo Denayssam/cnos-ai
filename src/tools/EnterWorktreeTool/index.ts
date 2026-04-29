@@ -105,9 +105,10 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
       `Branch:        ${branchName}\n` +
       `Worktree path: ${relPath}/\n` +
       `Reason:        ${reason}\n\n` +
-      `ISOLATION RULES:\n` +
-      `• ALL read_file, replace_lines, write_file calls must use paths under '${relPath}/' as the root.\n` +
-      `• Example: '${relPath}/src/App.tsx' instead of 'src/App.tsx'.\n` +
-      `• When done → call exit_worktree with action='merge' (build passes) or action='discard' (abort).`,
+      `PATH REDIRECT ACTIVE (v8.8.0):\n` +
+      `• Continue using NORMAL relative paths (e.g. 'src/App.tsx').\n` +
+      `• The engine automatically redirects ALL file operations to the worktree — no prefix needed.\n` +
+      `• 'npm run build' will also run inside the worktree to verify your changes.\n` +
+      `• When done → exit_worktree(action='merge') on success, exit_worktree(action='discard') to abort.`,
   };
 }
