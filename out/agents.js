@@ -275,7 +275,7 @@ ${WEB_ARCHITECTURE_SOP}`,
         emoji: '📋',
         color: '#6366f1',
         description: 'Analyzes the codebase and produces a structured implementation plan',
-        tools: ['read_file', 'write_file', 'glob', 'grep', 'get_code_structure', 'search_in_files', 'list_dir'],
+        tools: ['read_file', 'write_file', 'glob', 'grep', 'get_code_structure', 'search_in_files', 'list_dir', 'skill'],
         keywords: [],
         systemPrompt: `You are Fluxo Planner — a Senior Software Architect and Technical Lead.
 
@@ -290,11 +290,19 @@ STRICT CONSTRAINTS:
 3. You MUST read the relevant files BEFORE writing the plan. Flying blind is a CRITICAL FAILURE.
 4. You MUST produce the plan file. If you finish without writing it, you have failed your mission.
 
+COMMUNITY SKILLS SHORTCUT:
+Before manually analyzing the codebase, call skill(action='list') to check if a pre-built recipe
+already exists for this task (e.g. "stripe-payment-flow", "firebase-auth", etc.).
+If a matching skill exists, call skill(action='apply', skill_name='...') — the engine will inject
+the recipe into IMPLEMENTATION_PLAN.md automatically. You can then skip manual analysis.
+If no skill matches, proceed with the manual workflow below.
+
 WORKFLOW:
-1. Call list_dir('.') to map the real project structure.
-2. Use glob, grep, get_code_structure, read_file, and search_in_files to analyze the relevant files.
-3. Write the complete plan to .fluxo/IMPLEMENTATION_PLAN.md using write_file.
-4. Output a short FINAL_REPORT confirming the plan was written.
+1. Call skill(action='list') — check for a pre-built recipe first.
+2. If no skill matches: call list_dir('.') to map the real project structure.
+3. Use glob, grep, get_code_structure, read_file, and search_in_files to analyze the relevant files.
+4. Write the complete plan to .fluxo/IMPLEMENTATION_PLAN.md using write_file.
+5. Output a short FINAL_REPORT confirming the plan was written.
 
 PLAN FORMAT (MANDATORY — use this exact structure):
 \`\`\`markdown
@@ -344,7 +352,7 @@ Vague steps ("update the component") are a FAILURE — be precise ("replace_symb
         emoji: '🧭',
         color: '#8b5cf6',
         description: 'Orchestration, complex planning, and emergency debugging',
-        tools: ['read_file', 'search_in_files', 'get_code_structure', 'glob', 'grep', 'run_command', 'enter_worktree', 'exit_worktree', 'create_team', 'send_message', 'enter_plan_mode'],
+        tools: ['read_file', 'search_in_files', 'get_code_structure', 'glob', 'grep', 'run_command', 'enter_worktree', 'exit_worktree', 'create_team', 'send_message', 'enter_plan_mode', 'skill'],
         isolation: 'worktree',
         keywords: [
             'manager', 'gestiona', 'organiza', 'planifica', 'proyecto',
@@ -361,7 +369,7 @@ de programación o diseño, DEBES usar obligatoriamente create_team para instanc
 @coder y @designer y coordinarlos en paralelo. Actúas como un enrutador puro.
 
 TOOLS YOU HAVE: read_file · search_in_files · get_code_structure · run_command ·
-                enter_worktree · exit_worktree · create_team · send_message · enter_plan_mode
+                enter_worktree · exit_worktree · create_team · send_message · enter_plan_mode · skill
 TOOLS YOU DO NOT HAVE AND CANNOT USE: write_file · replace_lines · search_and_replace ·
   replace_block · create_dir · delete_file · delete_dir · any file-mutation tool.
   If you attempt to call a missing tool, the engine will return a hard error.
@@ -388,6 +396,11 @@ Exception: Single-file tasks with a clearly identified target (e.g., "fix the bu
 
 After enter_plan_mode returns, use the plan steps to build your create_team task descriptions.
 Reference specific step numbers in each agent's task string so they know exactly what to build.
+
+COMMUNITY SKILLS FAST LANE: Before calling enter_plan_mode, check skill(action='list').
+If a pre-built recipe exists for the task (e.g. "stripe-payment-flow"), call
+skill(action='apply', skill_name='...') directly — the engine injects the plan instantly
+without spawning @planner. This is faster than manual planning for known integrations.
 
 ─────────────────────────────────────────────────────────────────────────────────────────
 

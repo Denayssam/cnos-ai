@@ -2,6 +2,19 @@
 
 ---
 
+## [v8.6.0] - Community Skills System
+
+**Objetivo:** Dar a Fluxo AI una biblioteca de recetas de implementación comunitarias. Un Skill es un archivo JSON en `src/skills/` que contiene el blueprint completo de una integración estándar (Stripe, Firebase, etc.). En lugar de pedirle al `@planner` que analice el código desde cero, el `@manager` puede buscar un skill existente y aplicarlo directamente — el engine inyecta la receta en `.fluxo/IMPLEMENTATION_PLAN.md` en milisegundos.
+
+- **`skills/stripe-payment-flow.json`:** Primer skill comunitario oficial. Cubre el flujo completo de Stripe Checkout: instalación del SDK, variables de entorno (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, VITE_STRIPE_PUBLISHABLE_KEY), endpoint de creación de sesión (`/api/create-checkout-session`), handler de webhook con verificación de firma y raw-body parsing, componente `Checkout.tsx`, páginas `PaymentSuccess.tsx` y `PaymentCancel.tsx`, registro de rutas en `App.tsx`, y verificación de build. Incluye advertencias críticas sobre raw-body middleware, tarjetas de prueba de Stripe, y testing local con Stripe CLI.
+- **`SkillTool` (`src/tools/SkillTool/index.ts`):** Nueva herramienta passthrough (patrón idéntico a `EnterPlanModeTool`). Dos acciones: `list` (devuelve nombre + descripción de todos los JSONs en `src/skills/`) y `apply` (inyecta la receta en `.fluxo/IMPLEMENTATION_PLAN.md`). Disponible ÚNICAMENTE para `@planner` y `@manager`.
+- **Intercept `skill` en `agentEngine.ts`:** El engine resuelve la ruta `src/skills/` usando `path.join(__dirname, '..', 'src', 'skills')` — funciona tanto en desarrollo (`out/` → `../src/skills`) como en producción (extensión instalada desde VSIX). `action='list'`: lee todos los `.json` del directorio y devuelve lista con nombre y descripción. `action='apply'`: parsea el JSON, extrae `recipe` (soporta string o array), escribe `.fluxo/IMPLEMENTATION_PLAN.md` con el contenido, emite un thinking tick `✅ Skill applied`, y devuelve la receta completa al agente con la directiva `create_team`. Manejo de errores completo: directorio inexistente, skill no encontrado, JSON malformado, error de escritura.
+- **Prompts actualizados (`src/agents.ts`):** `@planner` recibe la directiva "COMMUNITY SKILLS SHORTCUT": antes del análisis manual, llamar `skill(action='list')`. Si hay un match, `skill(action='apply')` y saltarse el análisis. `@manager` recibe "COMMUNITY SKILLS FAST LANE" en la sección PLANNING GATE: antes de `enter_plan_mode`, verificar si existe un skill aplicable — es más rápido que spawning el `@planner` para integraciones conocidas. `skill` añadido al toolset de `@planner` y `@manager`.
+- **`media/main.js`:** Nuevo `case 'skill'` en `getToolTitle`: muestra `• skill  apply → stripe-payment-flow` o `• skill  list`.
+- **`README.md`:** Actualizado a v8.6.0 con nueva sección "🧩 Community Skills" que explica a la comunidad cómo contribuir con archivos JSON.
+
+---
+
 ## [v8.5.3] - The Orchestration Core (Planning Gate)
 
 **Objetivo:** Alinear Fluxo AI al 100% con la arquitectura de planificación de Claude Code. La v8.5.3 introduce el `@planner` como sub-agente especializado y el `enter_plan_mode` como puerta obligatoria para el Manager antes de delegar cualquier tarea multi-archivo. Esto cierra el ciclo del "Motor Base": el Manager ya no improvisa — primero analiza, luego delega con precisión quirúrgica.

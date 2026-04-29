@@ -2,8 +2,8 @@
 
 Fluxo AI no es solo otro autocompletador de código. Es un **Motor Cognitivo (Tier-1)** integrado nativamente en Visual Studio Code, diseñado para Managers, Arquitectos y Tech Leads que requieren una colaboración segura y guiada (Human-in-the-Loop) con modelos de lenguaje.
 
-![Version](https://img.shields.io/badge/version-v7.8.2-blue)
-![Architecture](https://img.shields.io/badge/architecture-Router--Worker_Swarm-orange)
+![Version](https://img.shields.io/badge/version-v8.6.0-blue)
+![Architecture](https://img.shields.io/badge/architecture-Orchestration_Core-orange)
 ![Status](https://img.shields.io/badge/status-Active_Development-success)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -15,70 +15,132 @@ Los LLMs actuales son brillantes creando código desde cero, pero deficientes ha
 
 ---
 
-## 🚀 Características Principales (Motor v7.8.2)
+## 🚀 Características Principales (Motor v8.6.0)
 
 | Característica | Descripción |
 |---|---|
-| 🛑 **Hard Brake & Manager Mediation** | El agente JAMÁS edita tu código sin un plan. Ante prompts ambiguos, se detiene, genera un `IMPLEMENTATION_PLAN.md` y requiere tu aprobación explícita. |
-| 👁️ **Native Visual Diffing** | Usa la API nativa de VS Code (`WorkspaceEdit`) para inyectar cambios via `search_and_replace`. El archivo queda "sucio" (`●`) para tu revisión antes de guardar. |
-| 🛡️ **Sherlock Auditor & AST-Guard** | Doble capa de seguridad: bloquea llaves desequilibradas, re-declaraciones redundantes y Ghost Loops en tiempo real antes de escribir al disco. |
-| 🧠 **Multi-Model Swarm** | Compatible con **Gemini 2.5 Flash/Pro (AI Studio)**, **Claude 3.5/3.7 (OpenRouter)**, **GPT-4o (OpenRouter)** y **DeepSeek (Direct/OpenRouter)**. |
-| 🔗 **The Contextual Grip (v7.8.2)** | Reglas de agente estrictas: prohíbe props huérfanos, importaciones olvidadas y URLs hardcodeadas (`yourwebsite.com`). |
-| 🧭 **Manager Mediation Protocol** | Si el agente intenta cerrar una tarea con un `IMPLEMENTATION_PLAN.md` activo, el motor inyecta un override automático de verificación de pasos. |
-| 📋 **Fuzzy Search & Replace** | Tolerancia a diferencias de indentación/espacios al buscar bloques de código. El LLM no necesita copiar con precisión quirúrgica. |
-| 🟢 **Sentinel Auto-Heal** | Monitorea el terminal en tiempo real. Si detecta un error de compilación, intercepta y dirige al `@manager` automáticamente. |
+| 🧭 **Parallel Agent Swarm** | `@manager` orquesta `@coder`, `@designer`, `@planner` en paralelo vía `create_team`. FileLockManager previene colisiones de escritura en multi-agente. |
+| 📋 **Planning Gate (v8.5.3)** | El `@manager` tiene PROHIBIDO delegar sin un plan. `enter_plan_mode` spawna un `@planner` que analiza el repo y produce `.fluxo/IMPLEMENTATION_PLAN.md` antes de cualquier edición. |
+| 🧩 **Community Skills (v8.6.0)** | Biblioteca de recetas JSON en `skills/`. El `@manager` detecta integraciones conocidas (Stripe, Firebase…) y aplica el blueprint completo con un solo `skill(action='apply')`. |
+| 🔬 **AST-Native Editing (v8.5.0)** | `replace_symbol` delega la localización de bloques al Language Server Protocol (LSP) de VS Code — el agente nombra el símbolo, el LSP calcula el rango exacto. Cero riesgo de llaves desbalanceadas. |
+| 🌳 **Git Worktree Isolation** | `enter_worktree` crea un branch aislado antes de refactorizaciones de alto riesgo. `exit_worktree(merge/discard)` incluye Human Review con diff nativo de VS Code. |
+| 🛡️ **Sherlock Auditor** | Doble capa de seguridad: bloquea re-declaraciones redundantes, Tech Stack Drift, Modal Collision y Ghost Loops antes de escribir al disco. |
+| 🔍 **GlobTool / GrepTool** | Herramientas nativas de exploración (puro Node.js, sin CLI). Reemplazan `ls`, `find`, `grep` en `run_command`. Path normalization middleware silencia la "Amnesia Espacial". |
+| 🟢 **Sentinel Auto-Heal** | Monitorea el terminal en tiempo real. Build roto → intercepta y dirige al `@coder` automáticamente. |
+| 🔌 **MCP Support** | Conecta servidores MCP externos (SQLite, filesystem, APIs) vía configuración JSON en Settings. |
 
 ---
 
-## ✅ / ❌ Manifiesto de Capacidades Reales
+## 🧩 Community Skills — Cómo Contribuir
 
-### Lo que Fluxo AI PUEDE hacer:
-- **Orquestación de Planes:** Generar un `IMPLEMENTATION_PLAN.md` estructurado antes de tocar código.
-- **Auto-Regulación (Hard Brake):** Pausar ejecución para esperar aprobación humana explícita.
-- **Prevención de Desastres:** Detectar llaves desequilibradas, code rot y bucles infinitos.
-- **Edición Visual:** Visual Diff nativo — el archivo queda abierto y sin guardar para que tú decidas.
-- **Creación desde Cero:** Generar componentes, lógicas y archivos nuevos con alta precisión.
+Los Skills son recetas JSON pre-construidas que describen la implementación completa de una integración estándar. Cuando el `@manager` detecta que una tarea coincide con un skill disponible, lo aplica directamente — sin necesidad de análisis manual del repo.
 
-### Lo que Fluxo AI NO PUEDE hacer (todavía):
-- **Refactorización Ciega Masiva:** Por eso `replace_lines` y `replace_block` están deprecadas para el Coder — el Visual Diff es el paso de seguridad obligatorio.
-- **Telepatía de Lógica de Negocio:** Sin contexto explícito, puede inventar rutas o datos (`undefined`, `yourwebsite.com`).
-- **Autonomía 100% sin fricción:** No puede (ni debe) modificar el estado de la app sin que un humano revise el diff en cada paso crítico.
+### Estructura de un Skill
+
+```json
+{
+  "name": "mi-integracion",
+  "description": "Una línea clara explicando qué integra este skill y qué cubre.",
+  "recipe": "# Implementation Plan — Mi Integración\n\n## Objective\n...\n\n## Sequential Steps\n..."
+}
+```
+
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `name` | `string` | Identificador kebab-case único. El agente lo llama con `skill(action='apply', skill_name='mi-integracion')`. |
+| `description` | `string` | Una línea para el listado. El agente la lee en `skill(action='list')` para decidir si el skill es relevante. |
+| `recipe` | `string` | Markdown completo del plan. Sigue el formato obligatorio (ver abajo). |
+
+### Formato Obligatorio del Recipe
+
+```markdown
+# Implementation Plan — [Nombre de la Integración]
+
+## Objective
+[Una oración: qué se construye y por qué.]
+
+## Files to Modify
+| File | Action | Reason |
+|------|--------|--------|
+| src/api/endpoint.ts | Create | [razón] |
+
+## Sequential Steps
+
+### Step 1: [Nombre del Paso]
+- **File**: src/api/endpoint.ts
+- **Action**: Create new file
+- **Symbol/Block**: [nombre exacto del símbolo o bloque a editar]
+- **Details**: [qué agregar, cambiar o eliminar — ser preciso]
+
+### Step 2: ...
+
+## Integration Points
+- [Dependencias entre pasos — ej: "Step 3 requiere que Step 1 haya creado el endpoint X"]
+
+## Dependencies & Risks
+- [Breaking changes, dependencias externas, comandos de testing local]
+
+## Agent Assignment
+- @coder: Steps [N, N, N]
+- @designer: Steps [N, N]
+```
+
+### Cómo Agregar un Skill
+
+1. Crea un archivo `skills/tu-integracion.json` siguiendo la estructura de arriba.
+2. Usa `\n` para saltos de línea dentro del string `recipe` (es JSON, no YAML).
+3. Asegúrate de que cada paso tenga un **File** y un **Action** concretos — los pasos vagos ("actualizar el componente") no son accionables.
+4. Haz un Pull Request al repositorio con tu skill. Si la comunidad lo valida, se incluye en la próxima versión de la extensión.
+
+### Skills Disponibles
+
+| Skill | Descripción |
+|-------|-------------|
+| `stripe-payment-flow` | Stripe Checkout completo: session endpoint, webhook con raw-body, checkout button, success/cancel pages. |
 
 ---
 
-## 🛠️ Arquitectura Interna
+## 🛠️ Arquitectura Interna (v8.6.0)
 
 ```
 src/
-├── agentEngine.ts   — Motor cognitivo: loop de iteraciones, Hard Brake, Error Anchoring, Plan Verification
-├── agents.ts        — Personalidades del swarm + MANDATORY LOGIC RULES + Sherlock Auditor prompt
-├── extension.ts     — Bridge VS Code: applyNativeEdit, panel serializer, model persistence
+├── agentEngine.ts   — Motor cognitivo: loop, Hard Brake, Planning Gate, Skills intercept
+├── agents.ts        — Swarm: @coder, @designer, @planner, @manager + Sherlock Auditor
+├── extension.ts     — Bridge VS Code: LSP callbacks, worktree review, applyNativeEdit
 ├── sentinel.ts      — Monitor de terminal en tiempo real
+skills/              — 📁 Community Skills Library (JSON recipes — root level, VSIX-included)
+│   └── stripe-payment-flow.json
 └── tools/
-    ├── SearchReplaceTool/   — Fuzzy search_and_replace (herramienta primaria de edición)
+    ├── SkillTool/         — skill: list / apply
+    ├── EnterPlanModeTool/ — enter_plan_mode: spawna @planner
+    ├── TeamCreateTool/    — create_team: Parallel Swarm
+    ├── ReplaceSymbolTool/ — replace_symbol: LSP-native AST edits
+    ├── GlobTool/          — glob: pattern file finder (no CLI)
+    ├── GrepTool/          — grep: regex search across project (no CLI)
+    ├── SendMessageTool/   — send_message: inter-agent mailbox
+    ├── SearchReplaceTool/ — search_and_replace: native VS Code edit
     ├── FileReadTool/
-    ├── FileWriteTool/
-    ├── ReplaceLinesTool/    — Legado (Manager únicamente)
-    ├── ReplaceBlockTool/    — Legado (Manager únicamente)
-    ├── ProposePlanTool/
-    ├── RunCommandTool/
+    ├── FileWriteTool/     — write_file: mutex-protected
+    ├── ReplaceBlockTool/  — replace_block: search_snippet / replace_snippet
     └── ...
 
 media/
-├── main.js          — WebView UI: tool activity cards, Visual Diff renderer, Model Labels
+├── main.js          — WebView UI: tool cards, worktree review, model selector
 └── style.css        — Glassmorphism design system
 ```
 
 ---
 
-## 💡 Flujo de Trabajo Ideal
+## 💡 Flujo de Trabajo Ideal (v8.6.0)
 
 ```
-1. Describe tu feature en el chat → El agente genera IMPLEMENTATION_PLAN.md
-2. Revisa y edita el plan en tu editor
-3. Aprueba el plan en la UI (o escribe cambios)
-4. El agente aplica cambios vía search_and_replace → archivo queda ● (sin guardar)
-5. Revisa el Visual Diff en VS Code → Ctrl+S para consolidar, o da feedback para iterar
+1. Describe tu feature en el chat → @manager detecta el tipo de tarea
+2. Si es una integración conocida → skill(action='list') → skill(action='apply')
+   Si es una tarea custom → enter_plan_mode → @planner analiza el repo
+3. IMPLEMENTATION_PLAN.md generado en .fluxo/
+4. @manager llama create_team → @coder y @designer ejecutan en paralelo
+5. Cambios vía replace_symbol (LSP) o replace_block → diff visual en VS Code
+6. exit_worktree(merge) → Human Review del diff → aprueba o descarta
 ```
 
 ---
@@ -91,36 +153,34 @@ cd cnos-extension
 npm install && npm run compile && npm run package
 
 # 2. Install
-code --install-extension fluxo-ai-7.8.2.vsix --force
+code --install-extension fluxo-ai-8.6.0.vsix --force
 
 # 3. Configura tu API Key
 # VS Code Settings → busca "Fluxo AI" → pega tu OpenRouter/Gemini/DeepSeek key
 ```
 
-Ver [INSTALL.md](cnos-extension/INSTALL.md) para guía completa.
-
 ---
 
 ## 🤝 Agentes del Swarm
 
-| Agente | Emoji | Especialidad |
-|---|---|---|
-| `coder` | 💻 | Código, bugs, archivos, comandos — usa `search_and_replace` exclusivamente |
-| `designer` | 🎨 | UI/UX, Tailwind, glassmorphism, layouts |
-| `dashboard` | 📊 | Charts, analytics, KPIs, data viz |
-| `payments` | 💳 | Stripe, PayPal, Mercado Pago, webhooks |
-| `manager` | 🧭 | Orquestación compleja, emergencias, Sentinel alerts |
+| Agente | Emoji | Especialidad | Toolset |
+|--------|-------|--------------|---------|
+| `coder` | 💻 | Código, bugs, archivos, comandos | replace_symbol, replace_block, glob, grep, worktree |
+| `designer` | 🎨 | UI/UX, Tailwind, glassmorphism | replace_symbol, replace_block, search_images |
+| `dashboard` | 📊 | Charts, analytics, KPIs | write_file, run_command |
+| `payments` | 💳 | Stripe, PayPal, webhooks | write_file, run_command |
+| `planner` | 📋 | Análisis de repo + plan | read_file, glob, grep, get_code_structure, **skill** |
+| `manager` | 🧭 | Orquestación, emergencias | create_team, enter_plan_mode, **skill** |
 
 ---
 
 ## 📁 Documentación
 
 | Archivo | Descripción |
-|---|---|
-| [INSTALL.md](cnos-extension/INSTALL.md) | Guía completa de instalación y configuración |
-| [CNOS_MANIFESTO.md](cnos-extension/CNOS_MANIFESTO.md) | Constitución del sistema — reglas vinculantes para agentes |
-| [ARCHIVE_v2_CONTEXT.md](cnos-extension/ARCHIVE_v2_CONTEXT.md) | Blueprint técnico para orquestación LLM externa |
-| [Fase 8.MD](cnos-extension/Fase%208.MD) | Arquitectura del Native Diff & Search-Replace system |
+|---------|-------------|
+| [INSTALL.md](INSTALL.md) | Guía completa de instalación y configuración |
+| [CNOS_MANIFESTO.md](CNOS_MANIFESTO.md) | Constitución del sistema — reglas vinculantes para agentes |
+| [CHANGELOG.md](CHANGELOG.md) | Historial técnico completo de versiones |
 
 ---
 

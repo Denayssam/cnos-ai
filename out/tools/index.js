@@ -61,6 +61,7 @@ const ReplaceSymbolTool = __importStar(require("./ReplaceSymbolTool"));
 const GlobTool = __importStar(require("./GlobTool"));
 const GrepTool = __importStar(require("./GrepTool"));
 const EnterPlanModeTool = __importStar(require("./EnterPlanModeTool"));
+const SkillTool = __importStar(require("./SkillTool"));
 // ─── Tool Registry ────────────────────────────────────────────────────────────
 const ALL_TOOLS = [
     FileReadTool,
@@ -88,6 +89,7 @@ const ALL_TOOLS = [
     GlobTool,
     GrepTool,
     EnterPlanModeTool,
+    SkillTool,
 ];
 exports.TOOL_DEFINITIONS = ALL_TOOLS.map(t => t.TOOL_DEF);
 const TOOL_MAP = Object.fromEntries(ALL_TOOLS.map(t => [t.TOOL_DEF.function.name, t.execute]));

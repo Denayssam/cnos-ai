@@ -508,6 +508,7 @@
       case 'glob':            return `• glob   ${(args.pattern || '').slice(0, 50)}`;
       case 'grep':            return `• grep   "${(args.pattern || '').slice(0, 40)}"${args.path_filter ? ` in ${args.path_filter}` : ''}`;
       case 'enter_plan_mode': return `• plan   ${(args.task_description || '').slice(0, 50)}…`;
+      case 'skill':           return args.action === 'apply' ? `• skill  apply → ${args.skill_name || '?'}` : `• skill  list`;
       default:                return `• ${name}`;
     }
   }

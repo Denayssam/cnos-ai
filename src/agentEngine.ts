@@ -736,6 +736,71 @@ export async function* runAgentLoop(
           result = executeTool('exit_worktree', { ...args, action: reviewedAction }, workspacePath);
         // ─────────────────────────────────────────────────────────────────────────
 
+        // ── Community Skills Library (v8.6.0) ────────────────────────────────────
+        // Skills are JSON recipes in the root-level skills/ directory (baked into
+        // the VSIX). __dirname = out/ at runtime → ../skills resolves correctly
+        // both in development and when installed from a VSIX package.
+        } else if (toolName === 'skill') {
+          const skillsDir = path.join(__dirname, '..', 'skills');
+          const action    = String(args.action ?? 'list');
+
+          if (action === 'list') {
+            let skillList: Array<{ name: string; description: string }> = [];
+            try {
+              if (fs.existsSync(skillsDir)) {
+                const files = fs.readdirSync(skillsDir).filter(f => f.endsWith('.json'));
+                skillList = files.map(f => {
+                  try {
+                    const data = JSON.parse(fs.readFileSync(path.join(skillsDir, f), 'utf-8'));
+                    return { name: data.name ?? f.replace('.json', ''), description: data.description ?? '' };
+                  } catch {
+                    return { name: f.replace('.json', ''), description: '(unreadable)' };
+                  }
+                });
+              }
+            } catch { /* skills dir unreadable — return empty list */ }
+
+            result = skillList.length > 0
+              ? { success: true, output: `AVAILABLE SKILLS (${skillList.length}):\n\n` + skillList.map(s => `• ${s.name}\n  ${s.description}`).join('\n\n') }
+              : { success: true, output: 'No community skills available yet. Add JSON files to skills/ (root level) to contribute.' };
+
+          } else if (action === 'apply') {
+            const skillName = String(args.skill_name ?? '').trim();
+            if (!skillName) {
+              result = { success: false, output: 'ERROR: skill_name is required for action="apply". Call action="list" to see available skills.' };
+            } else {
+              const skillFile = path.join(skillsDir, `${skillName}.json`);
+              if (!fs.existsSync(skillFile)) {
+                result = { success: false, output: `Skill "${skillName}" not found in the library. Call skill(action="list") to see valid names.` };
+              } else {
+                // All paths inside this try-catch assign result — TypeScript can track cleanly.
+                try {
+                  const skillData = JSON.parse(fs.readFileSync(skillFile, 'utf-8'));
+                  const recipe = typeof skillData.recipe === 'string'
+                    ? skillData.recipe
+                    : (Array.isArray(skillData.recipe) ? skillData.recipe.join('\n\n') : JSON.stringify(skillData.recipe, null, 2));
+                  const planDir  = path.join(workspacePath, '.fluxo');
+                  const planFile = path.join(planDir, 'IMPLEMENTATION_PLAN.md');
+                  fs.mkdirSync(planDir, { recursive: true });
+                  fs.writeFileSync(planFile, recipe, 'utf-8');
+                  yield { type: 'thinking', text: `✅ Skill "${skillName}" applied to IMPLEMENTATION_PLAN.md` };
+                  result = {
+                    success: true,
+                    output:
+                      `Skill "${skillName}" aplicado exitosamente al IMPLEMENTATION_PLAN.md.\n\n` +
+                      `${recipe}\n\n` +
+                      `Procede a ejecutar el plan: llama create_team con tasks que referencien los pasos del plan.`,
+                  };
+                } catch (e: any) {
+                  result = { success: false, output: `ERROR: Failed to apply skill "${skillName}": ${e.message}` };
+                }
+              }
+            }
+          } else {
+            result = { success: false, output: `Unknown action "${action}". Valid values: "list", "apply".` };
+          }
+        // ─────────────────────────────────────────────────────────────────────────
+
         // ── Planning Gate — @planner sub-agent (v8.5.3) ─────────────────────────
         } else if (toolName === 'enter_plan_mode') {
           const taskDescription = String(args.task_description ?? userMessage);
