@@ -38,6 +38,7 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
+const cp = __importStar(require("child_process"));
 const agentEngine_1 = require("./agentEngine");
 const agents_1 = require("./agents");
 const sentinel_1 = require("./sentinel");
@@ -51,6 +52,8 @@ let _context;
 let _sentinel;
 let _sentinelHasError = false;
 let _mcpClient;
+// Worktree Human Review (v8.3.0) — resolved when the user clicks Approve/Discard in the webview
+let _pendingWorktreeReview;
 const STORAGE_KEY = 'fluxo.chatHistory';
 const LOG_FILE = 'fluxo_errors.log';
 // ─── Sidebar Provider (Left Launcher) ─────────────────────────────────────────
@@ -279,6 +282,34 @@ async function _handleMessage(msg, context) {
             }
             break;
         }
+        // ── Worktree Native Diff (v8.3.0) ────────────────────────────────────────
+        case 'open_worktree_diff': {
+            // Opens VS Code's native side-by-side diff: main workspace file vs worktree file.
+            const folders = vscode.workspace.workspaceFolders;
+            if (msg.filePath && folders?.length) {
+                const wsPath = folders[0].uri.fsPath;
+                const stateFile = path.join(wsPath, '.fluxo', 'active_worktree.json');
+                try {
+                    const state = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+                    const originalUri = vscode.Uri.file(path.join(wsPath, msg.filePath));
+                    const worktreeUri = vscode.Uri.file(path.join(state.worktreePath, msg.filePath));
+                    await vscode.commands.executeCommand('vscode.diff', originalUri, worktreeUri, `Diff: ${msg.filePath} — Original vs Cambios de Fluxo`);
+                }
+                catch (e) {
+                    vscode.window.showWarningMessage(`No se pudo abrir el diff: ${e.message}`);
+                }
+            }
+            break;
+        }
+        case 'worktree_decision': {
+            // User clicked Approve or Discard in the worktree review card
+            if (_pendingWorktreeReview) {
+                _pendingWorktreeReview(msg.action === 'discard' ? 'discard' : 'merge');
+                _pendingWorktreeReview = undefined;
+            }
+            break;
+        }
+        // ─────────────────────────────────────────────────────────────────────────
         case 'saveModel':
             if (msg.managerModel) {
                 context.globalState.update('fluxo.selectedModel', msg.managerModel);
@@ -428,7 +459,115 @@ async function _handleSendMessage(userText, model, workerModel, context) {
             }
         };
         const mcpTools = _mcpClient.getMcpTools();
-        for await (const event of (0, agentEngine_1.runAgentLoop)(userText, agentId, _conversationHistory, engineConfig, workspacePath, _currentAbortController.signal, _sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, async (name, args) => await _mcpClient.callMcpTool(name, args))) {
+        // ── LSP Symbol Replace callback (v8.5.0) ─────────────────────────────────
+        // Uses VS Code's Language Server to locate a named AST symbol and replace it
+        // atomically — no line numbers, no string matching, no brace counting.
+        const replaceSymbolCallback = async (relPath, symbolName, newCode) => {
+            try {
+                const fullPath = path.isAbsolute(relPath) ? relPath : path.join(workspacePath, relPath);
+                const uri = vscode.Uri.file(fullPath);
+                const document = await vscode.workspace.openTextDocument(uri);
+                // Retry loop — Language Server may still be indexing the file
+                const MAX_ATTEMPTS = 4;
+                let symbols;
+                for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+                    symbols = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', uri);
+                    if (symbols && symbols.length > 0) {
+                        break;
+                    }
+                    if (attempt < MAX_ATTEMPTS) {
+                        await new Promise(r => setTimeout(r, 500));
+                    }
+                }
+                if (!symbols || symbols.length === 0) {
+                    return {
+                        success: false,
+                        output: `LSP ERROR: El servidor de lenguaje no pudo extraer los símbolos de ${relPath}. Verifica que el archivo tiene extensión .ts/.tsx/.js/.jsx y espera a que el Language Server termine de cargar. Usa replace_block como fallback.`,
+                    };
+                }
+                function findSymbol(syms, name) {
+                    for (const sym of syms) {
+                        if (sym.name === name) {
+                            return sym;
+                        }
+                        const found = findSymbol(sym.children, name);
+                        if (found) {
+                            return found;
+                        }
+                    }
+                    return undefined;
+                }
+                const target = findSymbol(symbols, symbolName);
+                if (!target) {
+                    const available = symbols.slice(0, 8).map(s => `"${s.name}"`).join(', ');
+                    return {
+                        success: false,
+                        output: `Símbolo no encontrado por el LSP. Verifica el nombre exacto de la función/clase. Nombre buscado: "${symbolName}".\nSímbolos disponibles en el nivel raíz: ${available}.\nUsa get_code_structure para ver el árbol completo.`,
+                    };
+                }
+                // ── LSP Boundary Sanitizer (v8.5.1) ──────────────────────────────────
+                // The LSP range for a symbol sometimes starts AFTER the keyword (const/let/async),
+                // so when the LLM includes it in new_code the merge produces duplicates.
+                // These regexes are order-sensitive: multi-word patterns before single-word ones.
+                let sanitizedCode = newCode
+                    .replace(/\basync\s+async\b/g, 'async')
+                    .replace(/\bconst\s+const\b/g, 'const')
+                    .replace(/\blet\s+let\b/g, 'let')
+                    .replace(/\bvar\s+var\b/g, 'var')
+                    .replace(/;{2,}/g, ';');
+                // ─────────────────────────────────────────────────────────────────────
+                const edit = new vscode.WorkspaceEdit();
+                edit.replace(uri, target.range, sanitizedCode);
+                const applied = await vscode.workspace.applyEdit(edit);
+                if (!applied) {
+                    return { success: false, output: `VS Code WorkspaceEdit failed for ${relPath}. The file may be read-only.` };
+                }
+                await document.save();
+                const kind = vscode.SymbolKind[target.kind];
+                const lines = target.range.end.line - target.range.start.line + 1;
+                return {
+                    success: true,
+                    output: `replace_symbol: "${symbolName}" (${kind}) in ${relPath} — replaced ${lines} line(s) at L${target.range.start.line + 1}–L${target.range.end.line + 1}.\n\nEDICIÓN EXITOSA — Símbolo reemplazado vía LSP. Verifica el resultado y continúa con tu siguiente herramienta.`,
+                };
+            }
+            catch (err) {
+                return { success: false, output: `replace_symbol error: ${err.message ?? String(err)}` };
+            }
+        };
+        // ─────────────────────────────────────────────────────────────────────────
+        // ── Worktree Human Review callback (v8.3.0) ──────────────────────────────
+        // Called by the engine just before executing exit_worktree(action='merge').
+        // Gets changed files from git, posts the review card to the webview, and
+        // suspends the agent loop until the user clicks Approve or Discard.
+        const worktreeReviewCallback = async (branch, worktreePath) => {
+            let changedFiles = [];
+            try {
+                // git status --porcelain captures both tracked modifications (M, A, D, R)
+                // AND untracked new files (??) — git diff --name-only HEAD missed the latter.
+                const output = cp.execSync('git status --porcelain', {
+                    cwd: worktreePath, encoding: 'utf-8', stdio: 'pipe',
+                });
+                changedFiles = output
+                    .trim()
+                    .split('\n')
+                    .filter(Boolean)
+                    .map(line => {
+                    // porcelain format: "XY filepath" (2-char status + space + path)
+                    const filePart = line.slice(3).trim();
+                    // Renames are "old -> new" — take only the new name
+                    const arrowIdx = filePart.indexOf(' -> ');
+                    return arrowIdx !== -1 ? filePart.slice(arrowIdx + 4) : filePart;
+                })
+                    .filter(Boolean);
+            }
+            catch { /* git unavailable or worktree path invalid — proceed without file list */ }
+            _postToPanel({ type: 'worktreeReview', branch, worktreePath, changedFiles });
+            return new Promise(resolve => {
+                _pendingWorktreeReview = resolve;
+            });
+        };
+        // ─────────────────────────────────────────────────────────────────────────
+        for await (const event of (0, agentEngine_1.runAgentLoop)(userText, agentId, _conversationHistory, engineConfig, workspacePath, _currentAbortController.signal, _sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, async (name, args) => await _mcpClient.callMcpTool(name, args), worktreeReviewCallback, replaceSymbolCallback)) {
             _postToPanel({ ...event });
             if (event.type === 'streamChunk') {
                 fullAssistantText += event.text;
@@ -718,7 +857,7 @@ function _buildHtml(webview) {
         <div class="logo-dot"></div>
       </div>
       <span class="header-title">Fluxo AI</span>
-      <span class="header-subtitle">v8.0.0</span>
+      <span class="header-subtitle">v8.5.0</span>
       <span id="agent-badge" class="agent-badge hidden"></span>
     </div>
     <div class="header-right">
@@ -768,6 +907,28 @@ function _buildHtml(webview) {
 </body>
 </html>`;
 }
+// ─── Zero Footprint: Auto-Gitignore (v8.4.0) ─────────────────────────────────
+// Silently patches .gitignore on every activation to keep .fluxo/ out of the
+// user's repository. Safe to call repeatedly — exits early if already present.
+function ensureGitignore(workspacePath) {
+    const gitignorePath = path.join(workspacePath, '.gitignore');
+    const entry = '.fluxo/';
+    try {
+        let content = '';
+        if (fs.existsSync(gitignorePath)) {
+            content = fs.readFileSync(gitignorePath, 'utf-8');
+            const lines = content.split('\n').map(l => l.trim());
+            // Already ignored under either form — nothing to do
+            if (lines.some(l => l === '.fluxo/' || l === '.fluxo')) {
+                return;
+            }
+        }
+        // Ensure we start on a fresh line whether the file is empty or not
+        const prefix = content.length > 0 && !content.endsWith('\n') ? '\n' : '';
+        fs.appendFileSync(gitignorePath, `${prefix}\n# Fluxo AI Engine Data\n${entry}\n`, 'utf-8');
+    }
+    catch { /* non-fatal — read-only workspace or no .gitignore yet */ }
+}
 // ─── Activation ───────────────────────────────────────────────────────────────
 function activate(context) {
     _extensionUri = context.extensionUri;
@@ -778,6 +939,11 @@ function activate(context) {
     _conversationHistory = context.workspaceState.get(STORAGE_KEY) || [];
     // Session cleanup — trim logs and prune old backups on every new session
     cleanupLogsOnActivation();
+    // Zero Footprint — ensure .fluxo/ is gitignored before any agent writes to it
+    const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (wsPath) {
+        ensureGitignore(wsPath);
+    }
     // ─── Sentinel: Real-Time Self-Healing ──────────────────────────────────────
     _sentinel = new sentinel_1.Sentinel(async (errorText) => {
         // Don't interrupt an agent that is currently running
