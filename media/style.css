@@ -312,6 +312,46 @@ body { display: flex; flex-direction: column; height: 100vh; }
   font-family: var(--font-mono);
 }
 
+/* ─── Thinking Blocks (v8.7.1 — Clean Output) ───────────────────────────────── */
+.thinking-details {
+  margin: 6px 0;
+  background: transparent;
+  border: none;
+  border-left: 2px solid rgba(99, 102, 241, 0.35);
+  overflow: hidden;
+  font-size: 11px;
+  transition: border-color 0.2s;
+}
+.thinking-details:hover { border-color: rgba(99, 102, 241, 0.65); }
+.thinking-details summary {
+  padding: 5px 10px;
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: rgba(99, 102, 241, 0.7);
+  user-select: none;
+  list-style: none;
+  display: flex; align-items: center; gap: 4px;
+  transition: color 0.15s;
+  letter-spacing: 0.03em;
+  line-height: 1.4;
+}
+.thinking-details summary:hover { color: rgba(99, 102, 241, 1); }
+.thinking-details summary::after {
+  content: '↓'; font-size: 9px; opacity: 0.5; margin-left: 4px;
+}
+.thinking-details[open] summary::after { content: '↑'; }
+.thinking-details summary::-webkit-details-marker { display: none; }
+.thinking-content {
+  padding: 5px 10px 7px;
+  color: rgba(99, 102, 241, 0.55);
+  line-height: 1.55;
+  font-style: italic;
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+}
+
 /* ─── Tool Result Blocks ─────────────────────────────────────────────────────── */
 .tool-result-details {
   margin: 8px 0 4px;

@@ -820,6 +820,7 @@
 
   function renderMarkdown(text) {
     const reasoningBlocks = [];
+    const thinkingBlocks  = [];
     const toolResultBlocks = [];
     let html = escapeHtml(text);
 
@@ -847,10 +848,29 @@
       return placeholder;
     });
 
+    // 0c. Extract complete <thinking> blocks → collapsible accordion (v8.7.1 Clean Output)
+    html = html.replace(/&lt;thinking&gt;([\s\S]*?)&lt;\/thinking&gt;/gi, (_, content) => {
+      const placeholder = `{{THINKING_BLOCK_${thinkingBlocks.length}}}`;
+      thinkingBlocks.push(`
+        <details class="thinking-details">
+          <summary>💭 Ver proceso de pensamiento</summary>
+          <div class="thinking-content">${renderMarkdownInner(content.trim())}</div>
+        </details>
+      `);
+      return placeholder;
+    });
+
+    // 0d. Strip incomplete (still-open) <thinking> blocks — the closing tag hasn't
+    // arrived yet mid-stream. Prevents partial CoT leaking into the bubble.
+    html = html.replace(/&lt;thinking&gt;[\s\S]*$/gi, '');
+
     html = renderMarkdownInner(html);
 
     reasoningBlocks.forEach((block, i) => {
       html = html.replace(`{{REASONING_BLOCK_${i}}}`, block);
+    });
+    thinkingBlocks.forEach((block, i) => {
+      html = html.replace(`{{THINKING_BLOCK_${i}}}`, block);
     });
     toolResultBlocks.forEach((block, i) => {
       html = html.replace(`{{TOOL_RESULT_BLOCK_${i}}}`, block);

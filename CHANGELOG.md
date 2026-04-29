@@ -2,6 +2,17 @@
 
 ---
 
+## [v8.7.1] - Clean Output Rendering (CoT Leak Fix)
+
+**Objetivo:** Eliminar el "Message Accumulation" y "CoT Leak" donde el motor concatenaba monólogos internos del agente (planning, razonamiento intermedio) en la burbuja de chat final, produciendo respuestas largas y confusas mezclando pensamiento con resultado.
+
+- **Intermediate Text Rerouting (`src/agentEngine.ts`):** Cambio quirúrgico en el bloque de emisión de texto. Si `toolCalls.length > 0` (el modelo está pensando antes de actuar), el texto de esa respuesta se enruta a `yield { type: 'thinking' }` (barra de estado, visible solo como indicador) en lugar de `yield { type: 'streamChunk' }` (burbuja de chat). Solo las respuestas donde `toolCalls.length === 0` (respuesta final del Orchestrator's Report) emiten `streamChunk`. Un truncado de 300 chars en el tick de thinking previene que monólogos largos saturen el status bar.
+- **`<thinking>` tag policy (`src/agents.ts` — `SEPARATION_PROTOCOL`):** Directiva nueva al inicio del protocolo, con ejemplo de output CORRECTO vs INCORRECTO: si el agente necesita razonar antes de llamar una herramienta, el razonamiento VA DENTRO de `<thinking>...</thinking>`. El "CoT Leak" (mezclar pensamiento con respuesta final) queda explícitamente marcado como violación del protocolo.
+- **Acordeón colapsable para `<thinking>` (`media/main.js` — `renderMarkdown`):** Nuevo paso `0c` en la función `renderMarkdown`. Bloques completos `<thinking>...</thinking>` se reemplazan con un `<details class="thinking-details">` colapsado por defecto con summary "💭 Ver proceso de pensamiento". Paso `0d`: bloques incompletos (aún abiertos durante streaming — sin tag de cierre todavía) se eliminan con regex para prevenir que CoT parcial aparezca en la burbuja mientras el modelo escribe.
+- **CSS para `.thinking-details` (`media/style.css`):** Nueva sección `─── Thinking Blocks ───` con color indigo `rgba(99, 102, 241, ...)` para distinguirlos visualmente de los bloques `<reasoning>` (border gris) y `<tool_result>` (azul). Acordeón colapsado por default — expandible con clic. Mismo patrón estructural que `.reasoning-details` (ya existente).
+
+---
+
 ## [v8.7.0] - OS Awareness & Iron Curtain Tuning
 
 **Objetivo:** Eliminar la fricción severa detectada en `.fluxo/improvements.md` causada por dos fuentes: (1) el agente usando comandos Linux (`ls`, `rm`, `mv`) en un entorno Windows, y (2) la Cortina de Hierro de `RunCommandTool` bloqueando pipelines legítimos como `npm run build | head -50`.

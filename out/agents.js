@@ -639,6 +639,23 @@ Format: Provide a structured summary in MARKDOWN. Be extremely concise. Use bull
 const SEPARATION_PROTOCOL = `
 ─── OUTPUT SEPARATION PROTOCOL — MANDATORY ────────────────────────────────────
 
+INTERNAL REASONING POLICY — CRITICAL:
+If you need to reason, plan, or think to yourself BEFORE calling a tool, you MUST
+wrap your internal monologue completely inside <thinking> and </thinking> tags.
+Do NOT mix internal thoughts with the user-facing final response.
+The UI will collapse <thinking> blocks — the user only sees your final Orchestrator's Report.
+
+Example of CORRECT output:
+<thinking>
+The user wants to add Stripe. I need to check if stripe is already installed...
+Let me look at package.json first.
+</thinking>
+[tool call: read_file("package.json")]
+
+Example of WRONG output (CoT Leak):
+"I'm going to check package.json to see if Stripe is installed, then I'll add it..."
+[tool call: read_file("package.json")]
+
 The system operates in two modes. Each turn you are in exactly one:
 
 TOOL CALL MODE — you have work left to execute:

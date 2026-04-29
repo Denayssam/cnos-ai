@@ -335,9 +335,17 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
         const textContent = apiResponse.content || '';
         const toolCalls = apiResponse.tool_calls;
         debugLog(workspacePath, `Response: ${toolCalls.length} tool calls, ${textContent.length} chars text`);
-        // Emit text only if not already yielded chunk-by-chunk above
+        // Route text based on whether tool calls follow in this same response (v8.7.1).
+        // Text alongside tool calls = intermediate CoT / planning monologue → route to
+        // thinking tick (status bar only, never reaches the chat bubble).
+        // Text with no tool calls = final Orchestrator's Report → stream to chat bubble.
         if (!alreadyStreamedText && textContent.trim()) {
-            yield { type: 'streamChunk', text: textContent };
+            if (toolCalls.length > 0) {
+                yield { type: 'thinking', text: textContent.trim().slice(0, 300) };
+            }
+            else {
+                yield { type: 'streamChunk', text: textContent };
+            }
         }
         // No tool calls = final response (task complete)
         if (toolCalls.length === 0) {
