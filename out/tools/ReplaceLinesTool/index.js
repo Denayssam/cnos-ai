@@ -36,8 +36,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.TOOL_DEF = void 0;
 exports.execute = execute;
 const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const shared_1 = require("../shared");
+const lockfile_1 = require("../../utils/lockfile");
 exports.TOOL_DEF = {
     type: 'function',
     function: {
@@ -56,6 +58,7 @@ TO INSERT NEW LINES WITHOUT DELETING: Set start_line and end_line to the exact s
                 end_line: { type: 'number', description: '1-based line number where the replacement ends (inclusive). Must be >= start_line.' },
                 new_content: { type: ['string', 'array'], description: 'El código a insertar en lugar de las líneas eliminadas. IMPORTANTE: Para evitar errores de escape JSON en bloques grandes de JSX/TSX, tienes PERMITIDO enviar este parámetro como un Array de strings (una línea de código por elemento). El motor lo unirá automáticamente con \\n. Pasa "" o [] para eliminar el rango sin insertar nada. Do NOT add a trailing newline — the engine handles line endings.' },
                 healing_mode: { type: 'boolean', description: 'Set to true ONLY if you are fixing a syntax error, unbalanced brace, or AST corruption. This temporarily disables the syntax and AST guards to allow surgical fixes on already broken files.' },
+                agent_id: { type: 'string', description: 'Unique identifier of the calling agent (e.g. "coder-1", "designer-2"). Used by the File Lock Manager to track ownership. Required when running in parallel orchestration mode.' },
             },
             required: ['path', 'start_line', 'end_line', 'new_content'],
         },
@@ -94,9 +97,9 @@ function execute(args, workspacePath) {
         return { success: false, output: 'CRITICAL ERROR: new_content must be a string or Array of strings. Use an empty string "" to delete lines without inserting anything.' };
     }
     const original = fs.readFileSync(fp, 'utf-8');
-    // Black Box auto-backup — save original before any modification
+    // Zero-footprint auto-backup — written to OS temp dir, never to the workspace or git tree
     try {
-        const backupDir = path.join(workspacePath, '.fluxo', 'backups');
+        const backupDir = path.join(os.tmpdir(), 'fluxo-backups');
         fs.mkdirSync(backupDir, { recursive: true });
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const backupName = `${path.basename(fp)}_${timestamp}.bak`;
@@ -169,7 +172,19 @@ function execute(args, workspacePath) {
                 `(Nota: la herramienta falla, no escribe el archivo, y obliga al agente a reconsiderar).`,
         };
     }
-    fs.writeFileSync(fp, updated, 'utf-8');
+    const agentId = typeof args.agent_id === 'string' ? args.agent_id : 'agent';
+    if (!lockfile_1.FileLockManager.acquireLock(fp, agentId)) {
+        return {
+            success: false,
+            output: `SYSTEM LOCK: El archivo ${args.path} está siendo editado actualmente por otro agente de tu equipo. Tienes prohibido forzar la edición. Por favor, usa la herramienta sleep por 5 segundos o trabaja en otro archivo mientras se libera el cerrojo.`,
+        };
+    }
+    try {
+        fs.writeFileSync(fp, updated, 'utf-8');
+    }
+    finally {
+        lockfile_1.FileLockManager.releaseLock(fp, agentId);
+    }
     // Build a compact preview of removed content for auto-verification
     const removedText = removedLines.join('\n');
     const removedPreview = removedText.length > 300

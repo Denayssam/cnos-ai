@@ -24,3 +24,6 @@ fluxo_agent_old.log
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# Fluxo AI Engine Data
+.fluxo/

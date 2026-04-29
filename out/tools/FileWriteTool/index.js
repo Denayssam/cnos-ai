@@ -38,6 +38,7 @@ exports.execute = execute;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const shared_1 = require("../shared");
+const lockfile_1 = require("../../utils/lockfile");
 exports.TOOL_DEF = {
     type: 'function',
     function: {
@@ -48,6 +49,7 @@ exports.TOOL_DEF = {
             properties: {
                 path: { type: 'string', description: 'File path relative to workspace root.' },
                 content: { type: 'string', description: 'Complete file content to write.' },
+                agent_id: { type: 'string', description: 'Unique identifier of the calling agent (e.g. "coder-1", "designer-2"). Used by the File Lock Manager to track ownership. Required when running in parallel orchestration mode.' },
             },
             required: ['path', 'content'],
         },
@@ -58,9 +60,21 @@ function execute(args, workspacePath) {
         return { success: false, output: 'CRITICAL ERROR: "content" is missing or empty.' };
     }
     const fp = (0, shared_1.safePath)(workspacePath, args.path);
-    fs.mkdirSync(path.dirname(fp), { recursive: true });
-    fs.writeFileSync(fp, args.content, 'utf-8');
-    const size = Buffer.byteLength(args.content, 'utf-8');
-    return { success: true, output: `Written: ${args.path} (${size} bytes)` };
+    const agentId = typeof args.agent_id === 'string' ? args.agent_id : 'agent';
+    if (!lockfile_1.FileLockManager.acquireLock(fp, agentId)) {
+        return {
+            success: false,
+            output: `SYSTEM LOCK: El archivo ${args.path} está siendo editado actualmente por otro agente de tu equipo. Tienes prohibido forzar la edición. Por favor, usa la herramienta sleep por 5 segundos o trabaja en otro archivo mientras se libera el cerrojo.`,
+        };
+    }
+    try {
+        fs.mkdirSync(path.dirname(fp), { recursive: true });
+        fs.writeFileSync(fp, args.content, 'utf-8');
+        const size = Buffer.byteLength(args.content, 'utf-8');
+        return { success: true, output: `Written: ${args.path} (${size} bytes)` };
+    }
+    finally {
+        lockfile_1.FileLockManager.releaseLock(fp, agentId);
+    }
 }
 //# sourceMappingURL=index.js.map

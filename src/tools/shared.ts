@@ -15,7 +15,8 @@ export interface NativeTool {
     description: string;
     parameters: {
       type: 'object';
-      properties: Record<string, { type: string | string[]; description: string }>;
+      // Permissive to support array schemas (items, enum, etc.) alongside simple { type, description } entries.
+      properties: Record<string, any>;
       required: string[];
     };
   };

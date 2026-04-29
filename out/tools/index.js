@@ -55,6 +55,12 @@ const GetCodeStructureTool = __importStar(require("./GetCodeStructureTool"));
 const FetchDocumentationTool = __importStar(require("./FetchDocumentationTool"));
 const EnterWorktreeTool = __importStar(require("./EnterWorktreeTool"));
 const ExitWorktreeTool = __importStar(require("./ExitWorktreeTool"));
+const TeamCreateTool = __importStar(require("./TeamCreateTool"));
+const SendMessageTool = __importStar(require("./SendMessageTool"));
+const ReplaceSymbolTool = __importStar(require("./ReplaceSymbolTool"));
+const GlobTool = __importStar(require("./GlobTool"));
+const GrepTool = __importStar(require("./GrepTool"));
+const EnterPlanModeTool = __importStar(require("./EnterPlanModeTool"));
 // ─── Tool Registry ────────────────────────────────────────────────────────────
 const ALL_TOOLS = [
     FileReadTool,
@@ -76,6 +82,12 @@ const ALL_TOOLS = [
     FetchDocumentationTool,
     EnterWorktreeTool,
     ExitWorktreeTool,
+    TeamCreateTool,
+    SendMessageTool,
+    ReplaceSymbolTool,
+    GlobTool,
+    GrepTool,
+    EnterPlanModeTool,
 ];
 exports.TOOL_DEFINITIONS = ALL_TOOLS.map(t => t.TOOL_DEF);
 const TOOL_MAP = Object.fromEntries(ALL_TOOLS.map(t => [t.TOOL_DEF.function.name, t.execute]));

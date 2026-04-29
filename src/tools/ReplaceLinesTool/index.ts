@@ -1,6 +1,8 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { NativeTool, ToolResult, safePath } from '../shared';
+import { FileLockManager } from '../../utils/lockfile';
 
 export const TOOL_DEF: NativeTool = {
   type: 'function',
@@ -20,6 +22,7 @@ TO INSERT NEW LINES WITHOUT DELETING: Set start_line and end_line to the exact s
         end_line:    { type: 'number', description: '1-based line number where the replacement ends (inclusive). Must be >= start_line.' },
         new_content: { type: ['string', 'array'], description: 'El código a insertar en lugar de las líneas eliminadas. IMPORTANTE: Para evitar errores de escape JSON en bloques grandes de JSX/TSX, tienes PERMITIDO enviar este parámetro como un Array de strings (una línea de código por elemento). El motor lo unirá automáticamente con \\n. Pasa "" o [] para eliminar el rango sin insertar nada. Do NOT add a trailing newline — the engine handles line endings.' },
         healing_mode: { type: 'boolean', description: 'Set to true ONLY if you are fixing a syntax error, unbalanced brace, or AST corruption. This temporarily disables the syntax and AST guards to allow surgical fixes on already broken files.' },
+        agent_id: { type: 'string', description: 'Unique identifier of the calling agent (e.g. "coder-1", "designer-2"). Used by the File Lock Manager to track ownership. Required when running in parallel orchestration mode.' },
       },
       required: ['path', 'start_line', 'end_line', 'new_content'],
     },
@@ -62,9 +65,9 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
 
   const original   = fs.readFileSync(fp, 'utf-8');
 
-  // Black Box auto-backup — save original before any modification
+  // Zero-footprint auto-backup — written to OS temp dir, never to the workspace or git tree
   try {
-    const backupDir  = path.join(workspacePath, '.fluxo', 'backups');
+    const backupDir  = path.join(os.tmpdir(), 'fluxo-backups');
     fs.mkdirSync(backupDir, { recursive: true });
     const timestamp  = new Date().toISOString().replace(/[:.]/g, '-');
     const backupName = `${path.basename(fp)}_${timestamp}.bak`;
@@ -149,7 +152,18 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
     };
   }
 
-  fs.writeFileSync(fp, updated, 'utf-8');
+  const agentId = typeof args.agent_id === 'string' ? args.agent_id : 'agent';
+  if (!FileLockManager.acquireLock(fp, agentId)) {
+    return {
+      success: false,
+      output: `SYSTEM LOCK: El archivo ${args.path} está siendo editado actualmente por otro agente de tu equipo. Tienes prohibido forzar la edición. Por favor, usa la herramienta sleep por 5 segundos o trabaja en otro archivo mientras se libera el cerrojo.`,
+    };
+  }
+  try {
+    fs.writeFileSync(fp, updated, 'utf-8');
+  } finally {
+    FileLockManager.releaseLock(fp, agentId);
+  }
 
   // Build a compact preview of removed content for auto-verification
   const removedText  = removedLines.join('\n');

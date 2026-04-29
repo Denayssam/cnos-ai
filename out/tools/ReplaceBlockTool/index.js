@@ -36,31 +36,32 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.TOOL_DEF = void 0;
 exports.execute = execute;
 const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const shared_1 = require("../shared");
+const lockfile_1 = require("../../utils/lockfile");
 exports.TOOL_DEF = {
     type: 'function',
     function: {
         name: 'replace_block',
-        description: `Replace a text block in a file using string-based targeting — no line numbers required.
-WHEN TO USE: Prefer over replace_lines when the file is long (+300 lines), line numbers keep shifting, or you need to target a semantically unique block (a function body, JSX component, config object).
-MANDATORY WORKFLOW: (1) Call read_file to get the current content. (2) Copy the text block you want to replace as target_snippet. (3) Call replace_block with new_content.
-MATCHING: Tries exact match first; if whitespace/indentation differs, automatically falls back to fuzzy line-by-line matching that ignores leading/trailing spaces and collapsed internal whitespace.
+        description: `Replace a text block in a file using semantic string-based targeting — no line numbers required.
+MANDATORY WORKFLOW: (1) Call read_file to get the current content. (2) Copy the exact block you want to replace as search_snippet — include 2-3 lines of surrounding context to guarantee uniqueness. (3) Call replace_block with your new replace_snippet.
+MATCHING: Tries exact match first; if whitespace/indentation differs, automatically falls back to fuzzy line-by-line matching that ignores leading/trailing spaces.
+FAIL-SAFE: If search_snippet is not found (hallucinated character, wrong indentation), the tool does NOTHING and returns an error — the file is never corrupted. Call read_file again and re-copy the block verbatim.
 STRICT RULES:
-  • target_snippet must match the file content — same characters, fuzzy on whitespace only.
-  • Fails if target_snippet is not found even after fuzzy normalization (content differs — call read_file again).
-  • Fails if target_snippet matches more than once (ambiguous — add more surrounding lines to make it unique).
-  • Use new_content = "" to delete the block without inserting anything.
+  • search_snippet must be unique in the file — fails if it matches more than once (add more surrounding lines).
+  • Use replace_snippet = "" to delete the block without inserting anything.
   • Does NOT bypass guards unless healing_mode: true is set.`,
         parameters: {
             type: 'object',
             properties: {
                 path: { type: 'string', description: 'File path relative to workspace root.' },
-                target_snippet: { type: 'string', description: 'The text block to find and replace. Must be unique in the file. Copy from read_file output — whitespace differences are tolerated via fuzzy matching.' },
-                new_content: { type: 'string', description: 'Text to insert in place of target_snippet. Use empty string "" to delete the block.' },
+                search_snippet: { type: 'string', description: 'The exact current code block to find and replace. Copy verbatim from read_file output. Include 2-3 lines of context above and below the change to ensure uniqueness. Whitespace differences are tolerated via fuzzy matching.' },
+                replace_snippet: { type: 'string', description: 'Your new version of the block. Use empty string "" to delete without inserting anything.' },
+                agent_id: { type: 'string', description: 'Your agent ID (e.g. "coder", "designer"). Used by the FileLockManager to prevent race conditions in parallel execution.' },
                 healing_mode: { type: 'boolean', description: 'Set to true ONLY when fixing an already-broken file (syntax error, unbalanced braces, AST corruption). Disables brace-balance and AST guards.' },
             },
-            required: ['path', 'target_snippet', 'new_content'],
+            required: ['path', 'search_snippet', 'replace_snippet'],
         },
     },
 };
@@ -126,26 +127,29 @@ function execute(args, workspacePath) {
     if (!fs.existsSync(fp)) {
         return { success: false, output: `File not found: ${args.path}. Use list_dir to verify the path.` };
     }
-    if (typeof args.target_snippet !== 'string' || args.target_snippet === '') {
-        return { success: false, output: 'CRITICAL ERROR: target_snippet must be a non-empty string. Copy the exact text block from read_file output.' };
+    // Accept both new param names (search_snippet/replace_snippet) and legacy names (target_snippet/new_content)
+    const searchSnippet = typeof args.search_snippet === 'string' ? args.search_snippet : (args.target_snippet ?? '');
+    const replaceSnippet = typeof args.replace_snippet === 'string' ? args.replace_snippet : (args.new_content ?? '');
+    if (typeof searchSnippet !== 'string' || searchSnippet === '') {
+        return { success: false, output: 'Snippet exacto no encontrado. Usa read_file para copiar el bloque literal antes de reemplazar.' };
     }
-    if (typeof args.new_content !== 'string') {
-        return { success: false, output: 'CRITICAL ERROR: new_content must be a string. Use empty string "" to delete the block.' };
+    if (typeof replaceSnippet !== 'string') {
+        return { success: false, output: 'CRITICAL ERROR: replace_snippet must be a string. Use empty string "" to delete the block.' };
     }
     const original = fs.readFileSync(fp, 'utf-8');
-    const match = findBlock(original, args.target_snippet);
+    const match = findBlock(original, searchSnippet);
     if (match.kind === 'none') {
         return {
             success: false,
-            output: `MATCH ERROR: target_snippet not found in ${args.path} — exact match failed and fuzzy whitespace-normalization also found no match.\n` +
-                `This means the snippet content itself differs from the file (not just whitespace/indentation).\n` +
-                `ACTION REQUIRED: Call read_file again to get current content, then re-copy the target block verbatim. Do not paraphrase or shorten.`,
+            output: `Snippet exacto no encontrado. Usa read_file para copiar el bloque literal antes de reemplazar.\n` +
+                `(${args.path}: exact match failed and fuzzy whitespace-normalization also found no match.\n` +
+                `The snippet content differs from the file — not just whitespace. Re-copy verbatim from read_file.)`,
         };
     }
     if (match.kind === 'ambiguous') {
         return {
             success: false,
-            output: `AMBIGUOUS MATCH: target_snippet appears ${match.count} times in ${args.path}.\n` +
+            output: `AMBIGUOUS MATCH: search_snippet appears ${match.count} times in ${args.path}.\n` +
                 `Your snippet is too generic. Expand it — add the function signature above or the closing brace below to make the block unique.`,
         };
     }
@@ -157,9 +161,9 @@ function execute(args, workspacePath) {
     let matchEndLine;
     if (match.kind === 'strict') {
         // Exact replacement — preserve all original formatting outside the matched block
-        const snipNormalized = args.target_snippet.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        const snipNormalized = searchSnippet.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
         updated = original.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-            .replace(snipNormalized, args.new_content.replace(/\n$/, ''));
+            .replace(snipNormalized, replaceSnippet.replace(/\n$/, ''));
         const before = original.replace(/\r\n/g, '\n').indexOf(snipNormalized);
         matchStartLine = original.slice(0, before).split('\n').length;
         removedLineCount = snipNormalized.split('\n').length;
@@ -169,7 +173,7 @@ function execute(args, workspacePath) {
     else {
         // Fuzzy replacement — line-based reconstruction
         const fileLines = original.replace(/\r\n/g, '\n').split('\n');
-        const newLines = args.new_content === '' ? [] : args.new_content.replace(/\n$/, '').split('\n');
+        const newLines = replaceSnippet === '' ? [] : replaceSnippet.replace(/\n$/, '').split('\n');
         const resultLines = [
             ...fileLines.slice(0, match.start),
             ...newLines,
@@ -183,7 +187,7 @@ function execute(args, workspacePath) {
         removedPreviewText = removedText.length > 300 ? removedText.slice(0, 300) + '\n…(truncated)' : removedText;
     }
     if (updated.trim() === '' && original.trim() !== '') {
-        return { success: false, output: 'SAFETY ABORT: replacement would produce an empty file. Verify your target_snippet and new_content.' };
+        return { success: false, output: 'SAFETY ABORT: replacement would produce an empty file. Verify your search_snippet and replace_snippet.' };
     }
     // ── Guards (skipped in healing_mode) ─────────────────────────────────────
     if (!args.healing_mode) {
@@ -213,21 +217,35 @@ function execute(args, workspacePath) {
                 return {
                     success: false,
                     output: `CRITICAL SYNTAX ERROR: AST/JSX Corruption detected. Etiquetas HTML/JSX desbalanceadas. El archivo NO fue modificado.\n` +
-                        `ESTRATEGIA: Asegúrate de incluir el bloque JSX completo desde su apertura hasta su cierre en target_snippet.\n` +
+                        `ESTRATEGIA: Asegúrate de incluir el bloque JSX completo desde su apertura hasta su cierre en search_snippet.\n` +
                         `Si estás arreglando un archivo YA corrupto, usa "healing_mode: true".`,
                 };
             }
         }
     }
-    // Auto-backup before write
+    // Zero-footprint auto-backup — written to OS temp dir, never to the workspace or git tree
     try {
-        const backupDir = path.join(workspacePath, '.fluxo', 'backups');
+        const backupDir = path.join(os.tmpdir(), 'fluxo-backups');
         fs.mkdirSync(backupDir, { recursive: true });
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         fs.writeFileSync(path.join(backupDir, `${path.basename(fp)}_${timestamp}.bak`), original, 'utf-8');
     }
     catch { /* non-fatal */ }
-    fs.writeFileSync(fp, updated, 'utf-8');
+    // ── FileLockManager Mutex (v8.3.2) ───────────────────────────────────────────
+    const agentId = typeof args.agent_id === 'string' ? args.agent_id : 'agent';
+    if (!lockfile_1.FileLockManager.acquireLock(fp, agentId)) {
+        return {
+            success: false,
+            output: `SYSTEM LOCK: El archivo ${args.path} está siendo editado actualmente por otro agente de tu equipo. Tienes prohibido forzar la edición. Por favor, usa la herramienta sleep por 5 segundos o trabaja en otro archivo mientras se libera el cerrojo.`,
+        };
+    }
+    try {
+        fs.writeFileSync(fp, updated, 'utf-8');
+    }
+    finally {
+        lockfile_1.FileLockManager.releaseLock(fp, agentId);
+    }
+    // ─────────────────────────────────────────────────────────────────────────────
     const matchNote = match.kind === 'fuzzy'
         ? ` [fuzzy match: whitespace-normalized, lines ${matchStartLine}–${matchEndLine}]`
         : ` [exact match, lines ${matchStartLine}–${matchEndLine}]`;

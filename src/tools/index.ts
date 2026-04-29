@@ -17,6 +17,12 @@ import * as GetCodeStructureTool       from './GetCodeStructureTool';
 import * as FetchDocumentationTool from './FetchDocumentationTool';
 import * as EnterWorktreeTool     from './EnterWorktreeTool';
 import * as ExitWorktreeTool      from './ExitWorktreeTool';
+import * as TeamCreateTool        from './TeamCreateTool';
+import * as SendMessageTool       from './SendMessageTool';
+import * as ReplaceSymbolTool     from './ReplaceSymbolTool';
+import * as GlobTool              from './GlobTool';
+import * as GrepTool              from './GrepTool';
+import * as EnterPlanModeTool     from './EnterPlanModeTool';
 import { ToolResult, NativeTool } from './shared';
 
 export { ToolResult, NativeTool };
@@ -43,6 +49,12 @@ const ALL_TOOLS = [
   FetchDocumentationTool,
   EnterWorktreeTool,
   ExitWorktreeTool,
+  TeamCreateTool,
+  SendMessageTool,
+  ReplaceSymbolTool,
+  GlobTool,
+  GrepTool,
+  EnterPlanModeTool,
 ];
 
 export const TOOL_DEFINITIONS: NativeTool[] = ALL_TOOLS.map(t => t.TOOL_DEF);

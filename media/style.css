@@ -749,4 +749,107 @@ body { display: flex; flex-direction: column; height: 100vh; }
 /* ─── Multi-Brain Model Selectors ───────────────────────────────────────────── */
 .brain-selectors { display: flex; align-items: center; gap: 3px; }
 .brain-label { font-size: 12px; opacity: 0.75; user-select: none; cursor: default; }
+
+/* ─── Worktree Human Review Card (v8.3.0) ───────────────────────────────────── */
+.worktree-review-card {
+  margin: 8px 0;
+  padding: 14px 16px;
+  background: rgba(79, 70, 229, 0.07);
+  border: 1px solid rgba(79, 70, 229, 0.3);
+  border-left: 3px solid #4f46e5;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wt-review-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.wt-icon { font-size: 15px; }
+.wt-branch-badge {
+  margin-left: auto;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  padding: 2px 8px;
+  background: rgba(79, 70, 229, 0.15);
+  border: 1px solid rgba(79, 70, 229, 0.35);
+  border-radius: 20px;
+  color: #818cf8;
+  white-space: nowrap;
+}
+.wt-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.wt-files-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+.wt-files-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  width: 100%;
+  margin-bottom: 2px;
+}
+.wt-file-btn {
+  display: inline-block;
+  padding: 2px 8px;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #60a5fa;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  text-align: left;
+}
+.wt-file-btn:hover {
+  background: rgba(96,165,250,0.12);
+  border-color: rgba(96,165,250,0.4);
+  color: #93c5fd;
+}
+.wt-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+.wt-btn {
+  flex: 1;
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s, opacity 0.15s;
+}
+.wt-btn:disabled { opacity: 0.45; cursor: default; }
+.wt-approve {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #34d399;
+}
+.wt-approve:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.25);
+  border-color: rgba(16, 185, 129, 0.6);
+}
+.wt-discard {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #f87171;
+}
+.wt-discard:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+}
 .brain-sep { color: rgba(255,255,255,0.2); font-size: 10px; padding: 0 2px; user-select: none; }

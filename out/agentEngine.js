@@ -39,6 +39,7 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const tools_1 = require("./tools");
 const agents_1 = require("./agents");
+const agentMailbox_1 = require("./utils/agentMailbox");
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 function resolveEndpointAndKey(model, config) {
     // Bare "deepseek-*" (no slash) → DeepSeek direct API. Models with "deepseek/" prefix go to OpenRouter.
@@ -80,6 +81,45 @@ function debugLog(workspacePath, msg) {
         console.error('[debugLog] Failed to write to fluxo_agent.log — path:', workspacePath, '— error:', e?.stack ?? e);
     }
 }
+function normalizeAgentPath(rawPath, workspacePath) {
+    if (!rawPath) {
+        return { ok: true, normalized: rawPath };
+    }
+    let p = rawPath;
+    // Strip Docker-bias prefix variants (/workspace/, workspace/, \workspace\)
+    if (p.startsWith('/workspace/')) {
+        p = p.substring(11);
+    }
+    else if (p.startsWith('workspace/')) {
+        p = p.substring(10);
+    }
+    else if (p.startsWith('\\workspace\\')) {
+        p = p.substring(11);
+    }
+    // Handle path overlap: /workspace/D:\real\path → D:\real\path
+    const driveIdx = p.search(/[a-zA-Z]:/);
+    if (driveIdx > 0) {
+        p = p.substring(driveIdx);
+    }
+    // If still absolute, convert to workspace-relative or reject if outside workspace
+    if (path.isAbsolute(p)) {
+        const resolvedWs = path.resolve(workspacePath);
+        const resolvedP = path.resolve(p);
+        if (!resolvedP.toLowerCase().startsWith(resolvedWs.toLowerCase())) {
+            return {
+                ok: false,
+                normalized: rawPath,
+                error: `PATH ERROR: La ruta "${rawPath}" apunta fuera del workspace actual (${workspacePath}). ` +
+                    `Usa rutas RELATIVAS al proyecto (ej: "src/components/MyComponent.tsx"). ` +
+                    `Llama list_dir('.') o glob('**/*') para explorar la estructura real.`,
+            };
+        }
+        p = path.relative(resolvedWs, resolvedP);
+    }
+    // Normalize to forward slashes for cross-platform consistency
+    return { ok: true, normalized: p.replace(/\\/g, '/') };
+}
+// ─────────────────────────────────────────────────────────────────────────────
 // ─── Context Pruning ─────────────────────────────────────────────────────────
 // Truncates tool result messages from old turns to prevent context balloon.
 // Last 2 turns (assistant+tool pairs) are always kept intact.
@@ -137,7 +177,7 @@ function pruneToolResults(messages) {
     });
 }
 // ─── Agent Loop ───────────────────────────────────────────────────────────────
-async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, config, workspacePath, abortSignal, sentinelHasError = false, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools = [], callMcpToolCallback) {
+async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, config, workspacePath, abortSignal, sentinelHasError = false, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools = [], callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback) {
     // 1. Intent Detection (Routing)
     yield { type: 'thinking', text: 'Detecting intent…' };
     let agentId = initialAgentId;
@@ -253,6 +293,17 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
         debugLog(workspacePath, `--- Iteration ${iterations}/${MAX_ITERATIONS} ---`);
         yield { type: 'iterationCount', count: iterations, max: MAX_ITERATIONS };
         yield { type: 'thinking', text: iterations === 1 ? `Agent ${agent.name} is planning…` : `Iteration ${iterations}: processing…` };
+        // ── Inter-Agent Mailbox drain (v8.2.0) ───────────────────────────────────────
+        // Sub-agents running in parallel can send_message to this agent. Drain and
+        // inject as user turns so the LLM receives them naturally in context.
+        const incomingMsgs = agentMailbox_1.AgentMailbox.drain(agentId);
+        if (incomingMsgs.length > 0) {
+            yield { type: 'thinking', text: `📬 ${agentId}: received ${incomingMsgs.length} inter-agent message(s)` };
+            for (const msg of incomingMsgs) {
+                messages.push({ role: 'user', content: `[INTER-AGENT MESSAGE]: ${msg}` });
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────────────
         // API call — streaming when enabled (fallback to blocking if tools present)
         // Apply context pruning before sending to avoid token balloon from large tool results.
         const msgsToSend = pruneToolResults(messages);
@@ -328,7 +379,7 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
             // If an IMPLEMENTATION_PLAN.md is active, ask the agent to verify progress
             // before allowing a no-tool exit. Guard with planCheckCount to prevent infinite loop.
             if (planCheckCount === 0 && workspacePath) {
-                const planFilePath = path.join(workspacePath, 'IMPLEMENTATION_PLAN.md');
+                const planFilePath = path.join(workspacePath, '.fluxo', 'IMPLEMENTATION_PLAN.md');
                 if (fs.existsSync(planFilePath)) {
                     planCheckCount++;
                     debugLog(workspacePath, 'Plan Verification: IMPLEMENTATION_PLAN.md found — injecting Manager Override');
@@ -364,11 +415,10 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 continue;
             }
             // Action Enforcement — agent returned text but no tools (passive give-up pattern)
+            // Silent: engine retries internally — user never sees the "fight" with the LLM.
             if (ghostRetries < 2) {
                 ghostRetries++;
                 debugLog(workspacePath, `Action enforcement #${ghostRetries} — no tools returned, injecting directive`);
-                yield { type: 'thinking', text: `⚡ Enforcing action (retry ${ghostRetries}/2)…` };
-                await new Promise(resolve => setTimeout(resolve, 2000));
                 messages.push({
                     role: 'user',
                     content: '[SYSTEM ENFORCEMENT]: You provided text but no tool calls. As an autonomous AI, you MUST use tools (like read_file, replace_block) to fix the issue yourself. Do not explain the fix to the user. Execute the fix.',
@@ -436,6 +486,18 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 }
                 const cmd = (cmdArgs.command || '').toLowerCase();
                 return SAFE_RUN_PATTERNS.some(p => cmd.includes(p));
+            }
+            // exit_worktree(discard) is a pure environment cleanup — Sherlock must never block it.
+            // This covers the case where enter_worktree failed due to a stale worktree conflict.
+            if (n === 'exit_worktree') {
+                let wtArgs = {};
+                try {
+                    wtArgs = JSON.parse(tc.function.arguments);
+                }
+                catch {
+                    return false;
+                }
+                return wtArgs.action?.toLowerCase() === 'discard';
             }
             return false;
         });
@@ -510,6 +572,29 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 continue;
             }
             const toolName = tc.function.name;
+            // ── Auto-inject agent_id for mutex-aware tools (FileLockManager v8.1.0) ────
+            // The engine tags every file-write operation with the current agent's ID so
+            // the FileLockManager always knows who holds each file lock — the LLM does not
+            // need to pass agent_id manually.
+            if ((toolName === 'replace_lines' || toolName === 'write_file' || toolName === 'replace_block') && !args.agent_id) {
+                args.agent_id = agentId;
+            }
+            // ─────────────────────────────────────────────────────────────────────────
+            // ── Path Normalization Middleware (v8.5.2) ────────────────────────────────
+            // Normalize 'path' and 'file_path' arguments for ALL tools before execution.
+            // Silently fixes /workspace/ bias and converts absolute paths to relative.
+            let pathNormError = null;
+            for (const pArg of ['path', 'file_path']) {
+                if (typeof args[pArg] === 'string') {
+                    const norm = normalizeAgentPath(args[pArg], workspacePath);
+                    if (!norm.ok) {
+                        pathNormError = norm.error;
+                        break;
+                    }
+                    args[pArg] = norm.normalized;
+                }
+            }
+            // ─────────────────────────────────────────────────────────────────────────
             // ── Deep Masking: Soft Fail ───────────────────────────────────────────────
             // If the LLM hallucinates a call to a disabled tool, intercept it before
             // Sherlock or execution — return a corrective error, never a panic crash.
@@ -535,7 +620,10 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
             const startTime = Date.now();
             let result;
             try {
-                if (toolName === 'ask_user_approval' && approvalCallback) {
+                if (pathNormError) {
+                    result = { success: false, output: pathNormError };
+                }
+                else if (toolName === 'ask_user_approval' && approvalCallback) {
                     yield { type: 'thinking', text: '🛡️ Bodyguard aguardando tu aprobación…' };
                     const approved = await approvalCallback(String(args.intent_summary ?? ''), String(args.reason_and_files ?? ''));
                     result = {
@@ -571,9 +659,119 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                     yield { type: 'thinking', text: `🔌 MCP: Calling external tool ${toolName}…` };
                     result = await callMcpToolCallback(toolName, args);
                 }
+                else if (toolName === 'replace_symbol' && replaceSymbolCallback) {
+                    // ── LSP Symbol Replace (v8.5.0) ────────────────────────────────────────
+                    yield { type: 'thinking', text: '🔬 LSP: locating AST symbol…' };
+                    result = await replaceSymbolCallback(String(args.file_path ?? args.path ?? ''), String(args.symbol_name ?? ''), String(args.new_code ?? ''));
+                    if (!result.success) {
+                        result = {
+                            ...result,
+                            output: result.output +
+                                '\n\nRECUPERACIÓN: Llama get_code_structure para ver los nombres exactos de los símbolos disponibles, luego reintenta con el nombre correcto.',
+                        };
+                    }
+                    // ─────────────────────────────────────────────────────────────────────
+                }
                 else if (toolName === 'fetch_documentation') {
                     yield { type: 'thinking', text: '🌐 Fetching external documentation…' };
                     result = await fetchDocumentation(String(args.url ?? ''));
+                    // ── Worktree Human Review (v8.3.0) ───────────────────────────────────────
+                    // Intercept exit_worktree merge calls before execution so the user can
+                    // inspect the diff in VS Code's native diff editor and approve/discard.
+                }
+                else if (toolName === 'exit_worktree' && args.action === 'merge' && worktreeReviewCallback) {
+                    const wStateFile = path.join(workspacePath, '.fluxo', 'active_worktree.json');
+                    let reviewedAction = 'merge';
+                    if (fs.existsSync(wStateFile)) {
+                        try {
+                            const wState = JSON.parse(fs.readFileSync(wStateFile, 'utf-8'));
+                            yield { type: 'thinking', text: '🔍 Requesting human review before worktree merge…' };
+                            reviewedAction = await worktreeReviewCallback(wState.branchName, wState.worktreePath);
+                            debugLog(workspacePath, `[Worktree Review] User decision: ${reviewedAction}`);
+                        }
+                        catch {
+                            // State unreadable — fall through to direct merge
+                        }
+                    }
+                    result = (0, tools_1.executeTool)('exit_worktree', { ...args, action: reviewedAction }, workspacePath);
+                    // ─────────────────────────────────────────────────────────────────────────
+                    // ── Planning Gate — @planner sub-agent (v8.5.3) ─────────────────────────
+                }
+                else if (toolName === 'enter_plan_mode') {
+                    const taskDescription = String(args.task_description ?? userMessage);
+                    yield { type: 'thinking', text: '📋 Planner: reading codebase…' };
+                    const plannerEventBuffer = [];
+                    const plannerGen = runAgentLoop(`MISSION — ANALYSIS ONLY:\nAnalyze the codebase and produce .fluxo/IMPLEMENTATION_PLAN.md for this task:\n\n${taskDescription}`, 'planner', [], { ...effectiveConfig, model: config.workerModel || config.model }, workspacePath, abortSignal, false, undefined, // no approval callback — planner never asks for approval
+                    undefined, // no native edit
+                    getCodeStructureCallback, mcpTools, callMcpToolCallback, undefined, // no worktree review
+                    undefined // no replace symbol
+                    );
+                    for await (const event of plannerGen) {
+                        plannerEventBuffer.push(event);
+                    }
+                    yield { type: 'thinking', text: '━━━ @planner — codebase analysis ━━━' };
+                    for (const event of plannerEventBuffer) {
+                        yield event;
+                    }
+                    const planFile = path.join(workspacePath, '.fluxo', 'IMPLEMENTATION_PLAN.md');
+                    if (fs.existsSync(planFile)) {
+                        const planContent = fs.readFileSync(planFile, 'utf-8');
+                        result = {
+                            success: true,
+                            output: `PLAN GENERATED SUCCESSFULLY. @coder and @designer can now execute sequentially.\n\n` +
+                                `${planContent}\n\n` +
+                                `NEXT STEP: Call create_team with agent task strings that reference the step numbers ` +
+                                `above. Each agent's task must be self-contained and cite the exact files from the plan.`,
+                        };
+                    }
+                    else {
+                        result = {
+                            success: false,
+                            output: `ERROR: @planner did not produce .fluxo/IMPLEMENTATION_PLAN.md. ` +
+                                `Retry with a more specific task_description, or delegate directly with create_team.`,
+                        };
+                    }
+                    // ─────────────────────────────────────────────────────────────────────────
+                    // ── Parallel Swarm (v8.2.0) ──────────────────────────────────────────────
+                }
+                else if (toolName === 'create_team') {
+                    const teamSpec = Array.isArray(args.team)
+                        ? args.team
+                        : [];
+                    if (teamSpec.length === 0) {
+                        result = { success: false, output: 'create_team: the "team" array is empty or malformed. Provide at least one { agent, task } entry.' };
+                    }
+                    else {
+                        yield { type: 'thinking', text: `🐝 Parallel Swarm: launching ${teamSpec.length} agent(s) concurrently…` };
+                        // One event buffer per sub-agent — we can't yield from inside Promise.all
+                        // so we collect everything and replay sequentially after all threads finish.
+                        const eventBuffers = teamSpec.map(() => []);
+                        await Promise.all(teamSpec.map(async (member, idx) => {
+                            const subAgentId = (member.agent ?? '').toLowerCase().trim() || 'coder';
+                            // Deliver any pre-queued mailbox messages for this sub-agent as part of its task
+                            const pendingMsgs = agentMailbox_1.AgentMailbox.drain(subAgentId);
+                            const taskMessage = pendingMsgs.length > 0
+                                ? `${member.task}\n\n--- INCOMING MESSAGES ---\n${pendingMsgs.join('\n')}`
+                                : member.task;
+                            const subGen = runAgentLoop(taskMessage, subAgentId, [], // each sub-agent starts with a clean conversation slate
+                            { ...effectiveConfig, model: config.workerModel || config.model }, workspacePath, abortSignal, sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback);
+                            for await (const event of subGen) {
+                                eventBuffers[idx].push(event);
+                            }
+                        }));
+                        // Replay all sub-agent events in order, separated by dividers
+                        for (let i = 0; i < teamSpec.length; i++) {
+                            yield { type: 'thinking', text: `━━━ @${teamSpec[i].agent} — thread ${i + 1}/${teamSpec.length} ━━━` };
+                            for (const event of eventBuffers[i]) {
+                                yield event;
+                            }
+                        }
+                        result = {
+                            success: true,
+                            output: `Parallel Swarm complete. ${teamSpec.length} agent(s) ran concurrently: ${teamSpec.map(m => `@${m.agent}`).join(', ')}. Review all results above and emit your Orchestrator's Report.`,
+                        };
+                    }
+                    // ─────────────────────────────────────────────────────────────────────────
                 }
                 else {
                     result = (0, tools_1.executeTool)(toolName, args, workspacePath);
@@ -582,6 +780,17 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
             catch (err) {
                 result = { success: false, output: `[SYSTEM ENGINE ERROR]: ${err.message ?? String(err)}` };
             }
+            // ── Worktree Conflict Resolution Hint (v8.3.3) ───────────────────────────
+            // When enter_worktree fails because a worktree is already active, the agent
+            // needs explicit authorization to discard it — otherwise it may loop or give up.
+            if (!result.success && toolName === 'enter_worktree' && result.output.includes('already active')) {
+                result = {
+                    ...result,
+                    output: result.output +
+                        '\n\nCONFLICTO DE WORKTREE DETECTADO: Tienes permiso para usar exit_worktree con action=\'discard\' para limpiar el entorno antes de reintentar. El Auditor ha sido notificado y autorizará este descarte automáticamente.',
+                };
+            }
+            // ─────────────────────────────────────────────────────────────────────────
             const duration = ((Date.now() - startTime) / 1000).toFixed(1);
             yield { type: 'toolResult', name: toolName, success: result.success, output: result.output, duration };
             debugLog(workspacePath, `Tool ${toolName}: success=${result.success}${!result.success ? ` — ${result.output.slice(0, 300)}` : ''}`);
@@ -672,8 +881,10 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 await new Promise(resolve => setTimeout(resolve, 2000));
             }
             // ── HARD BRAKE: Plan proposal detected — override history and break loop ─
+            // Bypass for @planner: the planner writes IMPLEMENTATION_PLAN.md internally as
+            // part of enter_plan_mode — it must not trigger a pause in the parent loop.
             const planFilePath = (args.path || '').replace(/\\/g, '/').toLowerCase();
-            const isPlanBrake = result.success && (toolName === 'propose_plan' ||
+            const isPlanBrake = agentId !== 'planner' && result.success && (toolName === 'propose_plan' ||
                 ((toolName === 'write_file' || toolName === 'replace_lines') &&
                     planFilePath.includes('implementation_plan')));
             const PLAN_PAUSE_DIRECTIVE = "SYSTEM DIRECTIVE: Plan presented to user. Execution is now PAUSED. " +

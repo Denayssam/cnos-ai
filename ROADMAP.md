@@ -13,18 +13,22 @@ Este documento define la "Estrella del Norte" de FLUXO AI. Tras consolidar el Ni
 
 ---
 
-## ⚡ Fase 2: Orquestación Paralela Asíncrona (v8.1.0)
-**Objetivo:** Eliminar el cuello de botella secuencial. Permitir que múltiples agentes trabajen al mismo tiempo sin destruir los archivos por colisión.
+## ⚡ Fase 2: Orquestación Paralela Asíncrona & Estabilidad (v8.1.0 - v8.3.3) ✅ COMPLETADA
+**Objetivo:** Eliminar el cuello de botella secuencial, permitir el trabajo concurrente y asegurar la precisión algorítmica del código generado.
 
-* **[ ] File System Locks (`lockfile.ts`):** Construir un sistema de cerrojos (Locks). Antes de que un agente ejecute `write_file` o `replace_lines`, debe solicitar un cerrojo sobre ese archivo. Si el archivo está en uso por otro subagente, debe entrar en cola de espera.
-* **[ ] Implementar `TeamCreateTool`:** Actualizar `agentEngine.ts` para usar `Promise.all()`. El Manager podrá instanciar hilos asíncronos paralelos (ej. Coder arreglando lógica y Designer ajustando CSS al mismo tiempo).
-* **[ ] Comunicación Inter-Agente (`SendMessageTool`):** Permitir que los workers intercambien contexto JSON en segundo plano (ej. el Coder le pasa el contrato de la API al Designer sin que el usuario tenga que leerlo en la UI de VS Code).
+* **[x] The Mutex Protocol (v8.1.0):** Implementación de `lockfile.ts`. Sistema de cerrojos de sistema de archivos para evitar colisiones durante escrituras concurrentes.
+* **[x] The Parallel Swarm (v8.2.0):** Refactor de `agentEngine.ts` con `Promise.all()`. Implementación de `TeamCreateTool` para instanciación de hilos y `SendMessageTool` (`AgentMailbox`) para comunicación en segundo plano.
+* **[x] Native Visual Diff (v8.3.0):** Integración UX/UI con el motor nativo de Git Diff de VS Code. Pausa de orquestación (`worktreeReviewCallback`) para validación humana antes del merge.
+* **[x] Strict Orchestrator (v8.3.1):** Arquitectura de "Deprivación de Herramientas". El `@manager` pierde acceso físico a la mutación de archivos y ejecución de terminal para forzar la delegación obligatoria (`coordinatorMode`).
+* **[x] The Precision Protocol (v8.3.2):** Deprecación de la edición por líneas. Implementación de `ReplaceBlockTool` ("Bisturí Semántico" con `search_snippet` / `replace_snippet`) para proteger el AST de errores de conteo de LLMs.
+* **[x] The Resilience Patch (v8.3.3):** Feedback loops en fallos de sistema. Sherlock Auditor permite la auto-limpieza (`discard` autorizado) ante conflictos de estado, evitando parálisis del enjambre.
 
 ---
 
-## 🤖 Fase 3: Autonomía Proactiva & Daemon Mode (v9.0.0)
-**Objetivo:** Romper la barrera del editor. FLUXO AI funcionará de forma independiente a VS Code como un proceso de sistema.
+## 🤖 Fase 3: Tier 1 Enterprise Autonomy & Daemon Mode (v9.0.0+) ⏳ EN PROGRESO
+**Objetivo:** Cerrar la brecha final con los monolitos comerciales (Claude Code). Romper la barrera de VS Code para operar como un proceso de sistema invisible y robustecer la seguridad profunda.
 
-* **[ ] Feature Flags Core (`DAEMON` / `PROACTIVE`):** Bifurcar la arquitectura del motor para que pueda compilarse y ejecutarse como un servicio nativo de Node.js en segundo plano (independiente de la Webview de VS Code).
-* **[ ] Implementar `SleepTool`:** Estado de muy bajo consumo de RAM donde el enjambre se queda "escuchando" eventos del sistema o webhooks.
-* **[ ] Implementar `CronCreateTool` (`cronScheduler`):** Capacidad del Manager para programar auto-escaneos. (Ej. Despertar cada 2 horas, correr los tests de la rama principal, arreglarlos en un worktree si fallan, y crear un PR de forma silenciosa).
+* **[ ] Background Memory & Auto-Cleanup (`cleanupRegistry.ts`):** Servicio silencioso que destruye worktrees huérfanos tras fallos críticos o cierres de ventana, y abstracción de memoria automática (`extractMemories.ts`) sin requerir `update_memory`.
+* **[ ] Deep MCP Integration (`services/mcp/`):** Capa de servicios dedicada a *Model Context Protocol*. Soporte para autenticación OAuth por puertos nativos, `officialRegistry.ts`, y herramientas atómicas (`ListMcpResourcesTool`, `McpAuthTool`).
+* **[ ] Terminal AST Security (`bash/parser.ts`):** Sistema de parseo sintáctico de comandos de bajo nivel para auditar peticiones de terminal antes de la ejecución (Read-Only Validation) y prevenir inyecciones.
+* **[ ] Proactivity & Daemon Core (`DAEMON` flag):** Bifurcar el motor para ejecución nativa en Node.js (fuera de VS Code). Implementación de `SleepTool` y `CronCreateTool` (`cronScheduler.ts`) para auto-escaneos y reparación de CI/CD pipelines en segundo plano.

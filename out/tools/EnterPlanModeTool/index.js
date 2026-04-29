@@ -1,0 +1,32 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.TOOL_DEF = void 0;
+exports.execute = execute;
+exports.TOOL_DEF = {
+    type: 'function',
+    function: {
+        name: 'enter_plan_mode',
+        description: 'Spawns the @planner sub-agent to analyze the codebase and produce a structured IMPLEMENTATION_PLAN.md ' +
+            'at .fluxo/IMPLEMENTATION_PLAN.md before any code is written. ' +
+            'Required before any create_team delegation for tasks touching more than 1 file or involving logical refactoring. ' +
+            'The planner is read-only — it only writes the plan file.',
+        parameters: {
+            type: 'object',
+            properties: {
+                task_description: {
+                    type: 'string',
+                    description: 'Complete description of the task the planner must analyze and break down into sequential, ' +
+                        'file-precise implementation steps. Include all known context: tech stack, files suspected, goal.',
+                },
+            },
+            required: ['task_description'],
+        },
+    },
+};
+function execute(_args, _workspacePath) {
+    return {
+        success: false,
+        output: '[SYSTEM]: enter_plan_mode is intercepted by the engine. This execute() body should never run.',
+    };
+}
+//# sourceMappingURL=index.js.map

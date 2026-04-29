@@ -1,5 +1,5 @@
 /* global acquireVsCodeApi */
-// ─── Fluxo AI v7.14.1 — Smart Memory & Semantic Enforcement (Hotfix) ───────────
+// ─── Fluxo AI v8.3.0 — Native Visual Diff & Parallel Swarm ─────────────────────
 (function () {
   'use strict';
 
@@ -66,6 +66,7 @@
       case 'sentinelStatus':   handleSentinelStatus(data);                                break;
       case 'sentinelAlert':    handleSentinelAlert(data);                                 break;
       case 'modelsUpdate':     populateModels(data.models, data.model, data.workerModel); break;
+      case 'worktreeReview':   handleWorktreeReview(data);                                break;
     }
   });
 
@@ -499,6 +500,14 @@
       case 'create_dir':      return `• mkdir  ${args.path || ''}`;
       case 'propose_plan':    return `• plan   IMPLEMENTATION_PLAN.md`;
       case 'search_images':   return `• img    "${(args.query || '').slice(0, 40)}"`;
+      case 'enter_worktree':  return `• worktree  enter`;
+      case 'exit_worktree':   return `• worktree  ${args.action || '?'}`;
+      case 'create_team':     return `• team   [${(args.team || []).map(m => m.agent).join(', ')}]`;
+      case 'send_message':    return `• msg  → @${args.to_agent || '?'}`;
+      case 'replace_symbol':  return `• symbol  ${args.file_path || args.path || ''} :: ${args.symbol_name || '?'}`;
+      case 'glob':            return `• glob   ${(args.pattern || '').slice(0, 50)}`;
+      case 'grep':            return `• grep   "${(args.pattern || '').slice(0, 40)}"${args.path_filter ? ` in ${args.path_filter}` : ''}`;
+      case 'enter_plan_mode': return `• plan   ${(args.task_description || '').slice(0, 50)}…`;
       default:                return `• ${name}`;
     }
   }
@@ -522,24 +531,10 @@
       setContextFile(data.name, args.path);
     }
 
-    // Diff rendering for file-write operations; plain args for everything else
+    // Native Diff (v8.3.0): simulated green-line preview removed.
+    // File edits are reviewed via VS Code's native diff viewer (vscode.diff) in the Worktree Review card.
     let argsHtml = '';
-    if ((data.name === 'edit_file' || data.name === 'replace_lines' || data.name === 'replace_block' || data.name === 'write_file' || data.name === 'search_and_replace')) {
-      const raw = data.name === 'edit_file' ? (args.new_string || '')
-        : data.name === 'search_and_replace' ? (args.replace_snippet || '')
-        : (data.name === 'replace_lines' || data.name === 'replace_block') ? (args.new_content || '')
-        : (args.content || '');
-      if (raw) {
-        const lines = raw.split('\n');
-        const preview = lines.slice(0, 20);
-        const more = lines.length - preview.length;
-        const linesHtml = preview.map(l => `<span class="diff-line-added">${escapeHtml(l)}</span>`).join('');
-        const moreHtml = more > 0 ? `<span class="diff-line-added" style="opacity:0.35">  … ${more} more line${more !== 1 ? 's' : ''}</span>` : '';
-        argsHtml = `<div class="tool-diff">${linesHtml}${moreHtml}</div>`;
-      }
-    } else {
-      argsHtml = `<div class="tool-args">${escapeHtml(data.displayArgs || '')}</div>`;
-    }
+    argsHtml = `<div class="tool-args">${escapeHtml(data.displayArgs || '')}</div>`;
 
     const el = document.createElement('div');
     el.className = 'tool-call-card pending collapsed';
@@ -669,6 +664,64 @@
     scrollToBottom();
   }
 
+  // ─── Worktree Human Review Card (v8.3.0) ────────────────────────────────────
+  // Shown when exit_worktree(merge) is intercepted before execution.
+  // The agent loop is suspended until the user clicks Approve or Discard.
+  function handleWorktreeReview(data) {
+    document.getElementById('thinking-bubble')?.remove();
+
+    const changedFiles = Array.isArray(data.changedFiles) ? data.changedFiles : [];
+    const filesHtml = changedFiles.slice(0, 20).map(f =>
+      `<button class="wt-file-btn" data-file="${escapeHtml(f)}">${escapeHtml(f)}</button>`
+    ).join('');
+    const filesSection = changedFiles.length > 0
+      ? `<div class="wt-files-list"><span class="wt-files-label">Archivos modificados:</span>${filesHtml}</div>`
+      : '';
+
+    const el = document.createElement('div');
+    el.className = 'worktree-review-card';
+    el.innerHTML = `
+      <div class="wt-review-header">
+        <span class="wt-icon">🔀</span>
+        <strong>Worktree listo para revisión</strong>
+        <span class="wt-branch-badge">${escapeHtml(data.branch || '')}</span>
+      </div>
+      <p class="wt-hint">Revisa los cambios en la pestaña de Diff de VS Code antes de decidir.</p>
+      ${filesSection}
+      <div class="wt-actions">
+        <button class="wt-btn wt-approve">✅ Aprobar Merge</button>
+        <button class="wt-btn wt-discard">🗑️ Descartar Worktree</button>
+      </div>
+    `;
+
+    el.querySelectorAll('.wt-file-btn').forEach(btn => {
+      btn.addEventListener('click', () =>
+        vscode.postMessage({ type: 'open_worktree_diff', filePath: btn.dataset.file })
+      );
+    });
+
+    const approveBtn = el.querySelector('.wt-approve');
+    const discardBtn = el.querySelector('.wt-discard');
+
+    approveBtn.addEventListener('click', () => {
+      approveBtn.disabled = true;
+      discardBtn.disabled = true;
+      approveBtn.textContent = '⏳ Merging…';
+      vscode.postMessage({ type: 'worktree_decision', action: 'merge' });
+    });
+
+    discardBtn.addEventListener('click', () => {
+      approveBtn.disabled = true;
+      discardBtn.disabled = true;
+      discardBtn.textContent = '⏳ Discarding…';
+      vscode.postMessage({ type: 'worktree_decision', action: 'discard' });
+    });
+
+    (currentToolActivityItems || messagesEl).appendChild(el);
+    scrollToBottom();
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+
   function handleIterationCount(data) {
     if (!statusBar || !statusText) { return; }
     statusBar.classList.remove('hidden');
@@ -754,7 +807,7 @@
       <div class="welcome-card">
         <div class="welcome-logo">🐾</div>
         <h2 class="welcome-title">Fluxo AI</h2>
-        <p class="welcome-subtitle">Persistent Agent Swarm v8.0.0</p>
+        <p class="welcome-subtitle">Persistent Agent Swarm v8.5.0</p>
         <div class="welcome-tips">
           <div class="tip"><span class="tip-key">↵</span> Send</div>
           <div class="tip-sep">·</div>
