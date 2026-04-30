@@ -5,14 +5,21 @@ on:
     tags:
       - 'v*'
 
+# Damos permiso explícito para crear Releases
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Forzamos Node 24 para apagar el warning del año 2026
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@v4 # Actualizado a v4 para evitar warnings
+      - uses: actions/checkout@v4
       
       - name: Use Node.js
-        uses: actions/setup-node@v4 # Actualizado a v4
+        uses: actions/setup-node@v4
         with:
           node-version: '20.x'
           
@@ -25,7 +32,7 @@ jobs:
           vsce package
         
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2 # Actualizado a v2
+        uses: softprops/action-gh-release@v2
         with:
           files: '*.vsix'
         env:
