@@ -63,6 +63,7 @@ const GrepTool = __importStar(require("./GrepTool"));
 const EnterPlanModeTool = __importStar(require("./EnterPlanModeTool"));
 const SkillTool = __importStar(require("./SkillTool"));
 const GetRepoMapTool = __importStar(require("./GetRepoMapTool"));
+const AbortAndRollbackTool = __importStar(require("./AbortAndRollbackTool"));
 // ─── Tool Registry ────────────────────────────────────────────────────────────
 const ALL_TOOLS = [
     FileReadTool,
@@ -92,6 +93,7 @@ const ALL_TOOLS = [
     EnterPlanModeTool,
     SkillTool,
     GetRepoMapTool,
+    AbortAndRollbackTool,
 ];
 exports.TOOL_DEFINITIONS = ALL_TOOLS.map(t => t.TOOL_DEF);
 const TOOL_MAP = Object.fromEntries(ALL_TOOLS.map(t => [t.TOOL_DEF.function.name, t.execute]));

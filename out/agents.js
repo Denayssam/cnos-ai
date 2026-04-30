@@ -138,7 +138,7 @@ exports.AGENTS = {
         emoji: '💻',
         color: '#3b82f6',
         description: 'General coding: creates files, runs commands, fixes bugs',
-        tools: ['read_file', 'write_file', 'replace_symbol', 'replace_block', 'get_code_structure', 'glob', 'grep', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'fetch_documentation', 'enter_worktree', 'exit_worktree', 'send_message', 'get_repo_map'],
+        tools: ['read_file', 'write_file', 'replace_symbol', 'replace_block', 'get_code_structure', 'glob', 'grep', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'fetch_documentation', 'enter_worktree', 'exit_worktree', 'send_message', 'get_repo_map', 'abort_and_rollback'],
         isolation: 'worktree',
         keywords: [
             'código', 'code', 'función', 'function', 'clase', 'class',
@@ -231,6 +231,8 @@ Protocol:
    Parse the compiler output for the exact file and line number of each error.
    Fix each error with replace_symbol (for named functions) or replace_block (for inline code). Then run the build again.
    Repeat until exit code is 0. The Orchestrator's Report is ONLY permitted after a clean build.
+
+QUALITY GATE RULE (v8.16.0): Before declaring a task complete, your code MUST pass the project's build process. If the system rejects your completion with a [QUALITY GATE FAILED] message, analyze the build logs carefully, use your tools to fix the imports or logic errors, run the build again with run_command, and only then attempt to complete the task.
 
 BODYGUARD PROTOCOL — call ask_user_approval ONLY for high-risk operations:
   ✅ REQUIRE APPROVAL: deleting a file or directory | editing infrastructure files (package.json, vite.config.*, tsconfig.json, firebase.json, .env, any CI/CD config) | request is genuinely ambiguous about which file to touch and you cannot determine it from context or search_in_files | touching 5+ files in a single plan.
@@ -406,7 +408,7 @@ Vague steps ("update the component") are a FAILURE — be precise ("replace_symb
         emoji: '🧭',
         color: '#8b5cf6',
         description: 'Orchestration, complex planning, and emergency debugging',
-        tools: ['read_file', 'search_in_files', 'get_code_structure', 'glob', 'grep', 'run_command', 'enter_worktree', 'exit_worktree', 'create_team', 'send_message', 'enter_plan_mode', 'skill', 'get_repo_map'],
+        tools: ['read_file', 'search_in_files', 'get_code_structure', 'glob', 'grep', 'run_command', 'enter_worktree', 'exit_worktree', 'create_team', 'send_message', 'enter_plan_mode', 'skill', 'get_repo_map', 'abort_and_rollback'],
         isolation: 'worktree',
         keywords: [
             'manager', 'gestiona', 'organiza', 'planifica', 'proyecto',

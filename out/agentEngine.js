@@ -41,6 +41,8 @@ const tools_1 = require("./tools");
 const agents_1 = require("./agents");
 const agentMailbox_1 = require("./utils/agentMailbox");
 const repoMap_1 = require("./utils/repoMap");
+const gitSafety_1 = require("./utils/gitSafety");
+const buildValidator_1 = require("./utils/buildValidator");
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 function resolveEndpointAndKey(model, config) {
     // Bare "deepseek-*" (no slash) → DeepSeek direct API. Models with "deepseek/" prefix go to OpenRouter.
@@ -323,6 +325,8 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
     let consecutiveGhostCount = 0;
     let ghostRetries = 0;
     let planCheckCount = 0;
+    let consecutiveBuildFailures = 0; // ── v8.16.1: Quality Gate circuit breaker counter
+    let bypassQualityGate = false; // ── v8.16.1: set to true when user approves bypass
     // ── Worktree Session State (v8.8.0) ──────────────────────────────────────────
     // Initialized from disk so worktree context survives across iterations and is
     // inherited by sub-agents (planner, swarm) spawned from this session.
@@ -343,6 +347,28 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
     // Reserved for Vector Memory integration.
     // Example: await contextIndexer.index(messages, workspacePath);
     // ──────────────────────────────────────────────────────────────────────────
+    // ── v8.15.0: Git Auto-Checkpointing (The Time Machine) ───────────────────
+    // Pre-flight: block if human has uncommitted changes (would corrupt rollback boundary).
+    // On a clean tree: create an empty anchor commit so abort_and_rollback can always
+    // reset to HEAD~1 and restore the exact pre-agent state.
+    if (workspacePath) {
+        if ((0, gitSafety_1.hasUncommittedChanges)(workspacePath)) {
+            yield {
+                type: 'error',
+                message: '[SYSTEM ALERT] Uncommitted human changes detected. MANDATORY: The human must commit or stash their work before the agent can safely operate.',
+            };
+            return;
+        }
+        try {
+            const rawId = userMessage.replace(/[^\w\s-]/g, '').trim().slice(0, 50).replace(/\s+/g, '-') || 'task';
+            (0, gitSafety_1.createSilentCheckpoint)(rawId, workspacePath);
+            debugLog(workspacePath, `[Git Checkpoint] Anchor commit created: fluxo-auto-checkpoint:${rawId}`);
+        }
+        catch {
+            // Not a git repo, no prior commits, or git unavailable — skip silently.
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
     while (iterations < MAX_ITERATIONS) {
         if (abortSignal.aborted) {
             yield { type: 'error', message: '⊘ Cancelled by user' };
@@ -440,6 +466,31 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                     continue;
                 }
                 debugLog(workspacePath, 'Plan Verification: completion signal confirmed — exiting loop');
+                // ── v8.16.0/8.16.1: Quality Gate + Escape Hatch ──────────────────────
+                if (workspacePath && toolCallHistory.length > 0 && !buildFailureCtx && !bypassQualityGate) {
+                    yield { type: 'thinking', text: '🏗️ Quality Gate: validating build before completion…' };
+                    const qgResult = await (0, buildValidator_1.validateBuild)(workspacePath);
+                    if (!qgResult.success && !qgResult.error?.toLowerCase().includes('missing script')) {
+                        consecutiveBuildFailures++;
+                        debugLog(workspacePath, `[Quality Gate] FAILED (${consecutiveBuildFailures}/3) — blocking agent completion`);
+                        if (consecutiveBuildFailures >= 3) {
+                            messages.push({
+                                role: 'user',
+                                content: `[QUALITY GATE CIRCUIT BREAKER] You have failed the build check 3 times. MANDATORY DIRECTIVE: You are FORBIDDEN from trying to complete this task again right now. You MUST immediately use the 'ask_user_approval' tool to explain the build errors to the human and ask if they want to BYPASS the build check or give you manual instructions.`,
+                            });
+                        }
+                        else {
+                            messages.push({
+                                role: 'user',
+                                content: `[QUALITY GATE FAILED] You attempted to complete the task, but the project fails to build. Error details:\n\n${qgResult.error}\n\nMANDATORY: You MUST fix these build errors before you can complete the task.`,
+                            });
+                        }
+                        continue;
+                    }
+                    consecutiveBuildFailures = 0;
+                    debugLog(workspacePath, '[Quality Gate] Passed — accepting completion');
+                }
+                // ─────────────────────────────────────────────────────────────────────
                 yield { type: 'streamEnd' };
                 return;
             }
@@ -492,6 +543,31 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 });
                 continue;
             }
+            // ── v8.16.0/8.16.1: Quality Gate + Escape Hatch ──────────────────────
+            if (workspacePath && toolCallHistory.length > 0 && !buildFailureCtx && !bypassQualityGate) {
+                yield { type: 'thinking', text: '🏗️ Quality Gate: validating build before completion…' };
+                const qgResult = await (0, buildValidator_1.validateBuild)(workspacePath);
+                if (!qgResult.success && !qgResult.error?.toLowerCase().includes('missing script')) {
+                    consecutiveBuildFailures++;
+                    debugLog(workspacePath, `[Quality Gate] FAILED (${consecutiveBuildFailures}/3) — blocking agent completion`);
+                    if (consecutiveBuildFailures >= 3) {
+                        messages.push({
+                            role: 'user',
+                            content: `[QUALITY GATE CIRCUIT BREAKER] You have failed the build check 3 times. MANDATORY DIRECTIVE: You are FORBIDDEN from trying to complete this task again right now. You MUST immediately use the 'ask_user_approval' tool to explain the build errors to the human and ask if they want to BYPASS the build check or give you manual instructions.`,
+                        });
+                    }
+                    else {
+                        messages.push({
+                            role: 'user',
+                            content: `[QUALITY GATE FAILED] You attempted to complete the task, but the project fails to build. Error details:\n\n${qgResult.error}\n\nMANDATORY: You MUST fix these build errors before you can complete the task.`,
+                        });
+                    }
+                    continue;
+                }
+                consecutiveBuildFailures = 0;
+                debugLog(workspacePath, '[Quality Gate] Passed — accepting completion');
+            }
+            // ─────────────────────────────────────────────────────────────────────
             debugLog(workspacePath, 'Ending: no tool calls → final response (ghostRetries exhausted)');
             yield { type: 'streamEnd' };
             return;
@@ -1001,6 +1077,21 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
             const duration = ((Date.now() - startTime) / 1000).toFixed(1);
             yield { type: 'toolResult', name: toolName, success: result.success, output: result.output, duration };
             debugLog(workspacePath, `Tool ${toolName}: success=${result.success}${!result.success ? ` — ${result.output.slice(0, 300)}` : ''}`);
+            // ── v8.16.1: Quality Gate Bypass Detection ───────────────────────────────
+            // Activates bypass when: (a) circuit breaker has fired (3+ QG failures) and the user
+            // approves the ask_user_approval call, OR (b) the agent's intent_summary / reason
+            // contains explicit bypass keywords (e.g., "bypass", "ignora el build", "skip").
+            if (toolName === 'ask_user_approval' && result.success) {
+                const intentText = (String(args.intent_summary ?? '') + ' ' + String(args.reason_and_files ?? '')).toLowerCase();
+                const isBypassIntent = intentText.includes('bypass') || intentText.includes('ignora') ||
+                    intentText.includes('skip') || intentText.includes('omitir') ||
+                    intentText.includes('saltar');
+                if (consecutiveBuildFailures >= 3 || isBypassIntent) {
+                    bypassQualityGate = true;
+                    debugLog(workspacePath, '[Quality Gate] Bypass activated by user approval after circuit breaker');
+                }
+            }
+            // ─────────────────────────────────────────────────────────────────────────
             // ── Motor-level telemetry ────────────────────────────────────────────────
             // Auto-log tool failures to .fluxo/improvements.md without relying on the agent.
             if (!result.success && workspacePath && !result.output.startsWith('[LOOP_INTERCEPTED]')) {
@@ -1044,6 +1135,13 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 // Failed calls stay in toolCallHistory (loop detection) but never reach Sherlock,
                 // preventing false REDUNDANT_DECLARATION positives on legitimate retries.
                 successfulToolCallHistory.push(`${toolName}:${JSON.stringify(args)}`);
+                // ── v8.16.1: Reset Quality Gate failure counter on successful code edit ──
+                if (toolName === 'replace_lines' || toolName === 'write_file' ||
+                    toolName === 'replace_symbol' || toolName === 'replace_block' ||
+                    toolName === 'search_and_replace') {
+                    consecutiveBuildFailures = 0;
+                }
+                // ─────────────────────────────────────────────────────────────────────────
                 // ── Worktree State Sync (v8.8.0) ────────────────────────────────────────
                 if (toolName === 'enter_worktree') {
                     try {
@@ -1101,6 +1199,15 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 yield { type: 'thinking', text: 'Observando terminal (2s)...' };
                 await new Promise(resolve => setTimeout(resolve, 2000));
             }
+            // ── v8.15.0: Rollback Hard Stop ──────────────────────────────────────────
+            // After a successful abort_and_rollback the codebase has been reset — any
+            // further agent action would operate on corrupted or missing state. Force exit.
+            if (toolName === 'abort_and_rollback' && result.success) {
+                debugLog(workspacePath, '[Git Checkpoint] Rollback complete — terminating agent loop');
+                yield { type: 'streamEnd' };
+                return;
+            }
+            // ─────────────────────────────────────────────────────────────────────────
             // ── HARD BRAKE: Plan proposal detected — override history and break loop ─
             // Bypass for @planner: the planner writes IMPLEMENTATION_PLAN.md internally as
             // part of enter_plan_mode — it must not trigger a pause in the parent loop.
