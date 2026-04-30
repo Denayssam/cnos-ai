@@ -567,7 +567,15 @@ async function _handleSendMessage(userText, model, workerModel, context) {
             });
         };
         // ─────────────────────────────────────────────────────────────────────────
-        for await (const event of (0, agentEngine_1.runAgentLoop)(userText, agentId, _conversationHistory, engineConfig, workspacePath, _currentAbortController.signal, _sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, async (name, args) => await _mcpClient.callMcpTool(name, args), worktreeReviewCallback, replaceSymbolCallback)) {
+        // ── HITL — Human-in-the-Loop for run_command (v8.10.0) ───────────────────────
+        // Presents a modal VSCode dialog before any non-whitelisted shell command executes.
+        // The Promise resolves only after the user clicks Permitir or Rechazar.
+        const hitlCommandCallback = async (command) => {
+            const choice = await vscode.window.showWarningMessage(`⚠️ El agente quiere ejecutar un comando de shell:\n\n${command}`, { modal: true }, 'Permitir', 'Rechazar');
+            return choice === 'Permitir';
+        };
+        // ─────────────────────────────────────────────────────────────────────────────
+        for await (const event of (0, agentEngine_1.runAgentLoop)(userText, agentId, _conversationHistory, engineConfig, workspacePath, _currentAbortController.signal, _sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, async (name, args) => await _mcpClient.callMcpTool(name, args), worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback)) {
             _postToPanel({ ...event });
             if (event.type === 'streamChunk') {
                 fullAssistantText += event.text;
@@ -857,7 +865,6 @@ function _buildHtml(webview) {
         <div class="logo-dot"></div>
       </div>
       <span class="header-title">Fluxo AI</span>
-      <span class="header-subtitle">v8.5.0</span>
       <span id="agent-badge" class="agent-badge hidden"></span>
     </div>
     <div class="header-right">
@@ -1024,7 +1031,7 @@ function activate(context) {
             _postToPanel({ type: 'modelsUpdate', models, model: cfg.model, workerModel: cfg.workerModel });
         }
     }));
-    console.log('[Fluxo AI] v8.0.0 — Structural Isolation: git worktree sandbox');
+    console.log('[Fluxo AI] v8.10.0 — The Shield Patch: HITL + DeleteTool guards + Iron Rule');
 }
 function deactivate() {
     _currentAbortController?.abort();

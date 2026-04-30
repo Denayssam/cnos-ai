@@ -9,7 +9,10 @@ exports.TOOL_DEF = {
         description: 'Spawns the @planner sub-agent to analyze the codebase and produce a structured IMPLEMENTATION_PLAN.md ' +
             'at .fluxo/IMPLEMENTATION_PLAN.md before any code is written. ' +
             'Required before any create_team delegation for tasks touching more than 1 file or involving logical refactoring. ' +
-            'The planner is read-only — it only writes the plan file.',
+            'The planner is read-only — it only writes the plan file. ' +
+            'FALLBACK RULE: If this tool fails to produce the implementation plan due to circuit breaker limits, DO NOT retry it. ' +
+            'The fallback is to use ask_user_approval to request human help. ' +
+            'You have STRICTLY PROHIBITED assigning tasks to the @coder without an IMPLEMENTATION_PLAN.md.',
         parameters: {
             type: 'object',
             properties: {

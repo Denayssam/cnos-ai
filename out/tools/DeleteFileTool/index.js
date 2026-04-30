@@ -36,23 +36,41 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.TOOL_DEF = void 0;
 exports.execute = execute;
 const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
 const shared_1 = require("../shared");
 exports.TOOL_DEF = {
     type: 'function',
     function: {
         name: 'delete_file',
-        description: 'Delete a single file from the workspace.',
+        description: 'Delete a single file from the workspace. Safer than run_command for deletions.',
         parameters: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Path to the file to delete.' },
+                path: { type: 'string', description: 'Relative path to the file to delete.' },
             },
             required: ['path'],
         },
     },
 };
+// ── Shield Patch (v8.10.0) — critical path validation ─────────────────────────
+function validateDeletionPath(resolvedPath, workspacePath) {
+    const rel = path.relative(workspacePath, resolvedPath).replace(/\\/g, '/');
+    // Block .git directory contents
+    if (rel === '.git' || rel.startsWith('.git/') || rel.startsWith('.git\\')) {
+        return `SHIELD BLOCKED: Deleting inside .git is forbidden. Path: ${rel}`;
+    }
+    // Block deletion of workspace root itself
+    if (resolvedPath.toLowerCase() === path.resolve(workspacePath).toLowerCase()) {
+        return 'SHIELD BLOCKED: Cannot delete the workspace root.';
+    }
+    return null;
+}
 function execute(args, workspacePath) {
     const fp = (0, shared_1.safePath)(workspacePath, args.path);
+    const shieldError = validateDeletionPath(fp, workspacePath);
+    if (shieldError) {
+        return { success: false, output: shieldError };
+    }
     if (!fs.existsSync(fp)) {
         return { success: false, output: `File not found: ${args.path}` };
     }

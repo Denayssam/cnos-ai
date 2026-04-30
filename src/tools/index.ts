@@ -24,6 +24,7 @@ import * as GlobTool              from './GlobTool';
 import * as GrepTool              from './GrepTool';
 import * as EnterPlanModeTool     from './EnterPlanModeTool';
 import * as SkillTool             from './SkillTool';
+import * as GetRepoMapTool        from './GetRepoMapTool';
 import { ToolResult, NativeTool } from './shared';
 
 export { ToolResult, NativeTool };
@@ -57,6 +58,7 @@ const ALL_TOOLS = [
   GrepTool,
   EnterPlanModeTool,
   SkillTool,
+  GetRepoMapTool,
 ];
 
 export const TOOL_DEFINITIONS: NativeTool[] = ALL_TOOLS.map(t => t.TOOL_DEF);

@@ -8,6 +8,7 @@ exports.TOOL_DEF = {
     function: {
         name: 'run_command',
         description: 'Execute a shell command in the workspace directory. ' +
+            'CRITICAL: DO NOT use this tool to read files (e.g., cat, type, Get-Content). You MUST use read_file instead. Bypassing this will result in instant failure. ' +
             'On Windows use Windows commands (dir, del, move, copy) — never Linux commands (ls, rm -rf, mv, cp). ' +
             'Always quote paths that contain spaces. ' +
             'WORKTREE NOTE: If a Git Worktree is active, do NOT use "cd" to navigate into it. ' +

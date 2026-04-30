@@ -593,6 +593,20 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
     };
     // ─────────────────────────────────────────────────────────────────────────
 
+    // ── HITL — Human-in-the-Loop for run_command (v8.10.0) ───────────────────────
+    // Presents a modal VSCode dialog before any non-whitelisted shell command executes.
+    // The Promise resolves only after the user clicks Permitir or Rechazar.
+    const hitlCommandCallback = async (command: string): Promise<boolean> => {
+      const choice = await vscode.window.showWarningMessage(
+        `⚠️ El agente quiere ejecutar un comando de shell:\n\n${command}`,
+        { modal: true },
+        'Permitir',
+        'Rechazar'
+      );
+      return choice === 'Permitir';
+    };
+    // ─────────────────────────────────────────────────────────────────────────────
+
     for await (const event of runAgentLoop(
       userText,
       agentId,
@@ -607,7 +621,8 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
       mcpTools,
       async (name, args) => await _mcpClient.callMcpTool(name, args),
       worktreeReviewCallback,
-      replaceSymbolCallback
+      replaceSymbolCallback,
+      hitlCommandCallback
     )) {
       _postToPanel({ ...event });
       if (event.type === 'streamChunk') { fullAssistantText += event.text; }
@@ -928,7 +943,6 @@ function _buildHtml(webview: vscode.Webview): string {
         <div class="logo-dot"></div>
       </div>
       <span class="header-title">Fluxo AI</span>
-      <span class="header-subtitle">v8.5.0</span>
       <span id="agent-badge" class="agent-badge hidden"></span>
     </div>
     <div class="header-right">
@@ -1121,7 +1135,7 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  console.log('[Fluxo AI] v8.0.0 — Structural Isolation: git worktree sandbox');
+  console.log('[Fluxo AI] v8.10.0 — The Shield Patch: HITL + DeleteTool guards + Iron Rule');
 }
 
 export function deactivate(): void {

@@ -40,6 +40,7 @@ const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const shared_1 = require("../shared");
 const lockfile_1 = require("../../utils/lockfile");
+const syntaxValidator_1 = require("../../utils/syntaxValidator");
 exports.TOOL_DEF = {
     type: 'function',
     function: {
@@ -222,6 +223,19 @@ function execute(args, workspacePath) {
                 };
             }
         }
+        // ── AST Syntax Validation (v8.14.0 — Syntax Shield) ─────────────────────
+        // Full TypeScript compiler parse — catches broken strings, unexpected tokens,
+        // unclosed brackets, and other errors the regex guards above cannot detect.
+        const _syntaxCheck = (0, syntaxValidator_1.checkSyntax)(fp, updated);
+        if (!_syntaxCheck.ok) {
+            return {
+                success: false,
+                output: `[SYNTAX ERROR DETECTED] The proposed change breaks the file syntax. Write aborted.\n` +
+                    `Error details:\n${_syntaxCheck.errors}\n\n` +
+                    `You MUST review your code block and fix the syntax before retrying.`,
+            };
+        }
+        // ─────────────────────────────────────────────────────────────────────────
     }
     // Zero-footprint auto-backup — written to OS temp dir, never to the workspace or git tree
     try {

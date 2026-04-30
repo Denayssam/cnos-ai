@@ -808,7 +808,7 @@
       <div class="welcome-card">
         <div class="welcome-logo">🐾</div>
         <h2 class="welcome-title">Fluxo AI</h2>
-        <p class="welcome-subtitle">Persistent Agent Swarm v8.5.0</p>
+        <p class="welcome-subtitle">Persistent Agent Swarm v8.12.0</p>
         <div class="welcome-tips">
           <div class="tip"><span class="tip-key">↵</span> Send</div>
           <div class="tip-sep">·</div>

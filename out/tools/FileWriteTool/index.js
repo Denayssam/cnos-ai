@@ -39,6 +39,7 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const shared_1 = require("../shared");
 const lockfile_1 = require("../../utils/lockfile");
+const syntaxValidator_1 = require("../../utils/syntaxValidator");
 exports.TOOL_DEF = {
     type: 'function',
     function: {
@@ -50,6 +51,7 @@ exports.TOOL_DEF = {
                 path: { type: 'string', description: 'File path relative to workspace root.' },
                 content: { type: 'string', description: 'Complete file content to write.' },
                 agent_id: { type: 'string', description: 'Unique identifier of the calling agent (e.g. "coder-1", "designer-2"). Used by the File Lock Manager to track ownership. Required when running in parallel orchestration mode.' },
+                healing_mode: { type: 'boolean', description: 'Set to true ONLY when intentionally writing a file that may have syntax issues, e.g., a partial template or already-broken file being repaired. Bypasses AST syntax validation.' },
             },
             required: ['path', 'content'],
         },
@@ -61,6 +63,21 @@ function execute(args, workspacePath) {
     }
     const fp = (0, shared_1.safePath)(workspacePath, args.path);
     const agentId = typeof args.agent_id === 'string' ? args.agent_id : 'agent';
+    // ── AST Syntax Validation (v8.14.0 — Syntax Shield) ─────────────────────────
+    // Runs before lock acquisition — no point locking if the content is broken.
+    // Skipped for non-TS/JS extensions (markdown, JSON, CSS, etc.) automatically.
+    if (!args.healing_mode) {
+        const _syntaxCheck = (0, syntaxValidator_1.checkSyntax)(fp, args.content);
+        if (!_syntaxCheck.ok) {
+            return {
+                success: false,
+                output: `[SYNTAX ERROR DETECTED] The proposed change breaks the file syntax. Write aborted.\n` +
+                    `Error details:\n${_syntaxCheck.errors}\n\n` +
+                    `You MUST review your code block and fix the syntax before retrying.`,
+            };
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────────
     if (!lockfile_1.FileLockManager.acquireLock(fp, agentId)) {
         return {
             success: false,

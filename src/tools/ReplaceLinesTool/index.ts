@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { NativeTool, ToolResult, safePath } from '../shared';
 import { FileLockManager } from '../../utils/lockfile';
+import { checkSyntax } from '../../utils/syntaxValidator';
 
 export const TOOL_DEF: NativeTool = {
   type: 'function',
@@ -135,6 +136,21 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
         };
       }
     }
+
+    // ── AST Syntax Validation (v8.14.0 — Syntax Shield) ─────────────────────
+    // Full TypeScript compiler parse — catches broken strings, unexpected tokens,
+    // unclosed brackets, and other errors the regex guards above cannot detect.
+    const _syntaxCheck = checkSyntax(fp, updated);
+    if (!_syntaxCheck.ok) {
+      return {
+        success: false,
+        output:
+          `[SYNTAX ERROR DETECTED] The proposed change breaks the file syntax. Write aborted.\n` +
+          `Error details:\n${_syntaxCheck.errors}\n\n` +
+          `You MUST review your code block and fix the syntax before retrying.`,
+      };
+    }
+    // ─────────────────────────────────────────────────────────────────────────
   }
 
   const removedLines = lines.slice(startLine - 1, clampedEnd);

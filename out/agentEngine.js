@@ -40,6 +40,7 @@ const path = __importStar(require("path"));
 const tools_1 = require("./tools");
 const agents_1 = require("./agents");
 const agentMailbox_1 = require("./utils/agentMailbox");
+const repoMap_1 = require("./utils/repoMap");
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 function resolveEndpointAndKey(model, config) {
     // Bare "deepseek-*" (no slash) → DeepSeek direct API. Models with "deepseek/" prefix go to OpenRouter.
@@ -62,6 +63,30 @@ function resolveEndpointAndKey(model, config) {
 }
 const MAX_ITERATIONS = 25;
 const MAX_LOG_SIZE = 2 * 1024 * 1024;
+// ── HITL Safe-Command Whitelist (v8.10.0) ────────────────────────────────────
+// Commands matching any pattern are auto-approved. Everything else pauses for
+// user confirmation before execution. Uses the first pipe/semicolon segment only.
+const HITL_SAFE_PATTERNS = [
+    /^\s*npm\s+(run|test|install|i\b|ci|update|audit|list|outdated|version|pack|publish|init|uninstall)\b/i,
+    /^\s*npx\s+/i,
+    /^\s*tsc\b/i,
+    /^\s*node\b/i,
+    /^\s*yarn\b/i,
+    /^\s*pnpm\b/i,
+    /^\s*bun\b/i,
+    /^\s*vsce\b/i,
+    /^\s*git\s+(status|log|diff|fetch|pull|push|add|commit|checkout|switch|branch|merge|stash|remote|tag|show|describe|blame|shortlog|rev-parse|reset|rebase|cherry-pick|revert|ls-files|submodule|clean\s+-n)\b/i,
+    /^\s*dir\b/i,
+    /^\s*ls\b/i,
+    /^\s*echo\s+(?!.*>)/i, // echo without redirect
+    /^\s*(node|npm|npx|yarn|pnpm|tsc|git|vsce|bun)\s+(--version|-v)\b/i,
+    /^\s*(where|which)\b/i,
+];
+function isSafeCommandForAutoRun(command) {
+    const firstSegment = command.split(/\s*[|;&]+\s*/)[0] ?? command;
+    return HITL_SAFE_PATTERNS.some(p => p.test(firstSegment));
+}
+// ─────────────────────────────────────────────────────────────────────────────
 function debugLog(workspacePath, msg) {
     if (!workspacePath || !path.isAbsolute(workspacePath)) {
         console.warn('[debugLog] Skipped — workspacePath is empty or not absolute:', JSON.stringify(workspacePath));
@@ -177,7 +202,7 @@ function pruneToolResults(messages) {
     });
 }
 // ─── Agent Loop ───────────────────────────────────────────────────────────────
-async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, config, workspacePath, abortSignal, sentinelHasError = false, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools = [], callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback) {
+async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, config, workspacePath, abortSignal, sentinelHasError = false, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools = [], callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback) {
     // 1. Intent Detection (Routing)
     yield { type: 'thinking', text: 'Detecting intent…' };
     let agentId = initialAgentId;
@@ -248,6 +273,22 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
     let systemPrompt = workspaceMemoryBlock
         ? baseSystemPrompt + workspaceMemoryBlock
         : baseSystemPrompt;
+    // ── RepoMap Injection (v8.9.0 — Semantic Awareness Phase 1) ──────────────────
+    // Injected only for agents that write code — @coder and @manager.
+    // buildRepoMap is fully fail-safe: returns '' on any I/O error.
+    if (['coder', 'manager'].includes(agentId) && workspacePath) {
+        const repoMapContent = (0, repoMap_1.buildRepoMap)(workspacePath);
+        if (repoMapContent) {
+            systemPrompt +=
+                '\n\n<repo_map>\n' + repoMapContent + '\n</repo_map>\n\n' +
+                    'REPO MAP RULE (v8.9.0): You have a <repo_map> above showing the current semantic structure ' +
+                    'of the workspace (files → exported symbols). ' +
+                    'DO NOT use run_command to search for files. ' +
+                    'Use this map to know exactly which path to pass to read_file, replace_lines, or replace_symbol. ' +
+                    'If a path from the map does not resolve, call glob() to confirm the real path — never guess.';
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────────
     // Deep Masking — inject CRITICAL SYSTEM OVERRIDE into the system prompt for each disabled tool.
     // This prevents the LLM from calling masked tools even when its base rules mention them.
     if (maskedTools.size > 0) {
@@ -636,6 +677,25 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
             // ─────────────────────────────────────────────────────────────────────────
             // Register in history (pre-flight check for future iterations)
             toolCallHistory.push(`${toolName}:${JSON.stringify(args)}`);
+            // ── Global Circuit Breaker — pre-execution block (v8.13.0) ───────────────
+            // Hard-blocks a tool after 3 consecutive failures so the agent is forced
+            // to change strategy instead of retrying in an infinite death spiral.
+            const _cbFails = toolFailureTracker.get(toolName) ?? 0;
+            if (_cbFails >= 3) {
+                const cbMsg = `[SYSTEM] Tool '${toolName}' disabled due to ${_cbFails} consecutive failures. ` +
+                    `MANDATORY: You must change your strategy and use a different tool ` +
+                    `(e.g., 'create_team' or 'write_file' directly).`;
+                const cbDisplayArgs = Object.entries(args)
+                    .filter(([k]) => k !== 'content')
+                    .map(([k, v]) => `${k}: ${String(v).slice(0, 80)}`)
+                    .join(', ');
+                yield { type: 'toolCall', name: toolName, args, displayArgs: cbDisplayArgs };
+                yield { type: 'toolResult', name: toolName, success: false, output: cbMsg };
+                messages.push({ role: 'tool', tool_call_id: tc.id, name: toolName, content: cbMsg });
+                debugLog(workspacePath, `[Circuit Breaker] '${toolName}' hard-blocked — ${_cbFails} consecutive failures`);
+                continue;
+            }
+            // ─────────────────────────────────────────────────────────────────────────
             // Display
             const displayArgs = Object.entries(args)
                 .filter(([k]) => k !== 'content')
@@ -735,6 +795,20 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                     }
                     result = (0, tools_1.executeTool)('exit_worktree', { ...args, action: reviewedAction }, workspacePath);
                     // ─────────────────────────────────────────────────────────────────────────
+                    // ── Worktree Auto-Cleanup (v8.11.0) ──────────────────────────────────────
+                    // If a worktree is already active when enter_worktree is called, silently
+                    // discard the stale one first. The agent never sees this — it prevents the
+                    // "already active" conflict without requiring the agent to manage state.
+                }
+                else if (toolName === 'enter_worktree') {
+                    if (activeWorktreePath) {
+                        yield { type: 'thinking', text: '🧹 Auto-cleanup: discarding stale worktree before entering new one…' };
+                        (0, tools_1.executeTool)('exit_worktree', { action: 'discard' }, workspacePath);
+                        activeWorktreePath = null;
+                        debugLog(workspacePath, '[Worktree Auto-Cleanup] Stale worktree discarded silently before enter_worktree');
+                    }
+                    result = (0, tools_1.executeTool)(toolName, args, effectiveWorkspacePath);
+                    // ─────────────────────────────────────────────────────────────────────────
                     // ── Community Skills Library (v8.6.0) ────────────────────────────────────
                     // Skills are JSON recipes in the root-level skills/ directory (baked into
                     // the VSIX). __dirname = out/ at runtime → ../skills resolves correctly
@@ -809,10 +883,11 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                     const taskDescription = String(args.task_description ?? userMessage);
                     yield { type: 'thinking', text: '📋 Planner: reading codebase…' };
                     const plannerEventBuffer = [];
-                    const plannerGen = runAgentLoop(`MISSION — ANALYSIS ONLY:\nAnalyze the codebase and produce .fluxo/IMPLEMENTATION_PLAN.md for this task:\n\n${taskDescription}`, 'planner', [], { ...effectiveConfig, model: config.workerModel || config.model }, workspacePath, abortSignal, false, undefined, // no approval callback — planner never asks for approval
+                    const plannerGen = runAgentLoop(`MISSION — ANALYSIS ONLY:\nAnalyze the codebase and produce .fluxo/IMPLEMENTATION_PLAN.md for this task:\n\n${taskDescription}`, 'planner', [], { ...effectiveConfig, model: config.model }, workspacePath, abortSignal, false, undefined, // no approval callback — planner never asks for approval
                     undefined, // no native edit
                     getCodeStructureCallback, mcpTools, callMcpToolCallback, undefined, // no worktree review
-                    undefined // no replace symbol
+                    undefined, // no replace symbol
+                    undefined // no HITL — planner is read-only
                     );
                     for await (const event of plannerGen) {
                         plannerEventBuffer.push(event);
@@ -836,7 +911,9 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                         result = {
                             success: false,
                             output: `ERROR: @planner did not produce .fluxo/IMPLEMENTATION_PLAN.md. ` +
-                                `Retry with a more specific task_description, or delegate directly with create_team.`,
+                                `[CIRCUIT BREAKER WARNING] DO NOT retry. The planning phase has failed. ` +
+                                `MANDATORY: You MUST use the ask_user_approval tool immediately to inform the user that you cannot proceed without a plan and ask for manual intervention. ` +
+                                `DO NOT use create_team.`,
                         };
                     }
                     // ─────────────────────────────────────────────────────────────────────────
@@ -862,7 +939,8 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                                 ? `${member.task}\n\n--- INCOMING MESSAGES ---\n${pendingMsgs.join('\n')}`
                                 : member.task;
                             const subGen = runAgentLoop(taskMessage, subAgentId, [], // each sub-agent starts with a clean conversation slate
-                            { ...effectiveConfig, model: config.workerModel || config.model }, workspacePath, abortSignal, sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback);
+                            { ...effectiveConfig, model: config.workerModel || config.model }, workspacePath, abortSignal, sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback // HITL propagated to all swarm sub-agents
+                            );
                             for await (const event of subGen) {
                                 eventBuffers[idx].push(event);
                             }
@@ -878,6 +956,27 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                             success: true,
                             output: `Parallel Swarm complete. ${teamSpec.length} agent(s) ran concurrently: ${teamSpec.map(m => `@${m.agent}`).join(', ')}. Review all results above and emit your Orchestrator's Report.`,
                         };
+                    }
+                    // ─────────────────────────────────────────────────────────────────────────
+                    // ── HITL — Human-in-the-Loop for run_command (v8.10.0) ──────────────────
+                }
+                else if (toolName === 'run_command') {
+                    const cmd = String(args.command ?? '');
+                    if (hitlCommandCallback && !isSafeCommandForAutoRun(cmd)) {
+                        yield { type: 'thinking', text: `🛡️ HITL: Solicitando autorización para: ${cmd.slice(0, 100)}…` };
+                        const approved = await hitlCommandCallback(cmd);
+                        result = approved
+                            ? (0, tools_1.executeTool)(toolName, args, effectiveWorkspacePath)
+                            : {
+                                success: false,
+                                output: '[HITL_REJECTED]: El usuario denegó la ejecución de este comando. ' +
+                                    'ALTERNATIVA OBLIGATORIA: Usa herramientas nativas — delete_file, delete_dir, ' +
+                                    'write_file, create_dir — para operaciones de archivos. ' +
+                                    'El shell es EXCLUSIVAMENTE para compilación (npm run build) y tests.',
+                            };
+                    }
+                    else {
+                        result = (0, tools_1.executeTool)(toolName, args, effectiveWorkspacePath);
                     }
                     // ─────────────────────────────────────────────────────────────────────────
                 }

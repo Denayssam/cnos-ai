@@ -9,6 +9,7 @@ export const TOOL_DEF: NativeTool = {
     description: `Search for a string or regex pattern across project files. Use this INSTEAD OF 'grep', 'findstr', or 'rg' in run_command.
 Returns: file_path:line_number: matching_line for every match.
 WHEN TO USE: Finding where a function is called, locating imports, tracking variable usage across the project.
+RESTRICTION: Do NOT use grep to parse entire HTML/React structures or look for complex multi-line blocks. Use it only for simple string/variable searches. For structural analysis of components, use read_file or get_code_structure instead.
 Examples:
   pattern: "handleSubmit"         → finds all usages of handleSubmit
   pattern: "import.*useAuth"      → finds all useAuth import lines
