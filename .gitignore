@@ -11,6 +11,8 @@ credentials.*
 
 # ── VS Code extension build artifacts ────────────────────────────────────────
 *.vsix
+dist/
+out/
 
 # ── Node ─────────────────────────────────────────────────────────────────────
 node_modules/
