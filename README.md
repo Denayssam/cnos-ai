@@ -15,7 +15,7 @@ Los LLMs actuales son brillantes creando código desde cero, pero deficientes ha
 
 ---
 
-## 🚀 Características Principales (Motor v8.8.0)
+## 🚀 Características Principales (Motor v8.16.1)
 
 | Característica | Descripción |
 |---|---|
@@ -31,6 +31,9 @@ Los LLMs actuales son brillantes creando código desde cero, pero deficientes ha
 | 🔍 **GlobTool / GrepTool** | Herramientas nativas de exploración (puro Node.js, sin CLI). Reemplazan `ls`, `find`, `grep` en `run_command`. Path normalization middleware silencia la "Amnesia Espacial". |
 | 🟢 **Sentinel Auto-Heal** | Monitorea el terminal en tiempo real. Build roto → intercepta y dirige al `@coder` automáticamente. |
 | 🔌 **MCP Support** | Conecta servidores MCP externos (SQLite, filesystem, APIs) vía configuración JSON en Settings. |
+| 🧬 **Syntax Shield — AST Validation (v8.16.x)** | Valida la sintaxis de TypeScript/JSX en memoria antes de escribir en disco. Corrupción de código fuente imposible: si el AST falla, la escritura se aborta con diagnóstico de error. |
+| ⏱️ **Time Machine — Auto-Checkpoint (v8.16.x)** | Checkpointing silencioso de Git antes de cada tarea. Rollback instantáneo a un estado limpio sin intervención manual. |
+| 🔒 **Quality Gate & Escape Hatch (v8.16.x)** | Ciclo cerrado: el motor exige que el código pase `npm run build` antes de declarar una tarea completa. Si el agente falla 3 veces consecutivas, el **Circuit Breaker** paraliza el bucle y fuerza una pausa HITL — el agente debe pedir aprobación humana antes de continuar. |
 
 ---
 
@@ -150,17 +153,13 @@ media/
 
 ## 🚀 Instalación Rápida
 
-```bash
-# 1. Build
-cd cnos-extension
-npm install && npm run compile && npm run package
+Fluxo AI utiliza **GitHub Releases** para una distribución limpia. Los binarios `.vsix` ya no se rastrean en el repositorio.
 
-# 2. Install
-code --install-extension fluxo-ai-8.6.0.vsix --force
-
-# 3. Configura tu API Key
-# VS Code Settings → busca "Fluxo AI" → pega tu OpenRouter/Gemini/DeepSeek key
-```
+1. Ve a la pestaña **[Releases](https://github.com/Denayssam/cnos-ai/releases)** de este repositorio.
+2. Descarga el último archivo `.vsix` (ej. `fluxo-ai-8.16.1.vsix`).
+3. Instálalo en VS Code arrastrándolo a la vista de **Extensiones**, o usa el comando:
+   `Extensions: Install from VSIX...`
+4. Configura tu API Key en **VS Code Settings → busca "Fluxo AI"** → pega tu OpenRouter / Gemini / DeepSeek key.
 
 ---
 
