@@ -17,6 +17,10 @@ export function hasUncommittedChanges(cwd: string): boolean {
 // Throws if uncommitted human changes are detected — mixing human and agent
 // work into the same checkpoint would make the rollback boundary ambiguous.
 export function createSilentCheckpoint(taskId: string, cwd: string): void {
+  // ── v8.16.2: Block checkpoints for invalid/analysis-only task IDs ────────────
+  if (taskId.includes('MISSION-ANALYSIS-ONLY')) {
+    return;
+  }
   if (hasUncommittedChanges(cwd)) {
     throw new Error(
       '[SYSTEM ALERT] Uncommitted human changes detected. MANDATORY: The human must commit or stash their work before the agent can safely operate.'

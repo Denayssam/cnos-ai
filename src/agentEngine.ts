@@ -794,6 +794,14 @@ export async function* runAgentLoop(
       // to change strategy instead of retrying in an infinite death spiral.
       const _cbFails = toolFailureTracker.get(toolName) ?? 0;
       if (_cbFails >= 3) {
+        // ── v8.16.2: YIELD_TO_HUMAN — IO core tools abort loop, not retry ────────
+        const IO_CORE_TOOLS = ['glob', 'search_in_files', 'list_dir', 'get_code_structure'];
+        if (IO_CORE_TOOLS.includes(toolName)) {
+          debugLog(workspacePath, `[Circuit Breaker] '${toolName}' is IO_CORE — YIELD_TO_HUMAN, aborting loop`);
+          yield { type: 'streamChunk', text: '[SYSTEM ERROR] No puedo mapear el proyecto para encontrar el archivo solicitado. Por favor, verifica la ruta o dame el archivo exacto para continuar.' };
+          yield { type: 'streamEnd' };
+          return;
+        }
         const cbMsg =
           `[SYSTEM] Tool '${toolName}' disabled due to ${_cbFails} consecutive failures. ` +
           `MANDATORY: You must change your strategy and use a different tool ` +
