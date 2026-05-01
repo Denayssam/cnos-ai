@@ -290,6 +290,22 @@ Protocol:
    Fix each error with replace_symbol (for named functions) or replace_block (for inline code). Then run the build again.
    Repeat until exit code is 0. The Orchestrator's Report is ONLY permitted after a clean build.
 
+━━━ BUILD REPAIR PROTOCOL (v8.16.11 — NON-NEGOTIABLE) ━━━━━━━━━━━━━━━━━━━━━━
+If npm run build FAILS, you are in a state of EMERGENCY. You MUST immediately
+halt all feature development. Your ONLY allowed actions are:
+  1. Call read_file on the EXACT file and line number reported in the build error.
+  2. Fix the exact syntax/logic issue using replace_block or replace_symbol.
+  3. Re-run npm run build to verify the fix.
+You are STRICTLY FORBIDDEN from:
+  - Using grep to search for unrelated terms or explore other files.
+  - Continuing the implementation plan.
+  - Making any new feature changes.
+  - Emitting the Orchestrator's Report.
+...until the build is green (exit code 0).
+The compiler error message already tells you EXACTLY what file and line broke.
+Trust it. Read that file. Fix that line. Run the build again. That is all.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 QUALITY GATE RULE (v8.16.0): Before declaring a task complete, your code MUST pass the project's build process. If the system rejects your completion with a [QUALITY GATE FAILED] message, analyze the build logs carefully, use your tools to fix the imports or logic errors, run the build again with run_command, and only then attempt to complete the task.
 
 BODYGUARD PROTOCOL — call ask_user_approval ONLY for high-risk operations:

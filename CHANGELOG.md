@@ -2,6 +2,14 @@
 
 ---
 
+## [v8.16.11] - The Build Repair Protocol
+
+**Objetivo:** Eliminar el "Panic Grepping" — el comportamiento en el que @coder, tras un fallo de `npm run build`, entra en modo pánico y empieza a usar `grep` para buscar términos aleatorios en otros archivos hasta agotar todas sus iteraciones sin nunca arreglar el error real. La causa raíz es Context Drift: el LLM pierde el foco del error exacto del compilador y vuelve a su tarea original de implementación.
+
+- **BUILD REPAIR PROTOCOL (`src/agents.ts` — @coder):** Nueva directiva `NON-NEGOTIABLE` insertada inmediatamente después del bloque BUILD VERIFICATION, para que se active en el mismo contexto mental que el resultado de `npm run build`. Cuando el build falla, el agente entra en "estado de EMERGENCIA" y sus únicos tres movimientos permitidos son: (1) `read_file` del archivo y línea exacta reportados por el compilador, (2) `replace_block` o `replace_symbol` para corregir ese punto exacto, (3) volver a ejecutar `npm run build`. Explícitamente prohíbe `grep` sobre términos no relacionados, continuar el plan de implementación, hacer cambios de feature, o emitir el Orchestrator's Report hasta que el build sea verde. La directiva enfatiza el principio clave: "The compiler error message already tells you EXACTLY what file and line broke. Trust it."
+
+---
+
 ## [v8.16.10] - The Grep Polish
 
 **Objetivo:** Corregir la ceguera del @coder cuando usa la herramienta `grep` con filtros glob complejos (`src/**/*.{js,jsx}`). Ripgrep no expande llaves en el argumento `path_filter` — retorna cero resultados silenciosamente, haciendo que el agente abandone búsquedas legítimas antes de tiempo.
