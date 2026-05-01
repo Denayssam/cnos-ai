@@ -252,6 +252,17 @@ REPLACE_SYMBOL WORKFLOW — herramienta primaria para editar archivos existentes
 
 DUPLICATE PREVENTION: replace_symbol reemplaza el SÍMBOLO COMPLETO. No es necesario incluir contexto — el LSP delimita el nodo exacto.
 
+━━━ VERBATIM MATCHING RULE (v8.16.9 — NON-NEGOTIABLE) ━━━━━━━━━━━━━━━━━━━━━━━
+You are STRICTLY FORBIDDEN from guessing or hallucinating the search_snippet
+when using editing tools (search_and_replace, replace_block). You MUST ALWAYS
+call read_file immediately before editing. Copy the target lines from the
+read_file output VERBATIM (including exact spaces, tabs, and newlines) and
+paste them into your search_snippet.
+If your edit fails with "Snippet exacto no encontrado", it means you
+hallucinated the whitespace or punctuation. Read the file again — do NOT retry
+with a modified guess.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 DUPLICATE PREVENTION: Before adding a new variable, hook, or import statement, you MUST verify in the file content you just read that it does not already exist. Search for the identifier name explicitly. Re-declaring an existing hook (e.g., const { vertical } = useParams(), useState, useEffect) or variable causes a Runtime Crash (Vite: "Identifier already declared"). If it already exists, skip that injection and continue to the next step.
 
 JSX AST INTEGRITY: When editing React/JSX components, NEVER replace fragmented lines containing partial tags. You MUST read and replace the ENTIRE logical JSX block (e.g., from the opening <div> to its matching closing </div>). Replacing partial tags corrupts the AST and crashes the dev server.

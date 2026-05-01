@@ -2,6 +2,14 @@
 
 ---
 
+## [v8.16.9] - The Read-First Protocol Patch
+
+**Objetivo:** Eliminar el desperdicio de tokens causado por el @coder intentando adivinar `search_snippet` de memoria. La regla hace que el LLM lea el archivo primero y copie el texto objetivo de forma verbatim antes de cada edición — en lugar de reconstruirlo de su memoria de entrenamiento con errores sutiles de espaciado o puntuación.
+
+- **VERBATIM MATCHING RULE (`src/agents.ts` — @coder):** Nueva directiva marcada como `NON-NEGOTIABLE` insertada inmediatamente después del REPLACE_SYMBOL WORKFLOW. Prohíbe explícitamente adivinar o alucinar `search_snippet` y obliga a llamar `read_file` justo antes de cualquier edición con `search_and_replace` o `replace_block`. Si la herramienta devuelve "Snippet exacto no encontrado", la única acción válida es leer el archivo de nuevo — no reintentar con una variante inventada.
+
+---
+
 ## [v8.16.8] - The Environment & Precision Patch
 
 **Objetivo:** Triple parche operativo. (a) Cerrar el bug `spawnSync C:\WINDOWS\system32\cmd.exe ENOENT` que aparecía cuando Node perdía el path del shell de Windows en sesiones recientes de VS Code. (b) Darle al @coder un bisturí más fino (`insert_lines`) para inyectar componentes JSX masivos sin pelearse con el conteo de llaves. (c) Reescribir la JSX/AST RULE del @coder para canalizar todas las inserciones >50 líneas a través de la nueva herramienta.
