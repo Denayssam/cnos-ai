@@ -181,9 +181,7 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
       if (openCount !== closeCount) {
         return {
           success: false,
-          output: `CRITICAL SYNTAX ERROR: Llaves desequilibradas (${openCount} "{" vs ${closeCount} "}"). El archivo NO fue modificado.\n` +
-                  `ANTI-PANIC DIRECTIVE: No reenvíes el mismo bloque. Divide la inserción.\n` +
-                  `Si estás arreglando un archivo YA corrupto, usa "healing_mode: true".`,
+          output: `CRITICAL SYNTAX ERROR: Llaves desequilibradas (${openCount} "{" vs ${closeCount} "}"). El archivo NO fue modificado. ANTI-PANIC DIRECTIVE: STOP USING REPLACE_LINES/REPLACE_BLOCK FOR MASSIVE INJECTIONS. You MUST use the 'insert_lines' tool to inject this code cleanly.`,
         };
       }
     }
@@ -198,9 +196,7 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
       if (jsxBalance(original) !== jsxBalance(updated)) {
         return {
           success: false,
-          output: `CRITICAL SYNTAX ERROR: AST/JSX Corruption detected. Etiquetas HTML/JSX desbalanceadas. El archivo NO fue modificado.\n` +
-                  `ESTRATEGIA: Asegúrate de incluir el bloque JSX completo desde su apertura hasta su cierre en search_snippet.\n` +
-                  `Si estás arreglando un archivo YA corrupto, usa "healing_mode: true".`,
+          output: `CRITICAL SYNTAX ERROR: AST/JSX Corruption detected. Etiquetas HTML/JSX desbalanceadas. El archivo NO fue modificado. ANTI-PANIC DIRECTIVE: STOP USING REPLACE_LINES/REPLACE_BLOCK FOR MASSIVE INJECTIONS. You MUST use the 'insert_lines' tool to inject this code cleanly.`,
         };
       }
     }

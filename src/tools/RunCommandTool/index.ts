@@ -30,6 +30,30 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   const cmd = args.command as string;
   const timeout = (args.timeout as number) || 30_000;
 
+  // ── Vite Panic Blocker (v8.16.12) ────────────────────────────────────────────
+  // When npm run build fails, the LLM tends to panic and try to delete dist/,
+  // .vite cache, node_modules/.cache, or pass --force to bypass "stale cache".
+  // None of these fix syntax errors — the bug is in the code, not the cache.
+  // Intercept these commands BEFORE anything else and force the agent back to
+  // reading the compiler error and fixing the actual file.
+  const VITE_PANIC_PATTERNS = [
+    /--force\b/i,
+    /\bdel\s+(?:\/[a-z]\s+)*["']?dist["']?\b/i,
+    /\brmdir\b/i,
+    /\bcopy\s+\/b\b/i,
+    /\brm\s+-rf?\s+["']?(?:\.\/)?(?:dist|\.vite|\.cache|node_modules[\\\/]\.cache)/i,
+    /\bRemove-Item\b.*\b(?:dist|\.vite|\.cache|node_modules)/i,
+  ];
+  if (VITE_PANIC_PATTERNS.some(p => p.test(cmd))) {
+    return {
+      success: false,
+      output:
+        "[SYSTEM ERROR] Comando denegado. Vite NO está cacheando tu error. " +
+        "El error de sintaxis sigue en el código. No intentes borrar 'dist' ni usar '--force'. " +
+        "Encuentra el error real en el archivo, arréglalo y vuelve a ejecutar 'npm run build'.",
+    };
+  }
+
   // ── Destructive command block ────────────────────────────────────────────────
   const BLOCKED = [/rm\s+-rf\s+[/\\~]/, /format\s+[a-z]:/, /del\s+\/[fs]/i, /mkfs/, /dd\s+if=/];
   if (BLOCKED.some(b => b.test(cmd))) {

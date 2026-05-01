@@ -40,6 +40,7 @@ const FileReadTool = __importStar(require("./FileReadTool"));
 const FileWriteTool = __importStar(require("./FileWriteTool"));
 const ReplaceLinesTool = __importStar(require("./ReplaceLinesTool"));
 const ReplaceBlockTool = __importStar(require("./ReplaceBlockTool"));
+const InsertLinesTool = __importStar(require("./InsertLinesTool"));
 const CreateDirTool = __importStar(require("./CreateDirTool"));
 const ListDirTool = __importStar(require("./ListDirTool"));
 const RunCommandTool = __importStar(require("./RunCommandTool"));
@@ -71,6 +72,7 @@ const ALL_TOOLS = [
     SearchReplaceTool,
     ReplaceLinesTool,
     ReplaceBlockTool,
+    InsertLinesTool,
     CreateDirTool,
     ListDirTool,
     RunCommandTool,

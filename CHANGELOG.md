@@ -2,6 +2,17 @@
 
 ---
 
+## [v8.16.12] - The Iron Enforcer Patch
+
+**Objetivo:** Las reglas en el system prompt no fueron suficientes — el LLM seguía entrando en pánico tras un build fallido y se negaba a usar `insert_lines` para inyecciones masivas. Esta versión codifica las directivas DIRECTAMENTE EN EL MOTOR como hard-blocks deterministas. Tres bloqueos físicos: (1) cualquier comando de "borrado de caché" tras un build fallido es interceptado antes de ejecutarse, (2) el AST Syntax Shield ahora redirige forzadamente al @coder a `insert_lines`, (3) el plan path queda fijado en la raíz para evitar que el agente lo busque dentro del worktree.
+
+- **Vite Panic Blocker (`src/tools/RunCommandTool/index.ts`):** Nuevo guard al inicio del handler de comandos, ANTES del bloque `BLOCKED` existente. Intercepta seis patrones de pánico: `--force`, `del dist`/`del /s dist`, `rmdir`, `copy /b`, `rm -rf` sobre `dist`/`.vite`/`.cache`/`node_modules/.cache`, y `Remove-Item` sobre los mismos targets de PowerShell. Devuelve un mensaje específico que ataca la falacia mental: _"Vite NO está cacheando tu error. El error de sintaxis sigue en el código. No intentes borrar 'dist' ni usar '--force'. Encuentra el error real en el archivo, arréglalo y vuelve a ejecutar 'npm run build'."_ Este mensaje aterriza en el contexto del LLM como evidencia explícita de que su hipótesis (caché stale) es falsa.
+- **Forced Redirection en Syntax Shield (`src/tools/ReplaceBlockTool/index.ts` + `src/tools/ReplaceLinesTool/index.ts`):** Los cuatro mensajes de error críticos del AST Syntax Shield (dos por archivo: brace imbalance + JSX tag imbalance) ahora terminan con la directiva uniforme: _"ANTI-PANIC DIRECTIVE: STOP USING REPLACE_LINES/REPLACE_BLOCK FOR MASSIVE INJECTIONS. You MUST use the 'insert_lines' tool to inject this code cleanly."_ Esto reemplaza los antiguos consejos de "divide la inserción" y "usa healing_mode" — la única instrucción que el LLM ve ahora apunta a la herramienta correcta.
+- **PLAN PATH Rule (`src/agents.ts` — @coder):** Nueva línea dentro del bloque PATHING RULE: _"The plan is ALWAYS at the root: '.fluxo/IMPLEMENTATION_PLAN.md'. Do not prepend worktree paths to read it."_ Resuelve el bug donde @coder intentaba leer `.fluxo/worktrees/.../IMPLEMENTATION_PLAN.md` (no existe) en lugar del archivo en la raíz del repo.
+- **Resultado:** Las directivas del system prompt eran fácilmente ignorables tras múltiples iteraciones de pánico. Ahora son contratos deterministas a nivel de motor — el agente físicamente no puede ejecutar el comando de evasión, y el mensaje de error mismo le dice qué herramienta usar.
+
+---
+
 ## [v8.16.11] - The Build Repair Protocol
 
 **Objetivo:** Eliminar el "Panic Grepping" — el comportamiento en el que @coder, tras un fallo de `npm run build`, entra en modo pánico y empieza a usar `grep` para buscar términos aleatorios en otros archivos hasta agotar todas sus iteraciones sin nunca arreglar el error real. La causa raíz es Context Drift: el LLM pierde el foco del error exacto del compilador y vuelve a su tarea original de implementación.

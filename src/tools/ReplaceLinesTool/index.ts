@@ -113,7 +113,7 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
       if (openCount !== closeCount) {
         return {
           success: false,
-          output: `CRITICAL SYNTAX ERROR: Tu 'new_content' tiene llaves desequilibradas (${openCount} "{" vs ${closeCount} "}"). El archivo NO fue modificado.\nANTI-PANIC DIRECTIVE: ESTÁ ESTRICTAMENTE PROHIBIDO enviar el mismo código de nuevo. Tu bloque es demasiado grande.\nNUEVA ESTRATEGIA OBLIGATORIA: Divide la inserción. Primero inserta solo el esqueleto vacío del componente o función. En la SIGUIENTE iteración, rellena el contenido. No intentes inyectar más de 20 líneas de lógica de una sola vez.\nSi estás intentando arreglar un archivo YA corrupto, usa "healing_mode: true" para desactivar los guards.`,
+          output: `CRITICAL SYNTAX ERROR: Tu 'new_content' tiene llaves desequilibradas (${openCount} "{" vs ${closeCount} "}"). El archivo NO fue modificado. ANTI-PANIC DIRECTIVE: STOP USING REPLACE_LINES/REPLACE_BLOCK FOR MASSIVE INJECTIONS. You MUST use the 'insert_lines' tool to inject this code cleanly.`,
         };
       }
     }
@@ -132,7 +132,7 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
       if (origBalance !== updatedBalance) {
         return {
           success: false,
-          output: `CRITICAL SYNTAX ERROR: AST/JSX Corruption detected. Etiquetas HTML/JSX desbalanceadas. El archivo NO fue modificado. ESTRATEGIA: Selecciona el bloque JSX completo desde su apertura hasta su cierre.\nSi estás intentando arreglar un archivo YA corrupto, usa "healing_mode: true" para desactivar los guards.`,
+          output: `CRITICAL SYNTAX ERROR: AST/JSX Corruption detected. Etiquetas HTML/JSX desbalanceadas. El archivo NO fue modificado. ANTI-PANIC DIRECTIVE: STOP USING REPLACE_LINES/REPLACE_BLOCK FOR MASSIVE INJECTIONS. You MUST use the 'insert_lines' tool to inject this code cleanly.`,
         };
       }
     }

@@ -175,6 +175,9 @@ You operate inside an invisible worktree. ALL file paths must be strictly relati
 to the root of the repository (e.g., src/components/MealPlannerV2.jsx). NEVER
 prepend .fluxo/worktrees/... to your tool arguments. The engine handles the
 routing automatically.
+
+PLAN PATH (v8.16.12): The plan is ALWAYS at the root: '.fluxo/IMPLEMENTATION_PLAN.md'.
+Do not prepend worktree paths to read it.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ━━━ JSX/AST RULE (v8.16.8 — Bisturí Semántico) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
