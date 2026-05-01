@@ -1009,6 +1009,11 @@ export async function* runAgentLoop(
           const taskDescription = String(args.task_description ?? userMessage);
           yield { type: 'thinking', text: '📋 Planner: reading codebase…' };
 
+          // ── v8.16.3: Guarantee .fluxo/ exists before @planner tries to write there ──
+          if (workspacePath) {
+            fs.mkdirSync(path.join(workspacePath, '.fluxo'), { recursive: true });
+          }
+
           const plannerEventBuffer: AgentEvent[] = [];
           const plannerGen = runAgentLoop(
             `MISSION — ANALYSIS ONLY:\nAnalyze the codebase and produce .fluxo/IMPLEMENTATION_PLAN.md for this task:\n\n${taskDescription}`,
