@@ -12,7 +12,10 @@ export const TOOL_DEF: NativeTool = {
       'Always quote paths that contain spaces. ' +
       'WORKTREE NOTE: If a Git Worktree is active, do NOT use "cd" to navigate into it. ' +
       'All native tools (read_file, run_command, replace_block) already operate on the correct ' +
-      'workspace context automatically — attempting "cd <worktree-path>" will break the working directory.',
+      'workspace context automatically — attempting "cd <worktree-path>" will break the working directory. ' +
+      'WINDOWS ENOENT RULE (v8.16.8): If npm run build (or any command) fails with ENOENT related to cmd.exe ' +
+      'or spawnSync, do NOT try to use PowerShell, node -e, or any hacking script as a workaround. ' +
+      'It is a Node environment error — the OS shell is unreachable. Yield to human and stop the task.',
     parameters: {
       type: 'object',
       properties: {
@@ -92,19 +95,52 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   }
 
   // ── Execute ──────────────────────────────────────────────────────────────────
+  // v8.16.8 — Windows Shell Patch: pass `shell` explicitly so Node never resolves
+  // an empty/missing ComSpec. On Windows we prefer `%ComSpec%` (usually
+  // C:\WINDOWS\system32\cmd.exe), fall back to literal "cmd.exe", and merge in
+  // `process.env` so System32 stays on PATH. On POSIX we just pass `shell: true`.
+  const isWindows = process.platform === 'win32';
+  const shellPath: string | undefined = isWindows
+    ? (process.env.ComSpec || process.env.COMSPEC || 'cmd.exe')
+    : undefined; // POSIX: let execSync default to /bin/sh
+
   try {
     const output = execSync(cmd, {
       cwd: workspacePath,
       encoding: 'utf-8',
       timeout,
       maxBuffer: 1024 * 1024 * 4,
+      shell: shellPath,
+      env: { ...process.env },
     });
     return { success: true, output: output || '(command completed with no output)' };
   } catch (err: any) {
+    // ── ENOENT cmd.exe detection (v8.16.8) ─────────────────────────────────────
+    // Surface a clear "yield to human" message instead of letting the LLM panic
+    // and try to evade with PowerShell or sed/awk hacks.
+    const errMsg = String(err?.message ?? err ?? '');
+    const errCode = err?.code ?? '';
+    const isShellMissing =
+      errCode === 'ENOENT' &&
+      (/cmd\.exe/i.test(errMsg) || /spawnSync/i.test(errMsg) || /system32/i.test(errMsg));
+    if (isShellMissing) {
+      return {
+        success: false,
+        output:
+          '[YIELD TO HUMAN — Node Environment Error] spawnSync could not locate cmd.exe ' +
+          '(ENOENT). This is NOT a code problem and NOT a tool problem — Node lost its ' +
+          'reference to the system shell, usually because the ComSpec environment variable ' +
+          'is empty or System32 is missing from PATH in this VS Code session. ' +
+          'DO NOT retry this command. DO NOT switch to PowerShell, node -e, or any other ' +
+          'evasion script. Stop the task and ask the user to: (1) restart VS Code from a ' +
+          'fresh terminal so the environment is reloaded, or (2) verify that ' +
+          '%ComSpec% points to C:\\Windows\\System32\\cmd.exe and that System32 is on PATH.',
+      };
+    }
     // execSync throws on non-zero exit — capture both stdout and stderr from the error object
     const stdout = err.stdout ? String(err.stdout).trim() : '';
     const stderr = err.stderr ? String(err.stderr).trim() : '';
     const combined = [stdout, stderr].filter(Boolean).join('\n').trim();
-    return { success: false, output: combined || err.message || 'Command failed with no output' };
+    return { success: false, output: combined || errMsg || 'Command failed with no output' };
   }
 }

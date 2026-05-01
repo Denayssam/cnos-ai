@@ -2,6 +2,17 @@
 
 ---
 
+## [v8.16.8] - The Environment & Precision Patch
+
+**Objetivo:** Triple parche operativo. (a) Cerrar el bug `spawnSync C:\WINDOWS\system32\cmd.exe ENOENT` que aparecía cuando Node perdía el path del shell de Windows en sesiones recientes de VS Code. (b) Darle al @coder un bisturí más fino (`insert_lines`) para inyectar componentes JSX masivos sin pelearse con el conteo de llaves. (c) Reescribir la JSX/AST RULE del @coder para canalizar todas las inserciones >50 líneas a través de la nueva herramienta.
+
+- **Windows Shell Patch (`src/tools/RunCommandTool/index.ts`):** `execSync` ahora pasa `shell` explícitamente (`process.env.ComSpec || 'cmd.exe'` en Windows, `true` en POSIX) y reinyecta `process.env` para garantizar que `System32` esté en `PATH`. Si aun así aparece un `ENOENT` con `cmd.exe` o `spawnSync`, el motor devuelve `[YIELD TO HUMAN — Node Environment Error]` con instrucciones específicas (reiniciar VS Code, validar `%ComSpec%`) y prohíbe explícitamente intentar PowerShell, `node -e` o scripts de evasión. La descripción del tool incluye la **WINDOWS ENOENT RULE** para que el LLM no entre en pánico.
+- **Nueva Herramienta `insert_lines` (`src/tools/InsertLinesTool/index.ts`):** Inserción pura — añade líneas ANTES de un `at_line` 1-based sin tocar el contenido existente. Acepta `content` como string o array de strings. Pasa por el AST Syntax Shield igual que `replace_lines`/`replace_block`, pero como nada se borra los inserts balanceados pasan al primer intento. Casos de uso primarios: (1) `at_line: 1` para prepender imports, (2) `at_line: totalLines + 1` para apendear un componente nuevo al EOF, (3) anclar después de un símbolo localizado por `grep`. Registrado en `src/tools/index.ts` y añadido al toolset del @coder.
+- **JSX/AST RULE Reescrita (`src/agents.ts` — @coder):** La directiva crítica del system prompt ahora distingue dos casos: (1) ediciones quirúrgicas balanceadas → `replace_block`, (2) **inserciones masivas (>50 líneas)** → `insert_lines` directamente, prohibiendo explícitamente `replace_block`/`replace_lines` en ese flujo porque "you will likely miscount brackets and the Syntax Shield will hard-block the edit". El @coder también recibe `replace_lines` como alias visible en su array de tools (ya estaba accesible vía registry, ahora explícito).
+- **Resultado:** Los entornos Windows con ComSpec roto dejan de generar bucles infinitos del agente, y la inyección de componentes React de 50–300 líneas (típica del workflow de @designer + @coder) deja de pelearse con el AST Syntax Shield.
+
+---
+
 ## [v8.16.7] - Smart Auto-Commit & Coder Prompt Polish
 
 **Objetivo:** Doble parche de fricción y precisión. (a) Eliminar el bloqueo `[SYSTEM ALERT]` de v8.15.0 cuando hay cambios humanos sin confirmar — ahora se autoguardan en un commit `WIP` antes del ancla del agente. (b) Pulir las instrucciones del @coder para erradicar dos clases de fallos recurrentes: rutas con prefijo `.fluxo/worktrees/...` y ediciones JSX con tags desbalanceadas que el AST Syntax Shield rechaza.

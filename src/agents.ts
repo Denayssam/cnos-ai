@@ -157,7 +157,7 @@ export const AGENTS: Record<string, AgentDefinition> = {
     emoji: '💻',
     color: '#3b82f6',
     description: 'General coding: creates files, runs commands, fixes bugs',
-    tools: ['read_file', 'write_file', 'replace_symbol', 'replace_block', 'get_code_structure', 'glob', 'grep', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'fetch_documentation', 'enter_worktree', 'exit_worktree', 'send_message', 'get_repo_map', 'abort_and_rollback'],
+    tools: ['read_file', 'write_file', 'replace_symbol', 'replace_block', 'replace_lines', 'insert_lines', 'get_code_structure', 'glob', 'grep', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'fetch_documentation', 'enter_worktree', 'exit_worktree', 'send_message', 'get_repo_map', 'abort_and_rollback'],
     isolation: 'worktree',
     keywords: [
       'código', 'code', 'función', 'function', 'clase', 'class',
@@ -177,11 +177,17 @@ prepend .fluxo/worktrees/... to your tool arguments. The engine handles the
 routing automatically.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-━━━ JSX/AST RULE (v8.16.7 — Bisturí Semántico) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-When using the replace_block tool on React/JSX files, your search_snippet and
-replace_snippet MUST contain fully balanced HTML/JSX tags. If you slice a
-component or leave a dangling </div>, the AST Syntax Shield will hard-block
-your edit and your task will fail.
+━━━ JSX/AST RULE (v8.16.8 — Bisturí Semántico) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When using replace_block on React/JSX files, your search_snippet and
+replace_snippet MUST contain fully balanced HTML/JSX tags. A dangling </div>
+or sliced component triggers the AST Syntax Shield and your task fails.
+
+MASSIVE COMPONENT INSERTION (>50 lines): DO NOT use replace_block or
+replace_lines — you will likely miscount brackets and the Syntax Shield will
+hard-block the edit. Instead, use grep to find the end of the file (or a clean
+empty anchor line), and use the insert_lines tool to inject the new component
+cleanly. insert_lines never removes existing content, so balanced inserts pass
+the Shield on the first try.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🚨 MANDATORY LOGIC RULES (CRITICAL):

@@ -2,6 +2,7 @@ import * as FileReadTool      from './FileReadTool';
 import * as FileWriteTool     from './FileWriteTool';
 import * as ReplaceLinesTool  from './ReplaceLinesTool';
 import * as ReplaceBlockTool  from './ReplaceBlockTool';
+import * as InsertLinesTool   from './InsertLinesTool';
 import * as CreateDirTool     from './CreateDirTool';
 import * as ListDirTool       from './ListDirTool';
 import * as RunCommandTool    from './RunCommandTool';
@@ -38,6 +39,7 @@ const ALL_TOOLS = [
   SearchReplaceTool,
   ReplaceLinesTool,
   ReplaceBlockTool,
+  InsertLinesTool,
   CreateDirTool,
   ListDirTool,
   RunCommandTool,
