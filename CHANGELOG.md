@@ -2,6 +2,16 @@
 
 ---
 
+## [v8.16.13] - The Micro-Rollback Protocol
+
+**Objetivo:** Cierre de seguridad final contra la corrupción del AST. Hasta ahora el @coder podía dejar un archivo en estado catastrófico (parser roto, llaves cruzadas, JSX huérfano) y luego entrar en bucles de pánico intentando "remendarlo" línea a línea. Esta versión le da una salida quirúrgica: cuando un edit deja un archivo irrecuperable, puede ejecutar `git restore <archivo>` para revertir solo ese archivo a su último estado committeado, sin tocar el resto del repositorio. Se complementa con la directiva en el system prompt que hace de esta acción la primera reacción ante un `[PARSE_ERROR]`, no la última.
+
+- **Explicit Allowlist `git restore` (`src/tools/RunCommandTool/index.ts`):** Nuevo guard al inicio del handler — ANTES del Vite Panic Blocker, ANTES de cualquier otro filtro — que detecta `git restore <path>` y lo enruta directo al `execSync`. Esto garantiza que ningún blocker downstream pueda dar un falso positivo sobre un nombre de archivo o flag (ej. si alguien llamara `git restore --force <file>` el Vite Panic Blocker lo cazaría — la allowlist explícita lo previene). La descripción del tool ahora documenta `git restore` como CTRL+Z permitido para que el LLM sepa que existe.
+- **CRITICAL ESCAPE HATCH en BUILD REPAIR PROTOCOL (`src/agents.ts` — @coder):** Nueva cláusula final dentro del bloque BUILD REPAIR PROTOCOL del @coder. Si una edición causa un `[PARSE_ERROR]` o rompe el build y el archivo está demasiado dañado para arreglarlo a mano, la directiva ordena **no entrar en pánico** y ejecutar inmediatamente `run_command` con `git restore <path>`. Después: leer el archivo limpio de nuevo y abordarlo con `insert_lines` en lugar de seguir intentando con `replace_block`/`replace_lines` sobre código corrupto.
+- **Resultado:** El @coder ya no se queda atrapado en bucles de "edit → corrupt → patch → corrupt más" sobre archivos irrecuperables. Tiene una vía de escape definida y autorizada que devuelve el archivo a un estado verde sin afectar el resto del trabajo del agente.
+
+---
+
 ## [v8.16.12] - The Iron Enforcer Patch
 
 **Objetivo:** Las reglas en el system prompt no fueron suficientes — el LLM seguía entrando en pánico tras un build fallido y se negaba a usar `insert_lines` para inyecciones masivas. Esta versión codifica las directivas DIRECTAMENTE EN EL MOTOR como hard-blocks deterministas. Tres bloqueos físicos: (1) cualquier comando de "borrado de caché" tras un build fallido es interceptado antes de ejecutarse, (2) el AST Syntax Shield ahora redirige forzadamente al @coder a `insert_lines`, (3) el plan path queda fijado en la raíz para evitar que el agente lo busque dentro del worktree.

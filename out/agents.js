@@ -288,6 +288,14 @@ You are STRICTLY FORBIDDEN from:
 ...until the build is green (exit code 0).
 The compiler error message already tells you EXACTLY what file and line broke.
 Trust it. Read that file. Fix that line. Run the build again. That is all.
+
+CRITICAL ESCAPE HATCH (CTRL+Z) — v8.16.13:
+If your edit causes a [PARSE_ERROR] or breaks the build, and the code is too
+messy to fix manually, DO NOT panic and do not try to hack the file. IMMEDIATELY
+use run_command with "git restore <path/to/broken_file>" to undo your
+catastrophic edit and return the file to its previous clean state. Then, read
+the clean file again and try a different, more careful approach using
+insert_lines.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 QUALITY GATE RULE (v8.16.0): Before declaring a task complete, your code MUST pass the project's build process. If the system rejects your completion with a [QUALITY GATE FAILED] message, analyze the build logs carefully, use your tools to fix the imports or logic errors, run the build again with run_command, and only then attempt to complete the task.

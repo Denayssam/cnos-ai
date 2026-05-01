@@ -15,7 +15,9 @@ export const TOOL_DEF: NativeTool = {
       'workspace context automatically — attempting "cd <worktree-path>" will break the working directory. ' +
       'WINDOWS ENOENT RULE (v8.16.8): If npm run build (or any command) fails with ENOENT related to cmd.exe ' +
       'or spawnSync, do NOT try to use PowerShell, node -e, or any hacking script as a workaround. ' +
-      'It is a Node environment error — the OS shell is unreachable. Yield to human and stop the task.',
+      'It is a Node environment error — the OS shell is unreachable. Yield to human and stop the task. ' +
+      'MICRO-ROLLBACK ALLOWED (v8.16.13): "git restore <path>" is explicitly permitted and is your CTRL+Z ' +
+      'when an edit catastrophically breaks a single file. Use it before attempting any further fixes.',
     parameters: {
       type: 'object',
       properties: {
@@ -29,6 +31,35 @@ export const TOOL_DEF: NativeTool = {
 export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
   const cmd = args.command as string;
   const timeout = (args.timeout as number) || 30_000;
+
+  // ── Explicit Allowlist: Micro-Rollback (v8.16.13) ────────────────────────────
+  // `git restore <path>` is the agent's CTRL+Z when an edit catastrophically
+  // breaks a single file. It must NEVER be intercepted by any blocker downstream
+  // (Vite panic, evasion shield, persistent server, etc.) since the patterns
+  // below could otherwise false-positive on filenames or flags. We short-circuit
+  // here and route directly to execution.
+  const GIT_RESTORE_ALLOW = /^\s*git\s+restore\s+\S+/i;
+  if (GIT_RESTORE_ALLOW.test(cmd)) {
+    const isWindowsRestore = process.platform === 'win32';
+    const restoreShell: string | undefined = isWindowsRestore
+      ? (process.env.ComSpec || process.env.COMSPEC || 'cmd.exe')
+      : undefined;
+    try {
+      const output = execSync(cmd, {
+        cwd: workspacePath,
+        encoding: 'utf-8',
+        timeout,
+        maxBuffer: 1024 * 1024 * 4,
+        shell: restoreShell,
+        env: { ...process.env },
+      });
+      return { success: true, output: output || '(git restore completed — file reverted to last committed state)' };
+    } catch (err: any) {
+      const stderr = err?.stderr ? String(err.stderr).trim() : '';
+      const stdout = err?.stdout ? String(err.stdout).trim() : '';
+      return { success: false, output: [stdout, stderr].filter(Boolean).join('\n') || String(err?.message ?? err) };
+    }
+  }
 
   // ── Vite Panic Blocker (v8.16.12) ────────────────────────────────────────────
   // When npm run build fails, the LLM tends to panic and try to delete dist/,
