@@ -2,6 +2,150 @@
 
 ---
 
+## [v8.16.6] - Planner Hard Block & Intent Routing Bypass
+
+**Objetivo:** Eliminar la causa raíz del bug de terminación prematura del @planner que persistía tras v8.16.5. `detectIntent` re-enrutaba el @planner a @coder leyendo keywords de la misión ("Adapt MealPlannerV2.jsx"), de modo que el LLM nunca recibía el prompt ni los tools del planner. Resultado: 3 intentos del retry harness fallando idénticamente.
+
+- **Intent Routing Bypass (`src/agentEngine.ts`):** Nueva constante `SUB_AGENTS_NO_ROUTING = new Set(['planner'])`. Los sub-agentes invocados desde un contexto de herramienta tienen rol fijo y nunca pasan por `detectIntent`. El router solo opera sobre mensajes top-level del usuario.
+- **Planner Hard Block (`src/agentEngine.ts`):** Primera comprobación dentro de `if (toolCalls.length === 0)`. Cuando `agentId === 'planner'`, el motor ejecuta `fs.existsSync('.fluxo/IMPLEMENTATION_PLAN.md')`. Si el archivo no existe, la respuesta es **rechazada físicamente**, se inyecta `[ENGINE HARD BLOCK]` y el loop continúa sin incrementar `ghostRetries`. La fuente de verdad es el filesystem — no `toolCallHistory`.
+- **SEPARATION PROTOCOL (`src/agents.ts`):** Nueva sección en el prompt del planner: "Do NOT explain your plan in the chat. Output ONLY the tool call for write_file." Refuerza que el usuario lee el plan del disco, no del chat.
+- **Resultado:** Entrega del plan garantizada en tres capas independientes: bypass de routing, hard block del motor, y retry harness exterior (3×25 iteraciones). Terminación prematura matemáticamente imposible.
+
+---
+
+## [v8.16.5] - Mandatory Output Enforcement Loop
+
+**Objetivo:** Convertir la entrega del plan del @planner en matemáticamente obligatoria a nivel del motor, no solo como regla de prompt. El retry harness externo de v8.16.3 relanzaba la misma sesión rota tres veces sin corregir el comportamiento raíz.
+
+- **Mandatory Output Enforcement Loop (`src/agentEngine.ts`):** El bloque `enter_plan_mode` ahora envuelve la invocación del planner en un `while (!fs.existsSync(planFile) && plannerAttempt < 3)`. Si el archivo no se produce, el planner es re-invocado con un mensaje `[SYSTEM RETRY N/3]` que prohíbe análisis adicional y exige `write_file` inmediatamente. El loop verifica el sistema de archivos real, no toolCallHistory.
+- **ANTI-PARALYSIS RULE v8.16.5 (`src/agents.ts`):** Añadida al bloque CRITICAL DIRECTIVE del planner: "NEVER return conversational text after reading files. A rough written plan is infinitely more valuable than a perfect unwritten one. After 1–2 read_file calls maximum, write the plan."
+- **`write_file` description fix (`src/tools/FileWriteTool/index.ts`):** La descripción anterior decía "Only use for NEW files — for existing files, always use edit_file" — el LLM leía esto y se auto-censuraba antes de usar `write_file` en `.fluxo/IMPLEMENTATION_PLAN.md`. Nueva descripción: autoriza explícitamente `.md`, `.json`, y archivos `.fluxo/*`, nombrando el output obligatorio del planner.
+
+---
+
+## [v8.16.4] - Tool Deprivation para @planner (Analysis Paralysis Fix)
+
+**Objetivo:** Aplicar el patrón de Deprivación de Herramientas al @planner, que sufría de "Parálisis por Análisis" — bucles infinitos de exploración con `glob` y `grep` hasta que el motor abortaba por Timeout.
+
+- **Restricción del toolset (`src/agents.ts`):** Array de tools del planner reducido de 8 a 4: `['get_repo_map', 'read_file', 'write_file', 'ask_user_approval']`. Eliminados: `glob`, `grep`, `search_in_files`, `list_dir`, `get_code_structure`, `skill`. El planner físicamente no puede entrar en bucles de exploración porque las herramientas de búsqueda no existen en su schema.
+- **WORKFLOW reescrito (`src/agents.ts`):** El flujo de trabajo ahora obliga a: (1) `get_repo_map` para obtener el atlas completo del proyecto en una sola llamada, (2) máximo 2–3 `read_file` para detalles granulares, (3) `write_file` inmediato. Eliminado el step de `list_dir('.')` que iniciaba los bucles.
+- **CRITICAL directive (`src/agents.ts`):** Nueva línea al inicio del WORKFLOW: "You do not have directory search tools. Use get_repo_map to understand the holistic project structure… and IMMEDIATELY use write_file."
+
+---
+
+## [v8.16.3] - Planner Output Hardening
+
+**Objetivo:** Garantizar que el directorio `.fluxo/` exista antes de que el @planner intente escribir el plan, y reforzar la directiva de entrega con lenguaje inequívoco.
+
+- **Auto-creación de `.fluxo/` (`src/agentEngine.ts`):** `fs.mkdirSync(path.join(workspacePath, '.fluxo'), { recursive: true })` ejecutado dentro de `enter_plan_mode` antes de invocar el sub-loop del planner. Elimina la causa de fallo silencioso donde `write_file` abortaba por directorio inexistente.
+- **CRITICAL DIRECTIVE v8.16.3 (`src/agents.ts`):** Actualizada con lenguaje explícito: "DO NOT finish your turn or use the ask_user_approval tool to say you are done until you have successfully called write_file on that exact path. The engine will physically check for this file's existence."
+
+---
+
+## [v8.16.2] - YIELD_TO_HUMAN & Blind Checkpoint Guard
+
+**Objetivo:** Eliminar el "Infinite MISSION-ANALYSIS-ONLY Loop" donde el Circuit Breaker de herramientas IO_CORE inyectaba errores al agente que luego reintentaba análisis indefinidamente, y eliminar los checkpoints ciegos para sesiones de solo análisis.
+
+- **YIELD_TO_HUMAN (`src/agentEngine.ts`):** Dentro del bloque Circuit Breaker (`_cbFails >= 3`), las herramientas IO_CORE (`glob`, `search_in_files`, `list_dir`, `get_code_structure`) ahora activan YIELD_TO_HUMAN: abortan el loop con `yield streamChunk` → `yield streamEnd → return`, hablando directamente al humano en lugar de inyectar errores al agente. El loop nunca reintenta; la petición llega limpia al usuario.
+- **Blind Checkpoint Guard (`src/utils/gitSafety.ts`):** `createSilentCheckpoint()` recibe un early-return si `taskId.includes('MISSION-ANALYSIS-ONLY')`. Previene commits vacíos creados durante sesiones de análisis puro donde el motor construía task IDs de ese tipo.
+- **Versión bumpeada a 8.16.2 (`package.json`).**
+
+---
+
+## [v8.16.1] - Escape Hatch & Quality Gate Circuit Breaker
+
+**Objetivo:** Evitar que el agente entre en un bucle infinito cuando el código falla la compilación repetidamente, forzando una pausa HITL después de 3 fallos consecutivos del Quality Gate.
+
+- **`consecutiveBuildFailures` counter (`src/agentEngine.ts`):** Nuevo contador inicializado a 0 al inicio del loop. Se incrementa cada vez que `validateBuild()` devuelve fallo. Al llegar a 3 fallos consecutivos, activa el **Circuit Breaker del Quality Gate**: el motor inyecta un mensaje que prohíbe al agente continuar e invoca `ask_user_approval` para intervención humana.
+- **`bypassQualityGate` flag (`src/agentEngine.ts`):** Cuando el usuario aprueba el bypass vía `ask_user_approval`, el motor detecta la respuesta y activa este flag, permitiendo que el agente complete la tarea omitiendo las validaciones de build restantes.
+- **Reset en éxito de edición:** El contador de fallos consecutivos se resetea a 0 después de cualquier herramienta de edición exitosa (`replace_lines`, `write_file`, `replace_block`, `replace_symbol`) — solo cuenta fallos sin progreso en medio.
+
+---
+
+## [v8.16.0] - Quality Gate (Build Validation Before Completion)
+
+**Objetivo:** Cerrar el ciclo de calidad — el agente no puede declarar una tarea completa hasta que el proyecto compile limpiamente. Elimina el patrón de "ghost completion" donde el agente emitía el Orchestrator's Report con código roto.
+
+- **`validateBuild()` (`src/utils/buildValidator.ts`):** Nueva utilidad que ejecuta `npm run build` en el workspace y retorna `{ success, error }`. Detecta si el script existe (omite silenciosamente si no hay `build` script). Timeout de 60 segundos.
+- **Quality Gate en ambos exit paths (`src/agentEngine.ts`):** Insertado en los dos puntos de salida del loop: (1) cuando el agente emite "ALL STEPS COMPLETE" / "ORCHESTRATOR'S REPORT", (2) cuando `ghostRetries` se agota. En ambos casos, si el build falla, se inyecta `[QUALITY GATE FAILED]` con los errores del compilador y el loop continúa.
+- **QUALITY GATE RULE (`src/agents.ts`):** Nueva regla en Coder: "Before declaring a task complete, your code MUST pass the project's build process."
+- **Syntax Shield (`src/utils/syntaxValidator.ts` + `src/tools/`):** `checkSyntax()` valida TypeScript/JSX en memoria antes de que `write_file`, `replace_lines`, y `replace_block` escriban al disco. Si el AST falla, la escritura se aborta con diagnóstico. Imposible corromper código fuente.
+
+---
+
+## [v8.15.0] - The Time Machine (Git Auto-Checkpointing)
+
+**Objetivo:** Dar al sistema una red de seguridad automática. Antes de cada tarea del agente, se crea un commit ancla "fluxo-auto-checkpoint" en un árbol de trabajo limpio. Si la tarea sale mal, `abort_and_rollback` puede restituir el código al estado previo con un solo `git reset --hard HEAD~1`.
+
+- **`createSilentCheckpoint(taskId, cwd)` (`src/utils/gitSafety.ts`):** Nueva utilidad que verifica que el árbol de trabajo esté limpio (`git status --porcelain`), luego ejecuta `git add . && git commit --allow-empty -m "fluxo-auto-checkpoint: <taskId>"`. Lanza un error descriptivo si detecta cambios humanos no comprometidos — la mezcla de trabajo humano y agente en el mismo checkpoint crearía un rollback ambiguo.
+- **`rollbackToLastCheckpoint(cwd)` (`src/utils/gitSafety.ts`):** Ejecuta `git reset --hard HEAD~1` para deshacer todos los cambios del agente hasta el checkpoint ancla. Retorna `{ success, output }`.
+- **`AbortAndRollbackTool` (`src/tools/AbortAndRollbackTool/index.ts`):** Nueva herramienta expuesta a Coder y Manager. El agente la llama con un `reason` cuando detecta que sus ediciones rompieron la lógica fundamentalmente. Invoca `rollbackToLastCheckpoint` directamente.
+- **Rollback Hard Stop (`src/agentEngine.ts`):** Cuando `abort_and_rollback` tiene éxito, el motor emite `yield streamEnd` inmediatamente, deteniendo el loop. El agente no puede continuar haciendo ediciones después de un rollback.
+- **Integración en `runAgentLoop` (`src/agentEngine.ts`):** El checkpoint se crea al inicio de cada sesión de tarea, antes del primer API call.
+
+---
+
+## [v8.14.0] - MCP + Syntax Shield (AST Validation)
+
+**Objetivo:** Dos mejoras de producción en paralelo: conectividad MCP estable con inicialización no bloqueante, y una capa de validación AST que hace imposible escribir código sintácticamente roto al disco.
+
+- **MCP Estabilización:** Refactor del cliente MCP para inicialización asíncrona no-bloqueante. Servidores MCP se conectan en background; la UI carga inmediatamente. Timeouts de conexión (5s) y de tool listing. Manejo de errores silencioso si un servidor no responde.
+- **`checkSyntax()` (`src/utils/syntaxValidator.ts`):** Nueva utilidad que carga el compilador TypeScript en memoria y ejecuta `ts.transpileModule()` sobre el contenido propuesto. Si el AST produce errores de diagnóstico, devuelve `{ ok: false, errors }`. Skippea automáticamente extensiones no-TS/JS (`.md`, `.json`, `.css`).
+- **Integración en herramientas de escritura:** `FileWriteTool`, `ReplaceLinesTool`, y `ReplaceBlockTool` llaman `checkSyntax()` antes de `acquireLock()`. Si falla, abortan con `[SYNTAX ERROR DETECTED]` y el diagnóstico exacto. La escritura nunca ocurre — el archivo en disco permanece intacto.
+- **`healing_mode` bypass:** Parámetro opcional en las herramientas de escritura. Si `healing_mode: true`, la validación AST se omite — permite reparar deliberadamente archivos ya corruptos.
+
+---
+
+## [v8.13.0] - Global Circuit Breaker (Pre-Execution Block)
+
+**Objetivo:** Elevar el Circuit Breaker de la v7.12.4 a pre-ejecución. En lugar de ejecutar la herramienta y reportar el fallo, el motor ahora bloquea la llamada antes de ejecutarla cuando una herramienta ha fallado 3 veces, inyectando una directiva de cambio de estrategia.
+
+- **Pre-execution Circuit Breaker (`src/agentEngine.ts`):** `toolFailureTracker` pasa de post-ejecución a pre-ejecución. Antes del bloque `try { execute }`, el motor comprueba `_cbFails >= 3`. Si se cumple, el tool call es interceptado con `[CIRCUIT BREAKER]` sin invocar `executeTool` — ahorra una iteración por fallo.
+- **`@planner` CRITICAL DIRECTIVE v8.13.0 (`src/agents.ts`):** Primera versión de la directiva fuerte en el prompt del planner: "Your SOLE purpose is to write a markdown file using the 'write_file' tool… If you do not call 'write_file', the system will crash."
+- **Exclusión de herramientas inmunes:** `run_command` y `get_code_structure` continúan exentos del Circuit Breaker — un build fallido legítimo no debe bloquear las herramientas de diagnóstico.
+
+---
+
+## [v8.12.0] - Semantic Awareness Phase 2 (get_repo_map + AST RepoMap)
+
+**Objetivo:** Dar a los agentes un atlas semántico completo del workspace en una sola llamada. `get_repo_map` genera un mapa de todos los símbolos exportados (funciones, clases, constantes) con sus archivos de origen — sin necesidad de explorar el árbol con glob/grep.
+
+- **`buildRepoMap()` (`src/utils/repoMap.ts`):** Nueva utilidad que recorre el workspace en Node.js puro, parsea los archivos TypeScript/JavaScript con el compilador TS, y extrae todos los símbolos exportados con sus rutas relativas. Devuelve un bloque de texto estructurado `file → [symbol1, symbol2, …]`. Completamente fail-safe: retorna `''` ante cualquier error de I/O.
+- **`get_repo_map` tool (`src/tools/GetRepoMapTool/`):** Herramienta expuesta a Coder y Manager. Sin parámetros — devuelve el mapa completo del proyecto actual. Reemplaza la secuencia `glob + grep` para orientación inicial.
+- **TOPOGRAPHY RULE v8.12.0 (`src/agents.ts`):** Nueva regla en Coder y Manager: "Before making sweeping changes or searching blindly for functions, you MUST call get_repo_map to understand the semantic structure and dependencies of the workspace." Añadido también en Manager para que incluya las entradas del mapa en las task descriptions de `create_team`.
+
+---
+
+## [v8.11.0] - Worktree Auto-Cleanup
+
+**Objetivo:** Eliminar el error de "worktree ya activo" que bloqueaba al agente cuando intentaba crear un nuevo worktree sin haber cerrado el anterior — situación habitual en sesiones largas o tras un crash.
+
+- **Auto-cleanup silencioso (`src/agentEngine.ts`):** En el intercept de `enter_worktree`, el motor comprueba si `activeWorktreePath` está activo. Si es así, ejecuta `exit_worktree({ action: 'discard' })` silenciosamente (el agente no lo ve), resetea `activeWorktreePath = null`, y luego procede con el `enter_worktree` solicitado. El usuario ve el nuevo worktree activarse limpiamente sin mensajes de error.
+- **Thinking tick:** Emite `🧹 Auto-cleanup: discarding stale worktree before entering new one…` en el status bar durante la limpieza para trazabilidad sin contaminar el chat.
+
+---
+
+## [v8.10.0] - The Shield Patch (HITL + Iron Rule)
+
+**Objetivo:** Eliminar el uso destructivo de `run_command` para operaciones de sistema de archivos (crear, mover, eliminar archivos con `rm -rf`, `del`, etc.) y añadir un control Human-in-the-Loop para cualquier comando shell no reconocido como seguro.
+
+- **HITL para `run_command` (`src/agentEngine.ts` + `src/extension.ts`):** Nuevo mecanismo pre-ejecución. Antes de ejecutar cualquier shell command, el motor evalúa el primer segmento contra `HITL_SAFE_PATTERNS` (whitelist de `npm`, `git`, `tsc`, `node`, `npx`, etc.). Si no coincide, pausa el loop y envía `{ type: 'hitlCommand', command }` al webview — el usuario aprueba o rechaza antes de que el proceso arranque.
+- **`HITL_SAFE_PATTERNS` (`src/agentEngine.ts`):** Lista de RegExp que cubren git, npm/yarn/pnpm/bun, tsc, node, vsce, echo sin redirect, y comandos de version. Extensible sin tocar la lógica de intercepción.
+- **IRON RULE — Shell Scope (`src/agents.ts`):** Nueva regla `RULE (SHELL SCOPE — v8.10.0)` en Coder y Manager: `run_command` es EXCLUSIVAMENTE para compilación y tests. Para cualquier operación de archivos: `delete_file`, `delete_dir`, `write_file`, `create_dir`. Violar esta regla activa el HITL.
+- **Path validation en DeleteTool (`src/tools/DeleteFileTool/` + `DeleteDirTool/`):** Guards críticos que bloquean eliminación de rutas fuera del workspace, rutas vacías, y paths que apunten al directorio raíz. Previene `delete_dir('.')` accidental.
+
+---
+
+## [v8.9.0] - Semantic Awareness Phase 1 (RepoMap Injection)
+
+**Objetivo:** Inyectar automáticamente un mapa del repositorio en el contexto del sistema de los agentes que escriben código, eliminando el "Sesgo de Exploración" donde @coder y @manager llamaban a `glob` o `grep` repetidamente al inicio de cada tarea para orientarse.
+
+- **RepoMap auto-injection (`src/agentEngine.ts`):** Al construir el `systemPrompt` de sesión, si `agentId` es `'coder'` o `'manager'` y el workspace está disponible, se invoca `buildRepoMap(workspacePath)`. Si el resultado no está vacío, se inyecta como bloque `<repo_map>…</repo_map>` al final del system prompt, seguido de la `REPO MAP RULE v8.9.0`.
+- **`REPO MAP RULE v8.9.0`:** Instrucción inyectada con el mapa: "DO NOT use run_command to search for files. Use this map to know exactly which path to pass to read_file, replace_lines, or replace_symbol. If a path from the map does not resolve, call glob() to confirm — never guess."
+- **Fail-safe:** `buildRepoMap()` retorna `''` ante cualquier error — la inyección no ocurre si el mapa está vacío, sin bloquear la sesión.
+
+---
+
 ## [v8.8.0] - Worktree Structural Isolation (Automatic Path Redirect)
 
 **Objetivo:** Completar la Fase 1 del Enterprise Roadmap — Aislamiento Estructural con Git Worktrees. Las herramientas `enter_worktree` y `exit_worktree` ya existían desde v8.0.0, pero el agente tenía que prefijar MANUALMENTE cada ruta con la ruta del worktree. La v8.8.0 hace esta redirección INVISIBLE: el agente escribe `read_file("src/App.tsx")` y el motor silenciosamente lee `.fluxo/worktrees/branch/src/App.tsx`.
