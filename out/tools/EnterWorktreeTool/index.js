@@ -72,15 +72,64 @@ RULE: Never attempt to work in two worktrees simultaneously.`,
 };
 const STATE_RELATIVE = path.join('.fluxo', 'active_worktree.json');
 function execute(args, workspacePath) {
-    // ── Validate git repo ─────────────────────────────────────────────────────
+    // ── Genesis Patch v8.16.15: auto-init git + anchor commit ─────────────────
+    let isRepo = true;
     try {
         cp.execSync('git rev-parse --is-inside-work-tree', { cwd: workspacePath, stdio: 'pipe' });
     }
     catch {
-        return {
-            success: false,
-            output: 'EnterWorktree: This workspace is not a git repository. git worktree requires git init.',
-        };
+        isRepo = false;
+    }
+    if (!isRepo) {
+        try {
+            cp.execSync('git init', { cwd: workspacePath, stdio: 'pipe' });
+        }
+        catch (e) {
+            const stderr = (e.stderr?.toString() || e.message || '').slice(0, 400);
+            return { success: false, output: `EnterWorktree: git init failed:\n${stderr}` };
+        }
+    }
+    // The Mandatory Anchor — worktrees cannot be created on an empty history
+    let hasCommits = true;
+    try {
+        cp.execSync('git rev-list -n 1 --all', { cwd: workspacePath, stdio: 'pipe' });
+        const out = cp.execSync('git rev-list -n 1 --all', { cwd: workspacePath, stdio: 'pipe' }).toString().trim();
+        if (!out)
+            hasCommits = false;
+    }
+    catch {
+        hasCommits = false;
+    }
+    if (!hasCommits) {
+        // Ensure committer identity exists locally so the genesis commit doesn't fail
+        try {
+            cp.execSync('git config user.email', { cwd: workspacePath, stdio: 'pipe' });
+        }
+        catch {
+            try {
+                cp.execSync('git config user.email "fluxo@local"', { cwd: workspacePath, stdio: 'pipe' });
+            }
+            catch { }
+        }
+        try {
+            cp.execSync('git config user.name', { cwd: workspacePath, stdio: 'pipe' });
+        }
+        catch {
+            try {
+                cp.execSync('git config user.name "Fluxo AI"', { cwd: workspacePath, stdio: 'pipe' });
+            }
+            catch { }
+        }
+        try {
+            cp.execSync('git commit --allow-empty -m "chore: initial genesis commit"', {
+                cwd: workspacePath,
+                stdio: 'pipe',
+            });
+        }
+        catch (e) {
+            const stderr = (e.stderr?.toString() || e.message || '').slice(0, 400);
+            return { success: false, output: `EnterWorktree: genesis commit failed:\n${stderr}` };
+        }
     }
     // ── Guard: one worktree at a time ─────────────────────────────────────────
     const stateFilePath = path.join(workspacePath, STATE_RELATIVE);
