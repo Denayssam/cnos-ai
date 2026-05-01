@@ -206,16 +206,28 @@ function pruneToolResults(messages) {
 // ─── Agent Loop ───────────────────────────────────────────────────────────────
 async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, config, workspacePath, abortSignal, sentinelHasError = false, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools = [], callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback) {
     // 1. Intent Detection (Routing)
-    yield { type: 'thinking', text: 'Detecting intent…' };
+    // ── v8.16.6: Skip routing for sub-agent invocations ──────────────────────
+    // The @planner is invoked from enter_plan_mode with a FIXED role. Re-routing
+    // it via detectIntent reads the mission text (e.g. "Adapt MealPlannerV2.jsx")
+    // and incorrectly hands the session to @coder, so the planner's tools array
+    // (write_file, get_repo_map…) and its mandate to produce IMPLEMENTATION_PLAN.md
+    // are never loaded. Sub-agents bypass the router entirely.
+    const SUB_AGENTS_NO_ROUTING = new Set(['planner']);
     let agentId = initialAgentId;
-    try {
-        const detectedId = await detectIntent(userMessage, config, abortSignal);
-        if (detectedId && agents_1.AGENTS[detectedId]) {
-            agentId = detectedId;
+    if (!SUB_AGENTS_NO_ROUTING.has(initialAgentId)) {
+        yield { type: 'thinking', text: 'Detecting intent…' };
+        try {
+            const detectedId = await detectIntent(userMessage, config, abortSignal);
+            if (detectedId && agents_1.AGENTS[detectedId]) {
+                agentId = detectedId;
+            }
+        }
+        catch (err) {
+            console.error('[Engine] Intent detection failed, falling back to keywords:', err);
         }
     }
-    catch (err) {
-        console.error('[Engine] Intent detection failed, falling back to keywords:', err);
+    else {
+        debugLog(workspacePath, `[Routing] Sub-agent '${initialAgentId}' — skipping intent detection`);
     }
     const agent = agents_1.AGENTS[agentId] || agents_1.AGENTS.coder;
     let agentTools = (0, tools_1.getNativeTools)(agent.tools);
@@ -347,18 +359,12 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
     // Reserved for Vector Memory integration.
     // Example: await contextIndexer.index(messages, workspacePath);
     // ──────────────────────────────────────────────────────────────────────────
-    // ── v8.15.0: Git Auto-Checkpointing (The Time Machine) ───────────────────
-    // Pre-flight: block if human has uncommitted changes (would corrupt rollback boundary).
-    // On a clean tree: create an empty anchor commit so abort_and_rollback can always
-    // reset to HEAD~1 and restore the exact pre-agent state.
+    // ── v8.16.7: Git Auto-Checkpointing (Smart Auto-Commit) ──────────────────
+    // If the human has uncommitted changes, createSilentCheckpoint now auto-saves
+    // them as a WIP commit BEFORE creating the agent's anchor commit. On rollback,
+    // git reset --hard HEAD~1 discards only the agent's anchor — the human's WIP
+    // commit survives, so their work is never lost.
     if (workspacePath) {
-        if ((0, gitSafety_1.hasUncommittedChanges)(workspacePath)) {
-            yield {
-                type: 'error',
-                message: '[SYSTEM ALERT] Uncommitted human changes detected. MANDATORY: The human must commit or stash their work before the agent can safely operate.',
-            };
-            return;
-        }
         try {
             const rawId = userMessage.replace(/[^\w\s-]/g, '').trim().slice(0, 50).replace(/\s+/g, '-') || 'task';
             (0, gitSafety_1.createSilentCheckpoint)(rawId, workspacePath);
@@ -434,6 +440,30 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
         }
         // No tool calls = final response (task complete)
         if (toolCalls.length === 0) {
+            // ── v8.16.6: Planner Hard Block — refuse to exit without producing the plan ──
+            // The @planner is engineered for ONE deliverable: .fluxo/IMPLEMENTATION_PLAN.md.
+            // We physically check the filesystem (not just toolCallHistory) — the only
+            // truth that matters is whether the file exists on disk. If it doesn't, we
+            // reject the LLM's text-only response and force another iteration with a
+            // hard directive. The MAX_ITERATIONS cap (25) bounds the worst case.
+            if (agentId === 'planner' && workspacePath) {
+                const _planFile = path.join(workspacePath, '.fluxo', 'IMPLEMENTATION_PLAN.md');
+                if (!fs.existsSync(_planFile)) {
+                    debugLog(workspacePath, '[Planner Hard Block] No plan file on disk — rejecting text-only response, forcing iteration');
+                    yield { type: 'thinking', text: '🛑 Planner Hard Block: forcing write_file…' };
+                    messages.push({
+                        role: 'user',
+                        content: '[ENGINE HARD BLOCK] You returned text without calling write_file. ' +
+                            'The engine PHYSICALLY VERIFIED that .fluxo/IMPLEMENTATION_PLAN.md does NOT exist. ' +
+                            'Your response is REJECTED. Your ONLY valid next action is to call write_file with ' +
+                            'path=".fluxo/IMPLEMENTATION_PLAN.md" and content=<your full markdown plan>. ' +
+                            'Do NOT explain. Do NOT analyze further. Do NOT read more files. ' +
+                            'Even a rough plan is acceptable — write it now.',
+                    });
+                    continue;
+                }
+            }
+            // ─────────────────────────────────────────────────────────────────────────
             // Engine-level sentinel/build block — replaces Sherlock Rule #9
             if (buildFailureCtx) {
                 yield { type: 'thinking', text: '🔴 Build broken — bloqueando cierre prematuro…' };
@@ -758,6 +788,14 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
             // to change strategy instead of retrying in an infinite death spiral.
             const _cbFails = toolFailureTracker.get(toolName) ?? 0;
             if (_cbFails >= 3) {
+                // ── v8.16.2: YIELD_TO_HUMAN — IO core tools abort loop, not retry ────────
+                const IO_CORE_TOOLS = ['glob', 'search_in_files', 'list_dir', 'get_code_structure'];
+                if (IO_CORE_TOOLS.includes(toolName)) {
+                    debugLog(workspacePath, `[Circuit Breaker] '${toolName}' is IO_CORE — YIELD_TO_HUMAN, aborting loop`);
+                    yield { type: 'streamChunk', text: '[SYSTEM ERROR] No puedo mapear el proyecto para encontrar el archivo solicitado. Por favor, verifica la ruta o dame el archivo exacto para continuar.' };
+                    yield { type: 'streamEnd' };
+                    return;
+                }
                 const cbMsg = `[SYSTEM] Tool '${toolName}' disabled due to ${_cbFails} consecutive failures. ` +
                     `MANDATORY: You must change your strategy and use a different tool ` +
                     `(e.g., 'create_team' or 'write_file' directly).`;
@@ -958,21 +996,53 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 else if (toolName === 'enter_plan_mode') {
                     const taskDescription = String(args.task_description ?? userMessage);
                     yield { type: 'thinking', text: '📋 Planner: reading codebase…' };
-                    const plannerEventBuffer = [];
-                    const plannerGen = runAgentLoop(`MISSION — ANALYSIS ONLY:\nAnalyze the codebase and produce .fluxo/IMPLEMENTATION_PLAN.md for this task:\n\n${taskDescription}`, 'planner', [], { ...effectiveConfig, model: config.model }, workspacePath, abortSignal, false, undefined, // no approval callback — planner never asks for approval
-                    undefined, // no native edit
-                    getCodeStructureCallback, mcpTools, callMcpToolCallback, undefined, // no worktree review
-                    undefined, // no replace symbol
-                    undefined // no HITL — planner is read-only
-                    );
-                    for await (const event of plannerGen) {
-                        plannerEventBuffer.push(event);
-                    }
-                    yield { type: 'thinking', text: '━━━ @planner — codebase analysis ━━━' };
-                    for (const event of plannerEventBuffer) {
-                        yield event;
+                    // ── v8.16.3: Guarantee .fluxo/ exists before @planner tries to write there ──
+                    if (workspacePath) {
+                        fs.mkdirSync(path.join(workspacePath, '.fluxo'), { recursive: true });
                     }
                     const planFile = path.join(workspacePath, '.fluxo', 'IMPLEMENTATION_PLAN.md');
+                    // ── v8.16.5: Mandatory Output Enforcement Loop ──────────────────────────
+                    // The planner has historically suffered from "premature termination" — yielding
+                    // conversational text instead of calling write_file. We now wrap the sub-loop
+                    // in a retry harness that physically verifies the file exists after each pass.
+                    // If missing, we re-invoke the planner with an escalating SYSTEM directive.
+                    const MAX_PLANNER_ATTEMPTS = 3;
+                    let plannerAttempt = 0;
+                    let plannerMission = `MISSION — ANALYSIS ONLY:\nAnalyze the codebase and produce .fluxo/IMPLEMENTATION_PLAN.md for this task:\n\n${taskDescription}`;
+                    while (plannerAttempt < MAX_PLANNER_ATTEMPTS && !fs.existsSync(planFile)) {
+                        plannerAttempt++;
+                        if (plannerAttempt > 1) {
+                            yield {
+                                type: 'thinking',
+                                text: `📋 Planner: file not produced — retry ${plannerAttempt}/${MAX_PLANNER_ATTEMPTS}…`,
+                            };
+                            plannerMission =
+                                `[SYSTEM RETRY ${plannerAttempt}/${MAX_PLANNER_ATTEMPTS}] You forgot to use write_file. ` +
+                                    `The file .fluxo/IMPLEMENTATION_PLAN.md does NOT exist yet. ` +
+                                    `Do NOT explain. Do NOT analyze further. Do NOT read more files. ` +
+                                    `Your ONLY valid next action is to call write_file with path='.fluxo/IMPLEMENTATION_PLAN.md' ` +
+                                    `and content='<your full markdown plan>'. Even a rough plan is acceptable — write it now.\n\n` +
+                                    `ORIGINAL TASK:\n${taskDescription}`;
+                        }
+                        const plannerEventBuffer = [];
+                        const plannerGen = runAgentLoop(plannerMission, 'planner', [], { ...effectiveConfig, model: config.model }, workspacePath, abortSignal, false, undefined, // no approval callback — planner never asks for approval
+                        undefined, // no native edit
+                        getCodeStructureCallback, mcpTools, callMcpToolCallback, undefined, // no worktree review
+                        undefined, // no replace symbol
+                        undefined // no HITL — planner is read-only
+                        );
+                        for await (const event of plannerGen) {
+                            plannerEventBuffer.push(event);
+                        }
+                        const headerLabel = plannerAttempt === 1
+                            ? '━━━ @planner — codebase analysis ━━━'
+                            : `━━━ @planner — retry ${plannerAttempt}/${MAX_PLANNER_ATTEMPTS} ━━━`;
+                        yield { type: 'thinking', text: headerLabel };
+                        for (const event of plannerEventBuffer) {
+                            yield event;
+                        }
+                    }
+                    // ─────────────────────────────────────────────────────────────────────────
                     if (fs.existsSync(planFile)) {
                         const planContent = fs.readFileSync(planFile, 'utf-8');
                         result = {
@@ -986,7 +1056,7 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                     else {
                         result = {
                             success: false,
-                            output: `ERROR: @planner did not produce .fluxo/IMPLEMENTATION_PLAN.md. ` +
+                            output: `ERROR: @planner did not produce .fluxo/IMPLEMENTATION_PLAN.md after ${MAX_PLANNER_ATTEMPTS} attempts. ` +
                                 `[CIRCUIT BREAKER WARNING] DO NOT retry. The planning phase has failed. ` +
                                 `MANDATORY: You MUST use the ask_user_approval tool immediately to inform the user that you cannot proceed without a plan and ask for manual intervention. ` +
                                 `DO NOT use create_team.`,

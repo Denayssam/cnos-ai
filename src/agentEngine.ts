@@ -4,7 +4,7 @@ import { executeTool, getNativeTools, NativeTool } from './tools';
 import { AGENTS, buildAgentSystemPrompt, ROUTER_PROMPT, REVISOR_PROMPT, SUMMARIZER_PROMPT } from './agents';
 import { AgentMailbox } from './utils/agentMailbox';
 import { buildRepoMap } from './utils/repoMap';
-import { hasUncommittedChanges, createSilentCheckpoint } from './utils/gitSafety';
+import { createSilentCheckpoint } from './utils/gitSafety';
 import { validateBuild } from './utils/buildValidator';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -399,19 +399,12 @@ export async function* runAgentLoop(
   // Example: await contextIndexer.index(messages, workspacePath);
   // ──────────────────────────────────────────────────────────────────────────
 
-  // ── v8.15.0: Git Auto-Checkpointing (The Time Machine) ───────────────────
-  // Pre-flight: block if human has uncommitted changes (would corrupt rollback boundary).
-  // On a clean tree: create an empty anchor commit so abort_and_rollback can always
-  // reset to HEAD~1 and restore the exact pre-agent state.
+  // ── v8.16.7: Git Auto-Checkpointing (Smart Auto-Commit) ──────────────────
+  // If the human has uncommitted changes, createSilentCheckpoint now auto-saves
+  // them as a WIP commit BEFORE creating the agent's anchor commit. On rollback,
+  // git reset --hard HEAD~1 discards only the agent's anchor — the human's WIP
+  // commit survives, so their work is never lost.
   if (workspacePath) {
-    if (hasUncommittedChanges(workspacePath)) {
-      yield {
-        type: 'error',
-        message:
-          '[SYSTEM ALERT] Uncommitted human changes detected. MANDATORY: The human must commit or stash their work before the agent can safely operate.',
-      };
-      return;
-    }
     try {
       const rawId = userMessage.replace(/[^\w\s-]/g, '').trim().slice(0, 50).replace(/\s+/g, '-') || 'task';
       createSilentCheckpoint(rawId, workspacePath);

@@ -2,6 +2,19 @@
 
 ---
 
+## [v8.16.7] - Smart Auto-Commit & Coder Prompt Polish
+
+**Objetivo:** Doble parche de fricción y precisión. (a) Eliminar el bloqueo `[SYSTEM ALERT]` de v8.15.0 cuando hay cambios humanos sin confirmar — ahora se autoguardan en un commit `WIP` antes del ancla del agente. (b) Pulir las instrucciones del @coder para erradicar dos clases de fallos recurrentes: rutas con prefijo `.fluxo/worktrees/...` y ediciones JSX con tags desbalanceadas que el AST Syntax Shield rechaza.
+
+- **Smart Auto-Commit (`src/utils/gitSafety.ts`):** `createSilentCheckpoint()` ya no lanza el error `[SYSTEM ALERT]`. Si `git status --porcelain` reporta cambios humanos, ejecuta automáticamente `git add . && git commit -m "WIP: Auto-saved human changes before agent task"`, y luego apila el ancla `git commit --allow-empty -m "fluxo-auto-checkpoint: <taskId>"` encima.
+- **Pre-flight Removal (`src/agentEngine.ts`):** Eliminado el bloque que interrumpía la ejecución antes de `MAX_ITERATIONS` cuando `hasUncommittedChanges()` devolvía `true`. La importación `hasUncommittedChanges` queda fuera de `agentEngine.ts` (sigue exportada desde `gitSafety` para uso externo). El motor ahora siempre intenta el checkpoint y delega la decisión al utility.
+- **Rollback Boundary (sin cambios):** `rollbackToLastCheckpoint()` mantiene `git reset --hard HEAD~1`. Como el ancla del agente está exactamente a un commit por encima del WIP humano, el reset descarta solo las ediciones del agente. El commit `WIP: Auto-saved human changes…` sobrevive intacto y el usuario lo ve listado en `git log`, pudiendo hacer `git reset HEAD~1` manualmente si quiere volver a un working tree sucio.
+- **PATHING RULE (`src/agents.ts` — @coder):** Nueva directiva crítica al tope del system prompt: el agente opera dentro de un worktree invisible y todas las rutas deben ser **estrictamente relativas a la raíz del repositorio**. Prohibido prefijar `.fluxo/worktrees/...` — el motor enruta automáticamente. Erradica una clase entera de errores `ENOENT` por doble prefijo.
+- **JSX/AST RULE (`src/agents.ts` — @coder):** Segunda directiva crítica complementaria al AST Syntax Shield: cuando se usa `replace_block` sobre archivos React/JSX, los `search_snippet` y `replace_snippet` deben contener tags HTML/JSX completamente balanceadas. Cualquier `</div>` colgante o componente cortado por la mitad activa el hard-block del Syntax Shield y aborta la tarea.
+- **Resultado:** Los usuarios ya no necesitan stashear/commitear manualmente antes de invocar al agente, y el @coder produce ediciones que pasan el AST Shield al primer intento mucho más a menudo.
+
+---
+
 ## [v8.16.6] - Planner Hard Block & Intent Routing Bypass
 
 **Objetivo:** Eliminar la causa raíz del bug de terminación prematura del @planner que persistía tras v8.16.5. `detectIntent` re-enrutaba el @planner a @coder leyendo keywords de la misión ("Adapt MealPlannerV2.jsx"), de modo que el LLM nunca recibía el prompt ni los tools del planner. Resultado: 3 intentos del retry harness fallando idénticamente.

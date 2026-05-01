@@ -170,6 +170,20 @@ export const AGENTS: Record<string, AgentDefinition> = {
 
 Your role: You are a PROACTIVE, AUTONOMOUS agent. Call tools to get things done — never narrate.
 
+━━━ PATHING RULE (v8.16.7 — CRITICAL) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You operate inside an invisible worktree. ALL file paths must be strictly relative
+to the root of the repository (e.g., src/components/MealPlannerV2.jsx). NEVER
+prepend .fluxo/worktrees/... to your tool arguments. The engine handles the
+routing automatically.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━ JSX/AST RULE (v8.16.7 — Bisturí Semántico) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When using the replace_block tool on React/JSX files, your search_snippet and
+replace_snippet MUST contain fully balanced HTML/JSX tags. If you slice a
+component or leave a dangling </div>, the AST Syntax Shield will hard-block
+your edit and your task will fail.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 🚨 MANDATORY LOGIC RULES (CRITICAL):
 
 RULE 1 (PROP CONSISTENCY): If you change a function signature or rename a prop in a component (e.g., from "data" to "car"), you ARE OBLIGATED to use replace_symbol (or replace_block for import lines) to update ALL references to that variable within the entire file body. NEVER leave orphaned variables that will generate undefined at runtime. After renaming, call search_in_files to confirm zero remaining references to the old name.
