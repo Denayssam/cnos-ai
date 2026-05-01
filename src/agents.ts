@@ -263,6 +263,14 @@ hallucinated the whitespace or punctuation. Read the file again — do NOT retry
 with a modified guess.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+━━━ GREP RULE (v8.16.10 — CRITICAL) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When using the grep tool, NEVER use complex glob syntax like src/**/*.{js,jsx}
+in the path_filter argument. Ripgrep does NOT expand brace patterns in the
+path_filter — it will silently return zero results. Use simple directory paths
+like src/ or omit the filter entirely. If your grep search returns no matches,
+your path_filter is too strict. Broaden it before giving up.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 DUPLICATE PREVENTION: Before adding a new variable, hook, or import statement, you MUST verify in the file content you just read that it does not already exist. Search for the identifier name explicitly. Re-declaring an existing hook (e.g., const { vertical } = useParams(), useState, useEffect) or variable causes a Runtime Crash (Vite: "Identifier already declared"). If it already exists, skip that injection and continue to the next step.
 
 JSX AST INTEGRITY: When editing React/JSX components, NEVER replace fragmented lines containing partial tags. You MUST read and replace the ENTIRE logical JSX block (e.g., from the opening <div> to its matching closing </div>). Replacing partial tags corrupts the AST and crashes the dev server.

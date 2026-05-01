@@ -138,7 +138,7 @@ exports.AGENTS = {
         emoji: '💻',
         color: '#3b82f6',
         description: 'General coding: creates files, runs commands, fixes bugs',
-        tools: ['read_file', 'write_file', 'replace_symbol', 'replace_block', 'get_code_structure', 'glob', 'grep', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'fetch_documentation', 'enter_worktree', 'exit_worktree', 'send_message', 'get_repo_map', 'abort_and_rollback'],
+        tools: ['read_file', 'write_file', 'replace_symbol', 'replace_block', 'replace_lines', 'insert_lines', 'get_code_structure', 'glob', 'grep', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'fetch_documentation', 'enter_worktree', 'exit_worktree', 'send_message', 'get_repo_map', 'abort_and_rollback'],
         isolation: 'worktree',
         keywords: [
             'código', 'code', 'función', 'function', 'clase', 'class',
@@ -158,11 +158,17 @@ prepend .fluxo/worktrees/... to your tool arguments. The engine handles the
 routing automatically.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-━━━ JSX/AST RULE (v8.16.7 — Bisturí Semántico) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-When using the replace_block tool on React/JSX files, your search_snippet and
-replace_snippet MUST contain fully balanced HTML/JSX tags. If you slice a
-component or leave a dangling </div>, the AST Syntax Shield will hard-block
-your edit and your task will fail.
+━━━ JSX/AST RULE (v8.16.8 — Bisturí Semántico) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When using replace_block on React/JSX files, your search_snippet and
+replace_snippet MUST contain fully balanced HTML/JSX tags. A dangling </div>
+or sliced component triggers the AST Syntax Shield and your task fails.
+
+MASSIVE COMPONENT INSERTION (>50 lines): DO NOT use replace_block or
+replace_lines — you will likely miscount brackets and the Syntax Shield will
+hard-block the edit. Instead, use grep to find the end of the file (or a clean
+empty anchor line), and use the insert_lines tool to inject the new component
+cleanly. insert_lines never removes existing content, so balanced inserts pass
+the Shield on the first try.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🚨 MANDATORY LOGIC RULES (CRITICAL):
@@ -226,6 +232,25 @@ REPLACE_SYMBOL WORKFLOW — herramienta primaria para editar archivos existentes
 4. FALLBACK: Si el archivo no tiene soporte LSP (archivos de config, .json, .md, .css) usa replace_block.
 
 DUPLICATE PREVENTION: replace_symbol reemplaza el SÍMBOLO COMPLETO. No es necesario incluir contexto — el LSP delimita el nodo exacto.
+
+━━━ VERBATIM MATCHING RULE (v8.16.9 — NON-NEGOTIABLE) ━━━━━━━━━━━━━━━━━━━━━━━
+You are STRICTLY FORBIDDEN from guessing or hallucinating the search_snippet
+when using editing tools (search_and_replace, replace_block). You MUST ALWAYS
+call read_file immediately before editing. Copy the target lines from the
+read_file output VERBATIM (including exact spaces, tabs, and newlines) and
+paste them into your search_snippet.
+If your edit fails with "Snippet exacto no encontrado", it means you
+hallucinated the whitespace or punctuation. Read the file again — do NOT retry
+with a modified guess.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━ GREP RULE (v8.16.10 — CRITICAL) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When using the grep tool, NEVER use complex glob syntax like src/**/*.{js,jsx}
+in the path_filter argument. Ripgrep does NOT expand brace patterns in the
+path_filter — it will silently return zero results. Use simple directory paths
+like src/ or omit the filter entirely. If your grep search returns no matches,
+your path_filter is too strict. Broaden it before giving up.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 DUPLICATE PREVENTION: Before adding a new variable, hook, or import statement, you MUST verify in the file content you just read that it does not already exist. Search for the identifier name explicitly. Re-declaring an existing hook (e.g., const { vertical } = useParams(), useState, useEffect) or variable causes a Runtime Crash (Vite: "Identifier already declared"). If it already exists, skip that injection and continue to the next step.
 

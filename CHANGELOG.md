@@ -2,6 +2,14 @@
 
 ---
 
+## [v8.16.10] - The Grep Polish
+
+**Objetivo:** Corregir la ceguera del @coder cuando usa la herramienta `grep` con filtros glob complejos (`src/**/*.{js,jsx}`). Ripgrep no expande llaves en el argumento `path_filter` — retorna cero resultados silenciosamente, haciendo que el agente abandone búsquedas legítimas antes de tiempo.
+
+- **GREP RULE (`src/agents.ts` — @coder):** Nueva directiva insertada después de VERBATIM MATCHING RULE. Prohíbe el uso de sintaxis glob con llaves (`{js,jsx}`) en `path_filter` y ordena usar rutas de directorio simples (`src/`) o ningún filtro. Si `grep` retorna cero resultados, el agente debe ampliar el filtro antes de declarar que algo no existe.
+
+---
+
 ## [v8.16.9] - The Read-First Protocol Patch
 
 **Objetivo:** Eliminar el desperdicio de tokens causado por el @coder intentando adivinar `search_snippet` de memoria. La regla hace que el LLM lea el archivo primero y copie el texto objetivo de forma verbatim antes de cada edición — en lugar de reconstruirlo de su memoria de entrenamiento con errores sutiles de espaciado o puntuación.
