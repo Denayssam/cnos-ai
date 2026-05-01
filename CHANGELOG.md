@@ -2,6 +2,34 @@
 
 ---
 
+## [v8.16.17] - The Merge Enforcer
+
+**Objetivo:** Cerrar el último escape del @manager descubierto en dogfooding — el orquestador a veces emitía el `ORCHESTRATOR'S REPORT` directamente sin haber llamado `exit_worktree`, dejando los archivos atrapados en el sandbox sin merge a `main`. El system prompt v8.16.16 ya prohibía esto, pero el LLM podía ignorar la directiva. Esta versión añade un hard-block determinista a nivel de motor.
+
+- **Merge Enforcer Hard Block (`src/agentEngine.ts`):** Nuevo guard insertado inmediatamente después del Anti-Gaslighting v8.16.14, en el mismo punto del loop principal donde se evalúa el texto de la respuesta. Aplica a **CUALQUIER agente** (no solo `@coder`): si `textContent` matchea `/ORCHESTRATOR['']S\s+REPORT/i` Y `activeWorktreePath` no es null (la sesión sigue dentro del worktree), la respuesta es interceptada antes del streaming, NO llega al chat, NO se persiste como turno válido en `messages`, y se inyecta el directive corrector: _"[SYSTEM ENGINE BLOCK] You cannot emit the Orchestrator's Report while a worktree is still active. You MUST call the 'exit_worktree' tool with action='merge' to integrate your changes to the main branch first."_ El loop hace `continue` forzando otra iteración real.
+- **Resultado:** El @manager ya no puede declarar la tarea completa hasta que el worktree esté mergeado. El bloqueo es físico — el LLM no tiene forma de evadirlo, solo puede llamar `exit_worktree(merge)` y entonces, una iteración después y ya en `main`, emitir el reporte legítimo.
+
+---
+
+## [v8.16.16] - The UX & Silence Patch
+
+**Objetivo:** El sistema base era estable pero la UX estaba arruinada por verbosidad — los agentes narraban cada paso ("ahora voy a leer X", "voy a refactorizar Y") y el @manager emitía múltiples `ORCHESTRATOR'S REPORT` parciales en lugar de uno solo al final. Esta versión normaliza el protocolo de comunicación: **un solo reporte final** y **cero narración** entre tool calls.
+
+- **ORCHESTRATOR REPORT RULE (`src/agents.ts` — @manager):** Nuevo bloque `NON-NEGOTIABLE` insertado antes del PARALLEL SWARM PROTOCOL. Establece la regla de reporte único: el `ORCHESTRATOR'S REPORT` se emite **EXACTAMENTE UNA VEZ por tarea**, como último mensaje, **únicamente después** de haber mergeado el worktree (`exit_worktree`) y verificado el build final en `main`. Prohíbe explícitamente reportes parciales o preliminares mientras el worktree sigue activo. Si los sub-agentes (@coder, @designer) devuelven sus propios resúmenes intermedios, el @manager los **absorbe silenciosamente** — el usuario solo ve UN reporte por tarea, escrito por el orquestador, al final.
+- **COMMUNICATION PROTOCOL — ZERO-YAPPING (`src/agents.ts` — `SEPARATION_PROTOCOL`):** Nuevo bloque `NON-NEGOTIABLE` inyectado al inicio del `SEPARATION_PROTOCOL`, lo que lo hace **global a todos los agentes** vía `buildAgentSystemPrompt`. Lista patrones prohibidos explícitos: `"Now I will…"`, `"Let me check…"`, `"I'm going to…"`, `"Here's what I changed…"` (fuera del reporte final), recapitulaciones paso a paso entre tool calls. Lista patrones permitidos: tool calls, `ask_user_approval`, el reporte final único, bloques `<thinking>...</thinking>`. Cap de 12 palabras para cualquier status entre tools — todo lo más largo es violación.
+- **Resultado:** El chat queda limpio. Los agentes ejecutan sus tools sin narrar, el usuario solo ve evidencia visible (tool calls, ediciones, builds) y al final un único reporte estructurado del @manager. Cero "yapping", cero reportes parciales.
+
+---
+
+## [v8.16.15] - The Git Genesis Patch
+
+**Objetivo:** En pruebas de dogfooding sobre lienzos en blanco (carpetas sin Git inicializado), el `enter_worktree` fallaba en el primer paso con _"This workspace is not a git repository. git worktree requires git init"_, abortando la sesión antes de empezar. Esta versión hace que el motor auto-inicialice el entorno sin fricción para el usuario.
+
+- **Genesis Patch (`src/tools/EnterWorktreeTool/index.ts`):** Reemplazo del guard de validación por una secuencia de tres fases ejecutada **antes** de cualquier `git worktree add`. **Fase 1 (Detección):** ejecuta silenciosamente `git rev-parse --is-inside-work-tree`. Si falla → ejecuta `git init` automáticamente. **Fase 2 (Ancla Obligatoria):** los worktrees no pueden crearse desde un repo sin historial — verifica con `git rev-list -n 1 --all` si hay commits. Si no los hay → ejecuta `git commit --allow-empty -m "chore: initial genesis commit"` para crear el HEAD necesario. **Fase 3 (Salvaguarda):** si `user.email` o `user.name` no están configurados localmente, los fija a `fluxo@local` / `Fluxo AI` para que el commit-ancla no reviente en máquinas vírgenes sin identidad de committer global. Cada fase tiene su propio try/catch con error específico — el LLM recibe diagnóstico exacto si algo falla.
+- **Resultado:** El motor ahora puede crear un worktree desde cualquier carpeta — repo existente, repo sin commits, o carpeta vacía sin Git. La primera invocación de `enter_worktree` en un lienzo en blanco dispara: `git init` → genesis commit → worktree creado, todo en un solo paso invisible para el usuario.
+
+---
+
 ## [v8.16.14] - The Anti-Gaslighting Patch
 
 **Objetivo:** El @coder estaba sufriendo "alucinaciones de escape" — cuando una tarea se ponía difícil (build roto, archivo corrupto, varios reintentos consecutivos), generaba un falso `ORCHESTRATOR'S REPORT` o mensajes de "Build successful — exit code 0" sin haber ejecutado `run_command` realmente, intentando terminar el turno prematuramente. El motor lo aceptaba como señal de finalización y el bucle de 25 iteraciones se consumía sin llegar a fixear el problema. Esta versión combina una directiva en el system prompt con un hard-block físico en el engine.

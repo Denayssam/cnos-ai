@@ -492,6 +492,25 @@ export async function* runAgentLoop(
     }
     // ──────────────────────────────────────────────────────────────────────────
 
+    // ── Merge Enforcer Hard Block (v8.16.17) ──────────────────────────────────
+    // No agent — including @manager — may emit the Orchestrator's Report while
+    // a worktree is still active. The report belongs on main, after merge. If
+    // the LLM tries to ship the report from inside the sandbox, intercept it,
+    // do NOT stream it to chat, drop it from the valid history, and force
+    // another iteration demanding exit_worktree(merge) first.
+    if (textContent && /ORCHESTRATOR['']S\s+REPORT/i.test(textContent) && activeWorktreePath) {
+      debugLog(workspacePath, `[Merge Enforcer] @${agentId} attempted to emit Orchestrator's Report while worktree active (${activeWorktreePath}) — intercepting`);
+      yield { type: 'thinking', text: '🛑 Merge Enforcer: el worktree sigue activo, exige exit_worktree(merge)…' };
+      messages.push({
+        role: 'user',
+        content:
+          "[SYSTEM ENGINE BLOCK] You cannot emit the Orchestrator's Report while a worktree is still active. " +
+          "You MUST call the 'exit_worktree' tool with action='merge' to integrate your changes to the main branch first.",
+      });
+      continue;
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+
     // Route text based on whether tool calls follow in this same response (v8.7.1).
     // Text alongside tool calls = intermediate CoT / planning monologue → route to
     // thinking tick (status bar only, never reaches the chat bubble).
