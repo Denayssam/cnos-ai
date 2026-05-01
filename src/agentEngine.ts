@@ -235,14 +235,25 @@ export async function* runAgentLoop(
 ): AsyncGenerator<AgentEvent> {
 
   // 1. Intent Detection (Routing)
-  yield { type: 'thinking', text: 'Detecting intent…' };
+  // ── v8.16.6: Skip routing for sub-agent invocations ──────────────────────
+  // The @planner is invoked from enter_plan_mode with a FIXED role. Re-routing
+  // it via detectIntent reads the mission text (e.g. "Adapt MealPlannerV2.jsx")
+  // and incorrectly hands the session to @coder, so the planner's tools array
+  // (write_file, get_repo_map…) and its mandate to produce IMPLEMENTATION_PLAN.md
+  // are never loaded. Sub-agents bypass the router entirely.
+  const SUB_AGENTS_NO_ROUTING = new Set(['planner']);
   let agentId = initialAgentId;
 
-  try {
-    const detectedId = await detectIntent(userMessage, config, abortSignal);
-    if (detectedId && AGENTS[detectedId]) { agentId = detectedId; }
-  } catch (err) {
-    console.error('[Engine] Intent detection failed, falling back to keywords:', err);
+  if (!SUB_AGENTS_NO_ROUTING.has(initialAgentId)) {
+    yield { type: 'thinking', text: 'Detecting intent…' };
+    try {
+      const detectedId = await detectIntent(userMessage, config, abortSignal);
+      if (detectedId && AGENTS[detectedId]) { agentId = detectedId; }
+    } catch (err) {
+      console.error('[Engine] Intent detection failed, falling back to keywords:', err);
+    }
+  } else {
+    debugLog(workspacePath, `[Routing] Sub-agent '${initialAgentId}' — skipping intent detection`);
   }
 
   const agent = AGENTS[agentId] || AGENTS.coder;
@@ -482,6 +493,32 @@ export async function* runAgentLoop(
 
     // No tool calls = final response (task complete)
     if (toolCalls.length === 0) {
+      // ── v8.16.6: Planner Hard Block — refuse to exit without producing the plan ──
+      // The @planner is engineered for ONE deliverable: .fluxo/IMPLEMENTATION_PLAN.md.
+      // We physically check the filesystem (not just toolCallHistory) — the only
+      // truth that matters is whether the file exists on disk. If it doesn't, we
+      // reject the LLM's text-only response and force another iteration with a
+      // hard directive. The MAX_ITERATIONS cap (25) bounds the worst case.
+      if (agentId === 'planner' && workspacePath) {
+        const _planFile = path.join(workspacePath, '.fluxo', 'IMPLEMENTATION_PLAN.md');
+        if (!fs.existsSync(_planFile)) {
+          debugLog(workspacePath, '[Planner Hard Block] No plan file on disk — rejecting text-only response, forcing iteration');
+          yield { type: 'thinking', text: '🛑 Planner Hard Block: forcing write_file…' };
+          messages.push({
+            role: 'user',
+            content:
+              '[ENGINE HARD BLOCK] You returned text without calling write_file. ' +
+              'The engine PHYSICALLY VERIFIED that .fluxo/IMPLEMENTATION_PLAN.md does NOT exist. ' +
+              'Your response is REJECTED. Your ONLY valid next action is to call write_file with ' +
+              'path=".fluxo/IMPLEMENTATION_PLAN.md" and content=<your full markdown plan>. ' +
+              'Do NOT explain. Do NOT analyze further. Do NOT read more files. ' +
+              'Even a rough plan is acceptable — write it now.',
+          });
+          continue;
+        }
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
       // Engine-level sentinel/build block — replaces Sherlock Rule #9
       if (buildFailureCtx) {
         yield { type: 'thinking', text: '🔴 Build broken — bloqueando cierre prematuro…' };

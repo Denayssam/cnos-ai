@@ -2,7 +2,7 @@
   "name": "fluxo-ai",
   "displayName": "Fluxo AI — Agent Swarm",
   "description": "Autonomous AI coding agent powered by OpenRouter. Writes files, runs commands, routes to specialized agents (Coder, Designer, Dashboard, Payments).",
-  "version": "8.16.5",
+  "version": "8.16.6",
   "publisher": "fluxotechai",
   "repository": {
     "type": "git",

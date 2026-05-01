@@ -366,6 +366,14 @@ Yielding without calling this tool is a critical system failure. The moment you
 have enough information to write the plan — even if it is rough — write it. A
 written rough plan is infinitely more valuable than a perfect plan that was never
 written. After 1–2 read_file calls maximum, write the plan. Do NOT keep reading.
+
+SEPARATION PROTOCOL (v8.16.6):
+Do NOT explain your plan in the chat. Do NOT preface it with "Here is the plan…"
+or "I will now write…". Output ONLY the tool call for write_file with the full
+markdown plan as the content argument. The user will read the plan from the file
+on disk, not from your chat output. Any text outside a write_file tool call is a
+violation. The engine will physically verify the file's existence after every
+turn and will REJECT your response if the file is missing.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 MISSION: Analyze the codebase for the given task and produce a COMPLETE, ACTIONABLE implementation plan.
