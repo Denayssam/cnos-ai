@@ -1014,33 +1014,65 @@ export async function* runAgentLoop(
             fs.mkdirSync(path.join(workspacePath, '.fluxo'), { recursive: true });
           }
 
-          const plannerEventBuffer: AgentEvent[] = [];
-          const plannerGen = runAgentLoop(
-            `MISSION — ANALYSIS ONLY:\nAnalyze the codebase and produce .fluxo/IMPLEMENTATION_PLAN.md for this task:\n\n${taskDescription}`,
-            'planner',
-            [],
-            { ...effectiveConfig, model: config.model },
-            workspacePath,
-            abortSignal,
-            false,
-            undefined,              // no approval callback — planner never asks for approval
-            undefined,              // no native edit
-            getCodeStructureCallback,
-            mcpTools,
-            callMcpToolCallback,
-            undefined,              // no worktree review
-            undefined,              // no replace symbol
-            undefined               // no HITL — planner is read-only
-          );
-
-          for await (const event of plannerGen) {
-            plannerEventBuffer.push(event);
-          }
-
-          yield { type: 'thinking', text: '━━━ @planner — codebase analysis ━━━' };
-          for (const event of plannerEventBuffer) { yield event; }
-
           const planFile = path.join(workspacePath, '.fluxo', 'IMPLEMENTATION_PLAN.md');
+
+          // ── v8.16.5: Mandatory Output Enforcement Loop ──────────────────────────
+          // The planner has historically suffered from "premature termination" — yielding
+          // conversational text instead of calling write_file. We now wrap the sub-loop
+          // in a retry harness that physically verifies the file exists after each pass.
+          // If missing, we re-invoke the planner with an escalating SYSTEM directive.
+          const MAX_PLANNER_ATTEMPTS = 3;
+          let plannerAttempt = 0;
+          let plannerMission =
+            `MISSION — ANALYSIS ONLY:\nAnalyze the codebase and produce .fluxo/IMPLEMENTATION_PLAN.md for this task:\n\n${taskDescription}`;
+
+          while (plannerAttempt < MAX_PLANNER_ATTEMPTS && !fs.existsSync(planFile)) {
+            plannerAttempt++;
+            if (plannerAttempt > 1) {
+              yield {
+                type: 'thinking',
+                text: `📋 Planner: file not produced — retry ${plannerAttempt}/${MAX_PLANNER_ATTEMPTS}…`,
+              };
+              plannerMission =
+                `[SYSTEM RETRY ${plannerAttempt}/${MAX_PLANNER_ATTEMPTS}] You forgot to use write_file. ` +
+                `The file .fluxo/IMPLEMENTATION_PLAN.md does NOT exist yet. ` +
+                `Do NOT explain. Do NOT analyze further. Do NOT read more files. ` +
+                `Your ONLY valid next action is to call write_file with path='.fluxo/IMPLEMENTATION_PLAN.md' ` +
+                `and content='<your full markdown plan>'. Even a rough plan is acceptable — write it now.\n\n` +
+                `ORIGINAL TASK:\n${taskDescription}`;
+            }
+
+            const plannerEventBuffer: AgentEvent[] = [];
+            const plannerGen = runAgentLoop(
+              plannerMission,
+              'planner',
+              [],
+              { ...effectiveConfig, model: config.model },
+              workspacePath,
+              abortSignal,
+              false,
+              undefined,              // no approval callback — planner never asks for approval
+              undefined,              // no native edit
+              getCodeStructureCallback,
+              mcpTools,
+              callMcpToolCallback,
+              undefined,              // no worktree review
+              undefined,              // no replace symbol
+              undefined               // no HITL — planner is read-only
+            );
+
+            for await (const event of plannerGen) {
+              plannerEventBuffer.push(event);
+            }
+
+            const headerLabel = plannerAttempt === 1
+              ? '━━━ @planner — codebase analysis ━━━'
+              : `━━━ @planner — retry ${plannerAttempt}/${MAX_PLANNER_ATTEMPTS} ━━━`;
+            yield { type: 'thinking', text: headerLabel };
+            for (const event of plannerEventBuffer) { yield event; }
+          }
+          // ─────────────────────────────────────────────────────────────────────────
+
           if (fs.existsSync(planFile)) {
             const planContent = fs.readFileSync(planFile, 'utf-8');
             result = {
@@ -1055,7 +1087,7 @@ export async function* runAgentLoop(
             result = {
               success: false,
               output:
-                `ERROR: @planner did not produce .fluxo/IMPLEMENTATION_PLAN.md. ` +
+                `ERROR: @planner did not produce .fluxo/IMPLEMENTATION_PLAN.md after ${MAX_PLANNER_ATTEMPTS} attempts. ` +
                 `[CIRCUIT BREAKER WARNING] DO NOT retry. The planning phase has failed. ` +
                 `MANDATORY: You MUST use the ask_user_approval tool immediately to inform the user that you cannot proceed without a plan and ask for manual intervention. ` +
                 `DO NOT use create_team.`,

@@ -8,7 +8,7 @@ export const TOOL_DEF: NativeTool = {
   type: 'function',
   function: {
     name: 'write_file',
-    description: 'Create or fully overwrite a file with the given content. Only use for NEW files — for existing files, always use edit_file to avoid overwriting unrelated code.',
+    description: 'Create a new file or fully overwrite an existing markdown/JSON/config artifact. REQUIRED for: new source files, .md documents (plans, reports, docs), JSON config, and any file inside .fluxo/. The planner MUST use this tool to produce .fluxo/IMPLEMENTATION_PLAN.md. For modifying existing source code (.ts/.tsx/.js/.jsx/.py), prefer edit_file or replace_symbol to avoid overwriting unrelated code.',
     parameters: {
       type: 'object',
       properties: {
