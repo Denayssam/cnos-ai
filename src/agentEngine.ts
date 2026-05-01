@@ -472,6 +472,26 @@ export async function* runAgentLoop(
 
     debugLog(workspacePath, `Response: ${toolCalls.length} tool calls, ${textContent.length} chars text`);
 
+    // ── Anti-Gaslighting Hard Block (v8.16.14) ────────────────────────────────
+    // The @coder is NOT the @manager — only the orchestrator emits the
+    // Orchestrator's Report. When @coder hits a hard task it can hallucinate the
+    // report phrase to escape the loop early. Intercept it BEFORE streaming so
+    // the fake report never reaches the user's chat, drop the response from the
+    // valid history, and inject a corrective directive so the next iteration
+    // resumes real work.
+    if (agentId === 'coder' && textContent && /ORCHESTRATOR['']S\s+REPORT/i.test(textContent)) {
+      debugLog(workspacePath, '[Anti-Gaslighting] @coder attempted to emit Orchestrator\'s Report — intercepting');
+      yield { type: 'thinking', text: '🛑 Anti-Gaslighting: @coder no puede emitir el reporte final…' };
+      messages.push({
+        role: 'user',
+        content:
+          "[SYSTEM ENGINE BLOCK] You are the Coder. Do not generate the Orchestrator's Report. " +
+          "Use your tools to fix the code or use 'ask_user_approval' if you are completely stuck.",
+      });
+      continue;
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+
     // Route text based on whether tool calls follow in this same response (v8.7.1).
     // Text alongside tool calls = intermediate CoT / planning monologue → route to
     // thinking tick (status bar only, never reaches the chat bubble).

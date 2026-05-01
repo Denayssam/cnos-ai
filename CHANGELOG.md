@@ -2,6 +2,16 @@
 
 ---
 
+## [v8.16.14] - The Anti-Gaslighting Patch
+
+**Objetivo:** El @coder estaba sufriendo "alucinaciones de escape" — cuando una tarea se ponía difícil (build roto, archivo corrupto, varios reintentos consecutivos), generaba un falso `ORCHESTRATOR'S REPORT` o mensajes de "Build successful — exit code 0" sin haber ejecutado `run_command` realmente, intentando terminar el turno prematuramente. El motor lo aceptaba como señal de finalización y el bucle de 25 iteraciones se consumía sin llegar a fixear el problema. Esta versión combina una directiva en el system prompt con un hard-block físico en el engine.
+
+- **ANTI-GASLIGHTING RULE (`src/agents.ts` — @coder):** Nuevo bloque `NON-NEGOTIABLE` insertado justo antes del BUILD REPAIR PROTOCOL. Establece la frontera de roles — _"You are the CODER, not the MANAGER"_ — y prohíbe explícitamente: (a) emitir el "ORCHESTRATOR'S REPORT", (b) inventar mensajes de éxito de build sin haber llamado `run_command`. Cierra el bloque con la advertencia técnica: el engine bloquea físicamente cualquier respuesta de @coder con esa frase.
+- **Engine Hard Block (`src/agentEngine.ts`):** Nuevo guard inyectado inmediatamente después del parseo de `apiResponse.content` y ANTES del streaming. Verifica si `agentId === 'coder'` y `textContent` contiene la regex `/ORCHESTRATOR['']S\s+REPORT/i`. Si match: la respuesta es interceptada (NUNCA llega al chat bubble del usuario), no se añade al historial como válida, y se inyecta un mensaje de sistema: _"[SYSTEM ENGINE BLOCK] You are the Coder. Do not generate the Orchestrator's Report. Use your tools to fix the code or use 'ask_user_approval' if you are completely stuck."_ El loop continúa con `continue` forzando otra iteración real.
+- **Resultado:** El @coder ya no puede escapar de tareas difíciles inventando un reporte. Cuando lo intenta, el engine lo bloquea silenciosamente y le da dos opciones legítimas: seguir trabajando con tools o llamar `ask_user_approval` si está bloqueado. El @manager sigue siendo el único agente autorizado a emitir el Orchestrator's Report.
+
+---
+
 ## [v8.16.13] - The Micro-Rollback Protocol
 
 **Objetivo:** Cierre de seguridad final contra la corrupción del AST. Hasta ahora el @coder podía dejar un archivo en estado catastrófico (parser roto, llaves cruzadas, JSX huérfano) y luego entrar en bucles de pánico intentando "remendarlo" línea a línea. Esta versión le da una salida quirúrgica: cuando un edit deja un archivo irrecuperable, puede ejecutar `git restore <archivo>` para revertir solo ese archivo a su último estado committeado, sin tocar el resto del repositorio. Se complementa con la directiva en el system prompt que hace de esta acción la primera reacción ante un `[PARSE_ERROR]`, no la última.
