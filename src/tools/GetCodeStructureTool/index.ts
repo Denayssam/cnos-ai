@@ -1,4 +1,4 @@
-import { NativeTool, ToolResult } from '../shared';
+import { NativeTool, ToolResult, rejectIfAbsolutePath } from '../shared';
 
 export const TOOL_DEF: NativeTool = {
   type: 'function',
@@ -12,7 +12,11 @@ export const TOOL_DEF: NativeTool = {
       properties: {
         absolute_path: {
           type: 'string',
-          description: 'Absolute path to the file to analyze (e.g., /workspace/src/App.tsx).',
+          description:
+            'Path to the file relative to the workspace root (e.g., src/components/App.tsx). ' +
+            'v8.18.1: despite the legacy parameter name, drive-letter and root-slash absolute ' +
+            'paths are blocked. Pass the repository-relative path — the engine resolves it ' +
+            'against the active workspace.',
         },
       },
       required: ['absolute_path'],
@@ -21,7 +25,11 @@ export const TOOL_DEF: NativeTool = {
 };
 
 // Actual execution is handled by the getCodeStructureCallback in extension.ts (requires VS Code API).
-export function execute(_args: Record<string, any>, _workspacePath: string): ToolResult {
+// v8.18.1: defensive absolute-path shield mirrors the engine's intercept guard so the rejection
+// is uniform whether the tool runs through the executeTool fallback or the engine's special branch.
+export function execute(args: Record<string, any>, _workspacePath: string): ToolResult {
+  const absShield = rejectIfAbsolutePath(args.absolute_path);
+  if (absShield) { return absShield; }
   return {
     success: false,
     output: '[SYSTEM]: get_code_structure requires the VS Code extension host. This tool cannot run outside of VS Code.',

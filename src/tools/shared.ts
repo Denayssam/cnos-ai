@@ -24,6 +24,33 @@ export interface NativeTool {
 
 // ─── Shared Helpers ───────────────────────────────────────────────────────────
 
+// ─── Absolute Path Shield (v8.18.1) ─────────────────────────────────────────
+// Phase 4 dogfooding revealed the LLM hallucinating Windows-absolute paths
+// like C:/Users/erick/source/repos/... when reading or analyzing files. The
+// guard rejects ANY path that starts with a drive letter (Windows: C:/ or
+// C:\) or with a leading slash (POSIX: /home/...) BEFORE the tool reaches
+// any filesystem call. Returns null when the path is acceptable, or a
+// ToolResult error when it must be rejected. Tools call this at the very
+// top of execute() so the rejection is uniform and the error message is
+// the verbatim user-spec string.
+const ABSOLUTE_PATH_REGEX = /^(?:[A-Za-z]:[\\/]|\/)/;
+
+export function rejectIfAbsolutePath(rawPath: unknown): ToolResult | null {
+  if (typeof rawPath !== 'string') { return null; }
+  const trimmed = rawPath.trim();
+  if (!trimmed) { return null; }
+  if (ABSOLUTE_PATH_REGEX.test(trimmed)) {
+    return {
+      success: false,
+      output:
+        '[SYSTEM SHIELD] Absolute paths are strictly forbidden. ' +
+        "You MUST use relative paths from the repository root (e.g., 'src/components/App.jsx').",
+    };
+  }
+  return null;
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 export function safePath(workspacePath: string, p: string): string {
   if (!p) { throw new Error('Path is required'); }
 

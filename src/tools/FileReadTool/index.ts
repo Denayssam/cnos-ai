@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { NativeTool, ToolResult, safePath } from '../shared';
+import { NativeTool, ToolResult, safePath, rejectIfAbsolutePath } from '../shared';
 
 export const TOOL_DEF: NativeTool = {
   type: 'function',
@@ -17,6 +17,11 @@ export const TOOL_DEF: NativeTool = {
 };
 
 export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  // v8.18.1 — block hallucinated absolute paths (e.g. C:/Users/erick/source/repos/...)
+  // before they hit safePath / fs. The agent must use repo-relative paths.
+  const absShield = rejectIfAbsolutePath(args.path);
+  if (absShield) { return absShield; }
+
   const fp = safePath(workspacePath, args.path);
   if (!fs.existsSync(fp)) {
     const parentDir = (args.path as string || '.').split('/').slice(0, -1).join('/') || '.';

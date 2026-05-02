@@ -36,6 +36,24 @@ action='discard'→ Forcefully deletes the worktree branch without touching main
 
 const STATE_RELATIVE = path.join('.fluxo', 'active_worktree.json');
 
+// ─── Canonical Repo Root Resolver (v8.18.1) ─────────────────────────────────
+// In Phase 4 dogfooding, dagController.appendTask returned null because the
+// resolved root was the worktree directory (which has no .fluxo/dag_state.json).
+// `git rev-parse --show-toplevel` returns the canonical absolute path of the
+// repository root from any subdirectory, including worktrees. We use it to
+// guarantee that DAG operations (.fluxo/dag_state.json) always target the
+// real project root, never a sandboxed worktree.
+function resolveRepoRoot(cwdPath: string): string {
+  try {
+    const out = cp.execSync('git rev-parse --show-toplevel', { cwd: cwdPath, stdio: ['pipe', 'pipe', 'ignore'] })
+      .toString().trim();
+    return out || cwdPath;
+  } catch {
+    return cwdPath;
+  }
+}
+// ───────────────────────────────────────────────────────────────────────────
+
 export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
   const action = String(args.action || '').toLowerCase();
   if (action !== 'merge' && action !== 'discard') {
@@ -166,7 +184,13 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
     // dispatcher (Phase 2) will pick it up on the next tick once its parent
     // task has reached a terminal status (the dispatcher's lifecycle hook
     // marks the failed task FAILED right after this tool returns).
-    const failedTask = getCurrentInProgressTask(workspacePath);
+    // v8.18.1 — resolve the canonical repo root for DAG operations. In Phase 4
+    // dogfooding, appendTask returned null because the path passed to it
+    // resolved to a directory without .fluxo/dag_state.json (the worktree
+    // sandbox or a relocated cwd). git rev-parse --show-toplevel always
+    // returns the real repo root from anywhere inside the worktree tree.
+    const repoRoot   = resolveRepoRoot(workspacePath);
+    const failedTask = getCurrentInProgressTask(repoRoot);
     const fileList   = conflictFiles.length > 0 ? conflictFiles.join(', ') : 'unknown files';
     // depends_on is intentionally EMPTY so the dispatcher picks the conflict
     // task up on the next tick. Listing the failed parent here would block
@@ -174,7 +198,7 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
     // COMPLETED, and the parent will be marked FAILED by the dispatcher's
     // lifecycle hook moments after this tool returns. The causal/audit link
     // to the parent is preserved verbatim in the description below.
-    const dagInjected = appendTask(workspacePath, {
+    const dagInjected = appendTask(repoRoot, {
       idPrefix: 'conflict',
       agent_type: '@coder',
       depends_on: [],

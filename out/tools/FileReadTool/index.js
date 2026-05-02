@@ -52,6 +52,12 @@ exports.TOOL_DEF = {
     },
 };
 function execute(args, workspacePath) {
+    // v8.18.1 — block hallucinated absolute paths (e.g. C:/Users/erick/source/repos/...)
+    // before they hit safePath / fs. The agent must use repo-relative paths.
+    const absShield = (0, shared_1.rejectIfAbsolutePath)(args.path);
+    if (absShield) {
+        return absShield;
+    }
     const fp = (0, shared_1.safePath)(workspacePath, args.path);
     if (!fs.existsSync(fp)) {
         const parentDir = (args.path || '.').split('/').slice(0, -1).join('/') || '.';

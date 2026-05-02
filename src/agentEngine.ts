@@ -1213,8 +1213,22 @@ export async function* runAgentLoop(
           }
           // ──────────────────────────────────────────────────────────────────
         } else if (toolName === 'get_code_structure' && getCodeStructureCallback) {
-          yield { type: 'thinking', text: '🔭 Extracting code structure via LSP…' };
-          result = await getCodeStructureCallback(String(args.absolute_path ?? ''));
+          // v8.18.1 — Absolute Path Shield. The engine intercept bypasses the
+          // tool's execute() so the shield must mirror the rejection here.
+          // Hallucinated drive-letter paths (C:/Users/erick/source/repos/...)
+          // are rejected before they reach the LSP callback.
+          const _absPath = String(args.absolute_path ?? '').trim();
+          if (/^(?:[A-Za-z]:[\\/]|\/)/.test(_absPath)) {
+            result = {
+              success: false,
+              output:
+                '[SYSTEM SHIELD] Absolute paths are strictly forbidden. ' +
+                "You MUST use relative paths from the repository root (e.g., 'src/components/App.jsx').",
+            };
+          } else {
+            yield { type: 'thinking', text: '🔭 Extracting code structure via LSP…' };
+            result = await getCodeStructureCallback(_absPath);
+          }
         } else if (toolName.startsWith('mcp_') && callMcpToolCallback) {
           yield { type: 'thinking', text: `🔌 MCP: Calling external tool ${toolName}…` };
           result = await callMcpToolCallback(toolName, args);
