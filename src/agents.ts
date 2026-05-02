@@ -976,6 +976,50 @@ CRITICAL: A conversational paragraph or a plain bullet list instead of the Orche
 ────────────────────────────────────────────────────────────────────────────────
 `;
 
+// ─── RAW GIT WORKFLOW BLOCK (v8.17.1 — NON-NEGOTIABLE) ────────────────────────
+// Phase 1 DAG dogfooding showed @coder and @designer issuing raw `git checkout`
+// / `git merge` / `git push` via run_command, fighting the Worktree Isolation
+// engine and corrupting the merge state. The only sanctioned merge path is the
+// exit_worktree tool — it owns the diff review, the user approval, and the
+// state cleanup. This block is injected into every agent that has run_command
+// (it is meaningless for read-only agents like @planner).
+const RAW_GIT_WORKFLOW_BLOCK = `
+─── RAW GIT WORKFLOW (v8.17.1 — NON-NEGOTIABLE) ───────────────────────────────
+
+You are STRICTLY FORBIDDEN from using the run_command tool to execute
+'git checkout master', 'git checkout main', 'git merge', or 'git push'.
+
+To merge your changes from an isolated worktree back to the main branch, you
+MUST ONLY use the exit_worktree tool with action='merge'. exit_worktree owns:
+  • The diff preview shown to the human in VS Code's native diff editor.
+  • The user approval gate (merge vs. discard).
+  • The atomic state cleanup of .fluxo/active_worktree.json.
+
+Any raw git invocation that targets branches will be flagged as a workflow
+violation, will desynchronize the engine's worktree state tracker, and will
+trigger a failed merge that cannot be safely recovered. There is no exception:
+even if you "just want to peek" at another branch, do not use git checkout —
+ask the user via ask_user_approval instead.
+
+ALLOWED git commands via run_command (read-only / housekeeping):
+  ✅ git status, git log, git diff, git show, git blame, git rev-parse
+  ✅ git stash list, git tag, git describe, git branch (without -d/-D)
+  ✅ git fetch, git pull (only when you are NOT inside an active worktree)
+
+PROHIBITED git commands via run_command (workflow-altering):
+  ❌ git checkout <branch>, git switch <branch>
+  ❌ git merge, git rebase, git cherry-pick, git revert
+  ❌ git push, git push --force, git push -u
+  ❌ git reset --hard, git branch -d, git branch -D, git worktree (any action)
+
+For worktree lifecycle, the ONLY sanctioned tools are:
+  enter_worktree(reason="…")            → spawn a sandbox branch
+  exit_worktree(action="merge")         → diff review + user approval + merge to main
+  exit_worktree(action="discard")       → drop the sandbox branch entirely
+
+────────────────────────────────────────────────────────────────────────────────
+`;
+
 // ─── Agent Router ──────────────────────────────────────────────────────────────
 
 /** Detect which agent should handle a message based on keywords or @mentions */
@@ -1015,7 +1059,11 @@ export function buildAgentSystemPrompt(agentId: string): string {
   // Inject OS_DIRECTIVE only for agents that have access to run_command.
   // This avoids polluting read-only agents (@planner) with OS-specific command advice.
   const osBlock = agent.tools.includes('run_command') ? OS_DIRECTIVE : '';
-  return `${MANIFESTO_REF}${agent.systemPrompt}${osBlock}\n${SEPARATION_PROTOCOL}`;
+  // v8.17.1: only inject the raw git block for agents that actually have run_command —
+  // it is the only tool the rule constrains, and read-only agents like @planner do
+  // not need the noise in their system prompt.
+  const gitBlock = agent.tools.includes('run_command') ? RAW_GIT_WORKFLOW_BLOCK : '';
+  return `${MANIFESTO_REF}${agent.systemPrompt}${osBlock}\n${SEPARATION_PROTOCOL}${gitBlock}`;
 }
 
 /** Get all agents as a list for UI display */

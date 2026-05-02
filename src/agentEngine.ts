@@ -894,6 +894,35 @@ export async function* runAgentLoop(
       // to change strategy instead of retrying in an infinite death spiral.
       const _cbFails = toolFailureTracker.get(toolName) ?? 0;
       if (_cbFails >= 3) {
+        // ── v8.17.1: read_file Soft Block — degrade, never permanently lock out ──
+        // Phase 1 DAG dogfooding showed that a permanent read_file lockout left
+        // the agent blind for the remainder of the session — it could no longer
+        // inspect any file even after the original cause (a wrong path) was
+        // gone. Soft-block strategy: pause one turn, force a list_dir on the
+        // parent directory of the failed path so the agent can see what is
+        // actually there, then RESET the counter so future read_file calls work.
+        if (toolName === 'read_file') {
+          const _failedPath = String(args.path ?? args.file_path ?? '').replace(/\\/g, '/');
+          const _parentDir  = _failedPath.includes('/')
+            ? _failedPath.substring(0, _failedPath.lastIndexOf('/')) || '.'
+            : '.';
+          const softMsg =
+            `[SOFT BLOCK v8.17.1] 'read_file' has failed ${_cbFails} times consecutively — ` +
+            `your path resolution is wrong. MANDATORY NEXT ACTION: call list_dir(path="${_parentDir}") ` +
+            `to inspect the real contents of that directory, then retry read_file with the correct ` +
+            `filename. The failure counter has been RESET — you have a fresh budget once you see the ` +
+            `directory listing. Do NOT call read_file again until you have run list_dir.`;
+          toolFailureTracker.delete('read_file');
+          debugLog(workspacePath, `[Circuit Breaker — Soft] 'read_file' counter reset; forcing list_dir(${_parentDir})`);
+          const sbDisplayArgs = Object.entries(args)
+            .filter(([k]) => k !== 'content')
+            .map(([k, v]) => `${k}: ${String(v).slice(0, 80)}`)
+            .join(', ');
+          yield { type: 'toolCall', name: toolName, args, displayArgs: sbDisplayArgs };
+          yield { type: 'toolResult', name: toolName, success: false, output: softMsg };
+          messages.push({ role: 'tool', tool_call_id: tc.id, name: toolName, content: softMsg });
+          continue;
+        }
         // ── v8.16.2: YIELD_TO_HUMAN — IO core tools abort loop, not retry ────────
         const IO_CORE_TOOLS = ['glob', 'search_in_files', 'list_dir', 'get_code_structure'];
         if (IO_CORE_TOOLS.includes(toolName)) {
@@ -960,28 +989,37 @@ export async function* runAgentLoop(
       const _wtExcluded = toolName === 'enter_worktree' || toolName === 'exit_worktree' ||
                           toolName === 'skill' || toolName === 'enter_plan_mode';
 
-      // ── Plan Path Global Bypass (v8.16.20) ─────────────────────────────────
+      // ── Plan Path Global Bypass (v8.16.20 + v8.17.1) ───────────────────────
       // IMPLEMENTATION_PLAN.md is a session-global handoff file between @planner
       // and @manager/@coder. It MUST live at the repo root regardless of worktree
       // state — otherwise the planner writes it inside the sandbox, the manager
       // checks for it at the root and never finds it, and the planning loop
       // diverges into infinite retry. Detect any tool whose path argument ends
       // in IMPLEMENTATION_PLAN.md and force-route it to the main workspace.
+      //
+      // v8.17.1: extended to dag_state.json / task_dag_state.json. The DAG is a
+      // global orchestrator file — every agent writes its task status into the
+      // SAME .fluxo/dag_state.json. If the @coder writes its COMPLETED status
+      // inside a worktree sandbox, the @manager polling at the root never sees
+      // the update and the dispatcher stalls. Same fix, same global routing.
       const _planPathArg = String(
         args.path ?? args.file_path ?? args.absolute_path ?? ''
       ).replace(/\\/g, '/');
       const _isPlanFile = /(?:^|\/)\.fluxo\/IMPLEMENTATION_PLAN\.md$/i.test(_planPathArg) ||
                           _planPathArg.endsWith('IMPLEMENTATION_PLAN.md');
+      const _isDagStateFile = /(?:^|\/)(?:task_)?dag_state\.json$/i.test(_planPathArg);
+      const _isGlobalStateFile = _isPlanFile || _isDagStateFile;
       // ───────────────────────────────────────────────────────────────────────
 
-      const effectiveWorkspacePath = (activeWorktreePath && !_wtExcluded && !_isPlanFile)
+      const effectiveWorkspacePath = (activeWorktreePath && !_wtExcluded && !_isGlobalStateFile)
         ? activeWorktreePath
         : workspacePath;
       if (activeWorktreePath && effectiveWorkspacePath !== workspacePath) {
         debugLog(workspacePath, `[Worktree Redirect] ${toolName} → ${effectiveWorkspacePath}`);
       }
-      if (_isPlanFile && activeWorktreePath) {
-        debugLog(workspacePath, `[Plan Bypass v8.16.20] ${toolName}(${_planPathArg}) → main workspace (worktree active but plan is global)`);
+      if (_isGlobalStateFile && activeWorktreePath) {
+        const _bypassTag = _isDagStateFile ? 'DAG State Bypass v8.17.1' : 'Plan Bypass v8.16.20';
+        debugLog(workspacePath, `[${_bypassTag}] ${toolName}(${_planPathArg}) → main workspace (worktree active but file is global)`);
       }
       // ─────────────────────────────────────────────────────────────────────────
 
@@ -1434,16 +1472,29 @@ export async function* runAgentLoop(
         }
         // ─────────────────────────────────────────────────────────────────────────
 
-        // ── Worktree State Sync (v8.8.0) ────────────────────────────────────────
+        // ── Worktree State Sync (v8.8.0 + v8.17.1 reset) ───────────────────────
+        // v8.17.1: Entering or exiting a worktree changes the entire filesystem
+        // root the agent is reading against. Any read_file failures accumulated
+        // before the worktree boundary were attributable to the OLD path layout,
+        // not the new one — keeping that count would punish the agent for
+        // failures that no longer apply. Reset on every worktree boundary.
         if (toolName === 'enter_worktree') {
           try {
             const wts = JSON.parse(fs.readFileSync(wtStateFile, 'utf-8'));
             activeWorktreePath = wts.worktreePath || null;
             debugLog(workspacePath, `[Worktree] Activated: ${wts.branchName} → ${activeWorktreePath}`);
           } catch { /* state file not written — no worktree context */ }
+          if (toolFailureTracker.has('read_file')) {
+            toolFailureTracker.delete('read_file');
+            debugLog(workspacePath, '[Circuit Breaker — Reset v8.17.1] read_file counter cleared on enter_worktree');
+          }
         } else if (toolName === 'exit_worktree') {
           activeWorktreePath = null;
           debugLog(workspacePath, '[Worktree] Deactivated — path redirect cleared');
+          if (toolFailureTracker.has('read_file')) {
+            toolFailureTracker.delete('read_file');
+            debugLog(workspacePath, '[Circuit Breaker — Reset v8.17.1] read_file counter cleared on exit_worktree');
+          }
         }
         // ─────────────────────────────────────────────────────────────────────────
       }
