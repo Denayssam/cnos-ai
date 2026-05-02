@@ -7,7 +7,10 @@ export const TOOL_DEF: NativeTool = {
   function: {
     name: 'search_and_replace',
     description: `Replace a specific block of code in a file using contextual search — no line numbers required.
-PREFERRED EDITING TOOL: Use this instead of replace_lines or replace_block for all code edits.
+PREFERRED EDITING TOOL: Use this for small, surgical edits guided by the Verbatim Rule.
+
+⚠️ SCOPE LIMIT (v8.16.18): If you need to inject a massive new React component, DO NOT use this tool. Use insert_lines instead.
+
 STRATEGY: In 'search_snippet', include enough context (2–3 lines before and after the target change) to ensure the match is unique in the file. Minor indentation differences are tolerated via fuzzy whitespace-normalization.
 WORKFLOW:
   1. Call read_file to get the current file content.
@@ -116,7 +119,7 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   if (match.kind === 'none') {
     return {
       success: false,
-      output: `ERROR: El bloque exacto no se encontró (posible problema de indentación o archivo corrupto). Tienes PROHIBIDO volver a intentar search_and_replace en esta zona. DEBES usar la herramienta replace_lines inmediatamente usando los números de línea.`,
+      output: `ERROR: El bloque exacto no se encontró (posible problema de indentación o archivo corrupto). Tienes PROHIBIDO volver a intentar search_and_replace en esta zona con un snippet adivinado. DEBES llamar read_file primero para copiar el texto VERBATIM, o usar insert_lines si vas a inyectar un bloque nuevo masivo.`,
     };
   }
   if (match.kind === 'ambiguous') {
