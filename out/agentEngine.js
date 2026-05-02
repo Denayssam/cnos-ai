@@ -392,23 +392,90 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
         debugLog(workspacePath, `--- Iteration ${iterations}/${MAX_ITERATIONS} ---`);
         yield { type: 'iterationCount', count: iterations, max: MAX_ITERATIONS };
         yield { type: 'thinking', text: iterations === 1 ? `Agent ${agent.name} is planning…` : `Iteration ${iterations}: processing…` };
-        // ── DAG Dispatch Evaluation (v8.17.0 — Phase 1) ──────────────────────────
+        // ── DAG Active Dispatcher (v8.17.2 — Phase 2) ────────────────────────────
         // Scan .fluxo/dag_state.json once per iteration. Any PENDING task whose
-        // depends_on parents are all COMPLETED is announced as ready. Phase 1 only
-        // logs the resolution — Phase 2 will actually delegate the task to the
-        // declared agent_type and flip its status to IN_PROGRESS.
-        if (workspacePath && DagController.exists(workspacePath)) {
+        // depends_on parents are all COMPLETED is now ACTIVELY delegated to its
+        // declared agent_type — flip status to IN_PROGRESS, spawn the sub-agent
+        // via runAgentLoop, replay its events, then commit COMPLETED or FAILED
+        // back to the graph. Sub-agents do not dispatch (only the @manager owns
+        // the DAG), preventing infinite recursion. Cycle convergence: once new
+        // tasks unblock as a result of this round, the next iteration tick picks
+        // them up automatically.
+        if (agentId === 'manager' && workspacePath && DagController.exists(workspacePath)) {
             try {
                 const ready = DagController.getReadyTasks(workspacePath);
                 for (const t of ready) {
-                    const key = `${t.id}:${t.agent_type}`;
-                    if (dispatchedReady.has(key)) {
+                    // Resolve target agent — strip leading '@' and lowercase. Unknown
+                    // names fall back to @coder so a typo never strands a task.
+                    const rawType = (t.agent_type || '').trim().replace(/^@+/, '').toLowerCase();
+                    const targetAgentId = agents_1.AGENTS[rawType] ? rawType : 'coder';
+                    // Refuse to dispatch to ourselves (manager → manager) — that would
+                    // collapse the loop into an unbounded recursion.
+                    if (targetAgentId === 'manager') {
+                        DagController.updateTaskStatus(workspacePath, t.id, 'FAILED', `Cannot dispatch task to '@manager' — the manager is the dispatcher itself.`);
+                        yield { type: 'thinking', text: `🛑 [DAG Engine] Task ${t.id} self-targets @manager — marked FAILED` };
                         continue;
                     }
-                    dispatchedReady.add(key);
-                    const msg = `[DAG Engine] Task ${t.id} is unblocked and ready for ${t.agent_type}`;
-                    debugLog(workspacePath, msg);
-                    yield { type: 'thinking', text: `🧭 ${msg}` };
+                    DagController.updateTaskStatus(workspacePath, t.id, 'IN_PROGRESS');
+                    dispatchedReady.add(`${t.id}:${t.agent_type}`);
+                    const dispatchMsg = `[DAG Engine] Task ${t.id} dispatched to @${targetAgentId} (was: ${t.agent_type})`;
+                    debugLog(workspacePath, dispatchMsg);
+                    yield { type: 'thinking', text: `🚀 ${dispatchMsg}` };
+                    // Construct the task prompt. The leading [DAG TASK ...] tag lets the
+                    // sub-agent (and any audit log) see exactly which graph node it is
+                    // executing, and the closing instruction pins the completion contract.
+                    const taskPrompt = `[DAG TASK ${t.id}] ${t.description}\n\n` +
+                        `This task was dispatched by the DAG Orchestrator. Execute it end to end. ` +
+                        `When the implementation is complete and the build is green, end your turn ` +
+                        `cleanly so the orchestrator can mark this task as COMPLETED.`;
+                    const subEvents = [];
+                    try {
+                        const subGen = runAgentLoop(taskPrompt, targetAgentId, [], { ...effectiveConfig, model: config.workerModel || config.model }, workspacePath, abortSignal, sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback);
+                        yield { type: 'thinking', text: `━━━ DAG dispatch · ${t.id} → @${targetAgentId} ━━━` };
+                        for await (const ev of subGen) {
+                            subEvents.push(ev);
+                            yield ev;
+                        }
+                    }
+                    catch (err) {
+                        const errMsg = err?.message ?? String(err);
+                        DagController.updateTaskStatus(workspacePath, t.id, 'FAILED', `Spawn error: ${errMsg}`);
+                        debugLog(workspacePath, `[DAG Engine] Task ${t.id} spawn threw: ${errMsg}`);
+                        yield { type: 'thinking', text: `❌ [DAG Engine] Task ${t.id} crashed during dispatch — marked FAILED` };
+                        continue;
+                    }
+                    // ── Lifecycle hook — derive task outcome from the sub-agent's event stream ──
+                    // FAILED triggers: any 'error' event surfaced (Sherlock audit failure,
+                    // API error, abort), or the MAX_ITERATIONS warning chunk (stuck loop).
+                    // COMPLETED otherwise — the engine's own Quality Gate already blocked
+                    // the streamEnd unless the build was green, so a clean exit is proof
+                    // of a passing build (and, if a worktree was used, a successful merge).
+                    const hadError = subEvents.some(e => e.type === 'error');
+                    const hitMaxIter = subEvents.some(e => e.type === 'streamChunk' && typeof e.text === 'string' &&
+                        e.text.includes('Reached maximum iterations'));
+                    const finalText = subEvents
+                        .filter(e => e.type === 'streamChunk')
+                        .map(e => e.text)
+                        .join('')
+                        .trim()
+                        .slice(0, 4000); // bound the result blob — full audit lives in the engine log
+                    if (hadError || hitMaxIter) {
+                        DagController.updateTaskStatus(workspacePath, t.id, 'FAILED', finalText || (hitMaxIter ? 'Hit MAX_ITERATIONS' : 'Sub-agent emitted error event'));
+                        debugLog(workspacePath, `[DAG Engine] Task ${t.id} FAILED (hadError=${hadError}, hitMaxIter=${hitMaxIter})`);
+                        yield { type: 'thinking', text: `❌ [DAG Engine] Task ${t.id} FAILED` };
+                    }
+                    else {
+                        DagController.updateTaskStatus(workspacePath, t.id, 'COMPLETED', finalText);
+                        debugLog(workspacePath, `[DAG Engine] Task ${t.id} COMPLETED by @${targetAgentId}`);
+                        yield { type: 'thinking', text: `✅ [DAG Engine] Task ${t.id} COMPLETED by @${targetAgentId}` };
+                    }
+                }
+                // If we dispatched at least one task this tick, skip the manager's API
+                // call and re-enter the loop so newly-unblocked downstream tasks can
+                // be picked up immediately. The manager only needs to "think" once
+                // every task in the current ready frontier has been dispatched.
+                if (ready.length > 0) {
+                    continue;
                 }
             }
             catch (e) {
