@@ -2,6 +2,56 @@
 
 ---
 
+## [v8.16.21] - The Graceful Handoff Patch
+
+**Objetivo:** En el Escenario 3 de dogfooding, el @coder inyectó un componente masivo, el `npm run build` pasó limpio, y aun así quedó atrapado en un bucle infinito. El motivo: intentaba cerrar la sesión emitiendo el `ORCHESTRATOR'S REPORT` y el hard-block Anti-Gaslighting (v8.16.14) lo interceptaba una y otra vez. Tenía la prohibición pero no tenía vía de escape. Esta versión le da un ramp de salida legal y único.
+
+- **TASK COMPLETION PROTOCOL (`src/agents.ts` — @coder):** Nuevo bloque `NON-NEGOTIABLE` insertado al final del system prompt del @coder, justo antes del `WEB_ARCHITECTURE_SOP`. Estructura del bloque:
+  1. **Condición de fin de tarea** — código inyectado + `npm run build` verde marcan el final, no antes.
+  2. **Prohibición explícita** — desde el prompt mismo se prohíbe emitir el `ORCHESTRATOR'S REPORT` (refuerza la barrera física que el motor ya impone desde v8.16.14).
+  3. **Único ramp legal de salida** — llamar `ask_user_approval` con el mensaje literal _"Code injected successfully and build is green. Ready for review or merge."_
+  4. **Ejemplo concreto** — shape exacto de la llamada con `intent_summary` y `reason_and_files` para que el LLM no improvise el formato.
+  5. **Aviso causal** — el agente entiende *por qué* esa es la única salida (cualquier otro intento → intercepción Anti-Gaslighting → iteración inútil).
+- **Complementariedad con v8.16.20 — par de patches diseñado en conjunto:**
+  - **v8.16.20 fixea el motor:** garantizó que `ask_user_approval` puede invocarse en cualquier sesión sin crashear con `[SYSTEM ENGINE ERROR]` — incluso cuando no hay `approvalCallback` wired (modo headless / tests / UI sin enganchar). En ese caso devuelve un `success: false` graceful con guidance explícita en el output. Esto convirtió la herramienta en un ramp **seguro de invocar**.
+  - **v8.16.21 enseña al agente a usarlo:** ahora que el ramp es seguro, el prompt del @coder lo declara como la **única** forma legal de cerrar el turno tras un build verde. Sin v8.16.20 esta directiva sería peligrosa (cualquier sesión sin callback crashearía el motor); sin v8.16.21 el ramp existiría pero el LLM no sabría que debe usarlo.
+- **Resultado:** Cierra el bucle infinito del Escenario 3. El @coder ya no se queda atrapado entre la prohibición Anti-Gaslighting (v8.16.14) y la falta de vía de escape — tiene una salida explícita, segura, y única.
+
+---
+
+## [v8.16.20] - The Orchestration Unblock Patch
+
+**Objetivo:** Dos bugs críticos detectados en el Escenario 2 de dogfooding causaban un bucle infinito en el @planner. Esta versión los corrige a nivel de motor.
+
+- **Plan Path Global Bypass (`src/agentEngine.ts`):** El bloque de Worktree Path Redirect (v8.8.0) reenviaba TODAS las operaciones de archivo al worktree activo, incluyendo `.fluxo/IMPLEMENTATION_PLAN.md`. El @planner escribía el plan dentro del sandbox; el @manager lo buscaba en la raíz y nunca lo encontraba; el motor disparaba el "Planner Hard Block" y el bucle no convergía. Fix: nuevo cómputo `_isPlanFile` que extrae `args.path ?? args.file_path ?? args.absolute_path`, normaliza separadores Windows, y aplica regex `/(?:^|\/)\.fluxo\/IMPLEMENTATION_PLAN\.md$/i` (con sufijo defensivo). Si match → `effectiveWorkspacePath = workspacePath` (raíz del repo) aunque el worktree esté activo. Centralizado en el bloque de redirect, así cubre `write_file`, `read_file`, `search_and_replace` y cualquier otro tool que toque el plan sin tener que parchear archivo por archivo. Log dedicado `[Plan Bypass v8.16.20]` para distinguirlo del redirect normal.
+- **ask_user_approval Hard Intercept (`src/agentEngine.ts`):** La condición original era `else if (toolName === 'ask_user_approval' && approvalCallback)`. Cuando `approvalCallback` era undefined (sesiones sin UI wired, modo headless, tests), el `&&` colapsaba y la llamada caía al `else` final → `executeTool('ask_user_approval', ...)` → no había handler nativo → el catch retornaba `[SYSTEM ENGINE ERROR]` → el LLM reintentaba la misma llamada → bucle infinito. Fix: la intercepción ahora es **incondicional** (`else if (toolName === 'ask_user_approval')` sin el AND). Con callback: comportamiento idéntico al anterior — pausa real, espera aprobación humana. Sin callback: failure graceful con `success: false` + mensaje `[ENGINE NOTICE]` que le dice al LLM literalmente _"Do NOT retry this tool. Send your question directly as plain text"_ + le devuelve su `intent_summary` y `reason_and_files` para que pueda reformular en texto plano.
+- **Resultado:** El @planner ya no diverge en lienzos con worktree activo, y `ask_user_approval` nunca puede crashear el motor — el agente siempre recibe un output útil que rompe cualquier loop.
+
+---
+
+## [v8.16.19] - The Cognitive Alignment Patch
+
+**Objetivo:** v8.16.18 eliminó `replace_block` y `replace_lines` del toolset del @coder, pero el system prompt seguía teniendo más de 15 referencias a esas herramientas fantasma. Disonancia cognitiva grave: el agente leía "use replace_block para X" y luego no podía invocarlo. Esta versión hace el sweep quirúrgico para alinear el prompt con el toolset real.
+
+- **@coder rules (`src/agents.ts`):** Reemplazo unidad por unidad — BUILD REPAIR PROTOCOL (`Fix the exact syntax/logic issue using search_and_replace or insert_lines.`), JSX/AST RULE + MASSIVE COMPONENT INSERTION (advertencia exacta de que `search_and_replace` activará el Syntax Shield para inyecciones masivas → ordena `insert_lines`), VERBATIM MATCHING RULE (`when using editing tools (search_and_replace).` — sin `replace_block`), SEMANTIC VISION fallback, REPLACE_SYMBOL WORKFLOW pasos 3 y 4, BUILD VERIFICATION fix, GRACEFUL DEGRADATION, RULE 1 PROP CONSISTENCY, RULE 2 STRICT IMPORTS, LARGE FILE STRATEGY, MEMORY DISCIPLINE — todos apuntando a `search_and_replace` o `insert_lines` según el caso de uso.
+- **@manager rules (`src/agents.ts`):** Lista TOOLS YOU DO NOT HAVE actualizada (incluye los nuevos `search_and_replace · insert_lines`, removidos los obsoletos), SENTINEL PROTOCOL (`corrige con search_and_replace en [file]`), MANIFESTO ENFORCEMENT (Editing Philosophy violation), MEMORY DISCIPLINE.
+- **Bloques compartidos (`src/agents.ts`):** `MANIFESTO_REF` (Editing Philosophy), `HOLISTIC_DIAGNOSTIC_PROTOCOL` (Tech Lead Test), `SEPARATION_PROTOCOL` (ANTI-GHOST GUARD, ACTION VOCABULARY, WATERMARK), `REVISOR_PROMPT` (CONTEXT AWARENESS, HEALING MODE, SILOED CHANGES, TECH STACK DRIFT, WRITE_FILE FALLBACK, SCOPE check). Estos bloques se inyectan en el prompt de TODOS los agentes vía `buildAgentSystemPrompt`, así que la consistencia es global.
+- **Preservado intencionalmente:** `designer.tools` y su prompt mantienen `replace_block` (fuera del alcance — el Designer todavía lo usa). La lista negativa del @planner queda como está. La nota del REVISOR sobre el motor `ReplaceLinesTool` se mantiene (los archivos `src/tools/ReplaceLinesTool/` y `src/tools/ReplaceBlockTool/` siguen existiendo en disco — sólo fueron removidos del array del @coder).
+- **Resultado:** El @coder ya no recibe instrucciones contradictorias. Lee el prompt → ve sólo `search_and_replace`, `insert_lines`, `replace_symbol`, `write_file` → invoca lo que su toolset realmente expone → cero alucinaciones de tool names.
+
+---
+
+## [v8.16.18] - The Toolset Purge Patch
+
+**Objetivo:** En el Escenario 2 el @coder se obsesionó con `replace_lines` y `replace_block` — fallando continuamente con errores de Syntax Shield y agotando las 25 iteraciones a pesar de que el motor le ordenaba usar `insert_lines` o `search_and_replace`. La causa raíz: la "Paradoja de la Elección" — demasiadas herramientas de edición en el toolset. Esta versión fuerza precisión cognitiva reduciendo el espacio de acción.
+
+- **Toolset reducido del @coder (`src/agents.ts:160`):** Removidos `replace_block` y `replace_lines` del array. Añadido `search_and_replace`. Editing primitives finales: `search_and_replace` (ediciones quirúrgicas con Verbatim Rule), `insert_lines` (inyecciones masivas), `replace_symbol` (AST workflow vía LSP), `write_file` (archivos nuevos). Cuatro herramientas, cada una con un caso de uso claro y no-solapado.
+- **SearchReplaceTool description (`src/tools/SearchReplaceTool/index.ts`):** Nuevo bloque `⚠️ SCOPE LIMIT (v8.16.18)` con la directiva exacta solicitada — _"If you need to inject a massive new React component, DO NOT use this tool. Use insert_lines instead."_ — para que el LLM lea el límite directamente en la descripción del tool y no lo intente.
+- **Mensaje de error "none" actualizado:** El error original cuando `search_snippet` no matcheaba apuntaba al tool removido (`replace_lines`) como fallback. Ahora redirige a `read_file` (verbatim) o `insert_lines` (bloque nuevo masivo). Sin esto, el @coder caería en un bucle pidiendo un tool que ya no tiene.
+- **Resultado:** El @coder con menos opciones es un @coder más preciso. Sólo dos herramientas para texto (search_and_replace + insert_lines) eliminan la indecisión cognitiva entre cuatro options.
+
+---
+
 ## [v8.16.17] - The Merge Enforcer
 
 **Objetivo:** Cerrar el último escape del @manager descubierto en dogfooding — el orquestador a veces emitía el `ORCHESTRATOR'S REPORT` directamente sin haber llamado `exit_worktree`, dejando los archivos atrapados en el sandbox sin merge a `main`. El system prompt v8.16.16 ya prohibía esto, pero el LLM podía ignorar la directiva. Esta versión añade un hard-block determinista a nivel de motor.
