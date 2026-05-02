@@ -858,11 +858,25 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
             // Worktree management tools and planning tools always use the main workspace.
             const _wtExcluded = toolName === 'enter_worktree' || toolName === 'exit_worktree' ||
                 toolName === 'skill' || toolName === 'enter_plan_mode';
-            const effectiveWorkspacePath = (activeWorktreePath && !_wtExcluded)
+            // ── Plan Path Global Bypass (v8.16.20) ─────────────────────────────────
+            // IMPLEMENTATION_PLAN.md is a session-global handoff file between @planner
+            // and @manager/@coder. It MUST live at the repo root regardless of worktree
+            // state — otherwise the planner writes it inside the sandbox, the manager
+            // checks for it at the root and never finds it, and the planning loop
+            // diverges into infinite retry. Detect any tool whose path argument ends
+            // in IMPLEMENTATION_PLAN.md and force-route it to the main workspace.
+            const _planPathArg = String(args.path ?? args.file_path ?? args.absolute_path ?? '').replace(/\\/g, '/');
+            const _isPlanFile = /(?:^|\/)\.fluxo\/IMPLEMENTATION_PLAN\.md$/i.test(_planPathArg) ||
+                _planPathArg.endsWith('IMPLEMENTATION_PLAN.md');
+            // ───────────────────────────────────────────────────────────────────────
+            const effectiveWorkspacePath = (activeWorktreePath && !_wtExcluded && !_isPlanFile)
                 ? activeWorktreePath
                 : workspacePath;
             if (activeWorktreePath && effectiveWorkspacePath !== workspacePath) {
                 debugLog(workspacePath, `[Worktree Redirect] ${toolName} → ${effectiveWorkspacePath}`);
+            }
+            if (_isPlanFile && activeWorktreePath) {
+                debugLog(workspacePath, `[Plan Bypass v8.16.20] ${toolName}(${_planPathArg}) → main workspace (worktree active but plan is global)`);
             }
             // ─────────────────────────────────────────────────────────────────────────
             // Execute
@@ -872,15 +886,37 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 if (pathNormError) {
                     result = { success: false, output: pathNormError };
                 }
-                else if (toolName === 'ask_user_approval' && approvalCallback) {
-                    yield { type: 'thinking', text: '🛡️ Bodyguard aguardando tu aprobación…' };
-                    const approved = await approvalCallback(String(args.intent_summary ?? ''), String(args.reason_and_files ?? ''));
-                    result = {
-                        success: approved,
-                        output: approved
-                            ? 'USER APPROVED. Proceed with the planned tools.'
-                            : 'USER REJECTED. Stop all planned actions. Ask the user a focused clarifying question in plain text — do NOT call any edit tools.',
-                    };
+                else if (toolName === 'ask_user_approval') {
+                    // ── ask_user_approval Hard Intercept (v8.16.20) ─────────────────────
+                    // ALWAYS intercept before executeTool. There is no native handler for
+                    // ask_user_approval — letting it fall through would crash the loop
+                    // with [SYSTEM ENGINE ERROR] and trigger an infinite retry. If the
+                    // approvalCallback is wired (real UI flow), pause the agent and hand
+                    // control to the human. If not (headless / test mode), fail loudly
+                    // with explicit guidance so the agent does NOT loop on the same call.
+                    const _intent = String(args.intent_summary ?? '');
+                    const _reason = String(args.reason_and_files ?? '');
+                    if (approvalCallback) {
+                        yield { type: 'thinking', text: '🛡️ Bodyguard aguardando tu aprobación…' };
+                        const approved = await approvalCallback(_intent, _reason);
+                        result = {
+                            success: approved,
+                            output: approved
+                                ? 'USER APPROVED. Proceed with the planned tools.'
+                                : 'USER REJECTED. Stop all planned actions. Ask the user a focused clarifying question in plain text — do NOT call any edit tools.',
+                        };
+                    }
+                    else {
+                        debugLog(workspacePath, '[ask_user_approval] No approvalCallback wired — returning graceful failure to prevent infinite loop');
+                        yield { type: 'thinking', text: '⚠️ ask_user_approval invocado sin UI conectada…' };
+                        result = {
+                            success: false,
+                            output: '[ENGINE NOTICE] ask_user_approval was invoked but no human approval channel is connected to this session. ' +
+                                'Do NOT retry this tool. Instead, send your question directly to the user as plain text in your next response, ' +
+                                `or proceed with the safest default action. Your pending intent was: "${_intent}". Reason: "${_reason}".`,
+                        };
+                    }
+                    // ─────────────────────────────────────────────────────────────────────
                 }
                 else if (toolName === 'search_and_replace' && nativeEditCallback) {
                     yield { type: 'thinking', text: '🔍 Applying VS Code native edit…' };
