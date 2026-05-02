@@ -14,7 +14,13 @@ const IGNORE_DIRS = new Set([
 ]);
 
 const TARGET_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx']);
+// v8.17.3: extra languages get a regex-based fallback so the panoramic view
+// covers polyglot repos. Aider-style: even an approximate symbol list gives
+// the agent enough structure to pick the right file before reading it.
+const REGEX_EXTS = new Set(['.py', '.go', '.rs', '.java', '.rb', '.cs', '.php', '.kt', '.swift']);
 const MAX_REPO_MAP_CHARS = 15_000;
+const MAX_TREE_ENTRIES   = 250;       // hard cap on directory tree summary lines
+const MAX_TREE_DEPTH     = 6;
 
 // ─── AST Helpers ─────────────────────────────────────────────────────────────
 
@@ -124,22 +130,77 @@ function extractSignatures(filePath: string): string[] {
   return sigs;
 }
 
+// ─── Regex Extractors (v8.17.3 — Polyglot Fallback) ─────────────────────────
+// Aider-style: when a file is not TypeScript/JavaScript we don't have an AST,
+// but we can still surface top-level symbol names so the agent knows where to
+// look BEFORE it reads the whole file. Regexes are intentionally permissive —
+// false positives are far better than blind navigation.
+
+const REGEX_BY_EXT: Record<string, RegExp[]> = {
+  '.py':    [/^\s*(?:async\s+)?def\s+([a-zA-Z_][\w]*)\s*\(/gm,    /^\s*class\s+([a-zA-Z_][\w]*)\b/gm],
+  '.go':    [/^func\s+(?:\([^)]*\)\s*)?([A-Z][\w]*)\s*\(/gm,       /^type\s+([A-Z][\w]*)\b/gm],
+  '.rs':    [/^\s*pub\s+(?:async\s+)?fn\s+([a-zA-Z_][\w]*)/gm,     /^\s*pub\s+(?:struct|enum|trait)\s+([A-Z][\w]*)/gm],
+  '.java':  [/^\s*public\s+(?:static\s+)?[\w<>\[\],\s]+\s+([a-zA-Z_][\w]*)\s*\(/gm, /^\s*public\s+(?:abstract\s+|final\s+)?(?:class|interface|enum)\s+([A-Z][\w]*)/gm],
+  '.rb':    [/^\s*def\s+([a-zA-Z_][\w]*[!?=]?)/gm,                 /^\s*class\s+([A-Z][\w]*)/gm,                /^\s*module\s+([A-Z][\w]*)/gm],
+  '.cs':    [/^\s*public\s+(?:static\s+|async\s+|virtual\s+|override\s+)*[\w<>\[\],\s?]+\s+([A-Z][\w]*)\s*\(/gm, /^\s*public\s+(?:abstract\s+|sealed\s+)?(?:class|interface|record|struct|enum)\s+([A-Z][\w]*)/gm],
+  '.php':   [/^\s*(?:public|protected|private)?\s*function\s+([a-zA-Z_][\w]*)\s*\(/gm, /^\s*(?:abstract\s+|final\s+)?class\s+([A-Z][\w]*)/gm],
+  '.kt':    [/^\s*(?:public\s+|internal\s+)?fun\s+([a-zA-Z_][\w]*)\s*\(/gm, /^\s*(?:public\s+|internal\s+)?(?:open\s+|sealed\s+|data\s+|abstract\s+)?class\s+([A-Z][\w]*)/gm],
+  '.swift': [/^\s*(?:public\s+|internal\s+|open\s+)?func\s+([a-zA-Z_][\w]*)/gm, /^\s*(?:public\s+|internal\s+|open\s+)?(?:class|struct|protocol|enum|actor)\s+([A-Z][\w]*)/gm],
+};
+
+function extractSignaturesRegex(filePath: string, ext: string): string[] {
+  const patterns = REGEX_BY_EXT[ext];
+  if (!patterns) { return []; }
+  let content: string;
+  try { content = fs.readFileSync(filePath, 'utf-8'); } catch { return []; }
+  if (content.length > 200_000) { return []; } // skip huge files
+
+  const sigs = new Set<string>();
+  for (const re of patterns) {
+    let m: RegExpExecArray | null;
+    re.lastIndex = 0;
+    while ((m = re.exec(content)) !== null && sigs.size < 40) {
+      sigs.add(`  ${m[0].trim()}`);
+    }
+  }
+  return Array.from(sigs);
+}
+
 // ─── Directory Walker ─────────────────────────────────────────────────────────
 
-function scanDir(dirPath: string, workspacePath: string, blocks: string[]): void {
+interface FileEntry { relPath: string; signatures: string[]; }
+
+function scanDir(dirPath: string, workspacePath: string, blocks: string[], tree: string[], depth: number): void {
   let entries: fs.Dirent[];
   try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return; }
+
+  // Stable order so the tree summary doesn't shuffle between calls
+  entries.sort((a, b) => {
+    if (a.isDirectory() !== b.isDirectory()) { return a.isDirectory() ? -1 : 1; }
+    return a.name.localeCompare(b.name);
+  });
 
   for (const entry of entries) {
     if (IGNORE_DIRS.has(entry.name)) { continue; }
     const fullPath = path.join(dirPath, entry.name);
+    const relPath  = path.relative(workspacePath, fullPath).replace(/\\/g, '/');
 
     if (entry.isDirectory()) {
-      scanDir(fullPath, workspacePath, blocks);
-    } else if (entry.isFile() && TARGET_EXTS.has(path.extname(entry.name).toLowerCase())) {
+      if (tree.length < MAX_TREE_ENTRIES && depth <= MAX_TREE_DEPTH) {
+        tree.push(`${'  '.repeat(depth)}${entry.name}/`);
+      }
+      scanDir(fullPath, workspacePath, blocks, tree, depth + 1);
+    } else if (entry.isFile()) {
+      const ext = path.extname(entry.name).toLowerCase();
+      const isTarget = TARGET_EXTS.has(ext);
+      const isRegex  = REGEX_EXTS.has(ext);
+      if (!isTarget && !isRegex) { continue; }
       try {
-        const relPath = path.relative(workspacePath, fullPath).replace(/\\/g, '/');
-        const sigs = extractSignatures(fullPath);
+        const sigs = isTarget ? extractSignatures(fullPath) : extractSignaturesRegex(fullPath, ext);
+        if (tree.length < MAX_TREE_ENTRIES && depth <= MAX_TREE_DEPTH) {
+          const tag = sigs.length > 0 ? ` (${sigs.length})` : '';
+          tree.push(`${'  '.repeat(depth)}${entry.name}${tag}`);
+        }
         if (sigs.length > 0) {
           blocks.push(`${relPath}:\n${sigs.join('\n')}`);
         } else {
@@ -156,10 +217,18 @@ export function buildRepoMap(workspacePath: string): string {
   if (!workspacePath) { return ''; }
   try {
     const blocks: string[] = [];
-    scanDir(workspacePath, workspacePath, blocks);
-    if (blocks.length === 0) { return ''; }
+    const tree: string[]   = [];
+    scanDir(workspacePath, workspacePath, blocks, tree, 0);
+    if (blocks.length === 0 && tree.length === 0) { return ''; }
 
-    let result = blocks.join('\n');
+    // v8.17.3: Aider-style panoramic header — directory tree above the symbol
+    // detail blocks. Agents reading just the first N chars still get a
+    // navigable map of the whole codebase.
+    const header = tree.length > 0
+      ? `── DIRECTORY TREE (depth ≤ ${MAX_TREE_DEPTH}, parens = symbol count) ──\n${tree.join('\n')}\n\n── FILE SYMBOLS ──\n`
+      : '';
+
+    let result = header + blocks.join('\n');
 
     if (result.length > MAX_REPO_MAP_CHARS) {
       result = result.substring(0, MAX_REPO_MAP_CHARS) +

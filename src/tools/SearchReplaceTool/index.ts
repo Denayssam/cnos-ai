@@ -11,9 +11,26 @@ PREFERRED EDITING TOOL: Use this for small, surgical edits guided by the Verbati
 
 ⚠️ SCOPE LIMIT (v8.16.18): If you need to inject a massive new React component, DO NOT use this tool. Use insert_lines instead.
 
-STRATEGY: In 'search_snippet', include enough context (2–3 lines before and after the target change) to ensure the match is unique in the file. Minor indentation differences are tolerated via fuzzy whitespace-normalization.
+⚠️ UDIFF-STYLE PRECISION (v8.17.3 — read this before every call):
+  Guessing whitespace IS THE #1 cause of MATCH ERRORS in this tool. Tabs vs.
+  spaces, trailing whitespace, CRLF vs. LF, indentation drift — all of them
+  silently break the match even when the code "looks right" in your context.
+  HARD RULE:
+    1. ALWAYS call read_file (or get_repo_map → read_file) immediately before
+       this tool to capture the file in its current state. Reading from memory
+       of a previous turn is NOT allowed — files mutate.
+    2. Copy the search_snippet VERBATIM from the read_file output, character
+       for character, including every space and tab. Do NOT retype.
+    3. Format the replace_snippet like a unified diff hunk: keep the SAME
+       indentation level as the search_snippet's leading whitespace, preserve
+       the SAME line-ending style, and leave NO trailing whitespace on new
+       lines you add.
+    4. If the previous call returned MATCH ERROR, do NOT retry with a guessed
+       snippet — re-read the file and copy verbatim again. Your guess is wrong.
+
+STRATEGY: In 'search_snippet', include enough context (2–3 lines before and after the target change) to ensure the match is unique in the file. Minor indentation differences are tolerated via fuzzy whitespace-normalization, but the fuzzy fallback is a safety net — it is NOT a license to improvise indentation.
 WORKFLOW:
-  1. Call read_file to get the current file content.
+  1. Call read_file to get the current file content (MANDATORY — see UDIFF rule above).
   2. Copy the exact block you want to replace as search_snippet (include surrounding context for uniqueness).
   3. Call search_and_replace — the engine applies the change in the VS Code editor (file stays unsaved for review).
   4. After the call, tell the user: "Cambio aplicado en el editor. Revísalo y presiona Ctrl+S para guardar."

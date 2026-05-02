@@ -807,7 +807,7 @@
     messagesEl.innerHTML = `
       <div class="welcome-card">
         <div class="welcome-logo">🐾</div>
-        <h2 class="welcome-title">Fluxo AI <span class="welcome-version">v8.17.2</span></h2>
+        <h2 class="welcome-title">Fluxo AI <span class="welcome-version">v8.17.3</span></h2>
         <div class="welcome-tips">
           <div class="tip"><span class="tip-key">↵</span> Send</div>
           <div class="tip-sep">·</div>

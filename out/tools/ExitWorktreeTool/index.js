@@ -136,15 +136,33 @@ function execute(args, workspacePath) {
         };
     }
     // Step 2 — merge worktree branch into the main workspace's current branch
+    // v8.17.3: on merge failure (typically conflicts) we MUST NOT leave the main
+    // workspace in a half-merged state. The agent has no reliable way to resolve
+    // conflicts mid-loop, and a dirty MERGING state poisons every subsequent git
+    // command in the session. Auto-abort here, return a single clean directive
+    // the agent can act on (discard the worktree, surface to the manager).
     try {
         cp.execSync(`git merge "${branchName}" --no-ff -m "Merge worktree '${branchName}': ${commitMsg}"`, { cwd: workspacePath, stdio: 'pipe' });
     }
     catch (e) {
         const stderr = (e.stderr?.toString() || e.message || '').slice(0, 400);
+        let abortNote = '';
+        try {
+            cp.execSync('git merge --abort', { cwd: workspacePath, stdio: 'pipe' });
+            abortNote = ' (git merge --abort succeeded — workspace restored to pre-merge state)';
+        }
+        catch (abortErr) {
+            // Most often this means we never entered MERGING (e.g. fast-forward
+            // refused for an unrelated reason). Either way the workspace is not
+            // dirty with conflict markers — surface the original error and move on.
+            abortNote = ' (no MERGING state to abort)';
+        }
         return {
             success: false,
-            output: `ExitWorktree (merge): git merge failed:\n${stderr}\n\n` +
-                `Likely merge conflicts. Resolve them manually, or call exit_worktree with action='discard' to abort.`,
+            output: `[MERGE CONFLICT] The merge failed due to codebase collisions. ` +
+                `The merge was cleanly aborted${abortNote}. ` +
+                `Exit the worktree with action='discard' and report the conflict to the Manager.\n\n` +
+                `Underlying git output (first 400 chars):\n${stderr}`,
         };
     }
     // Step 3 — cleanup worktree & branch

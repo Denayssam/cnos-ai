@@ -6,11 +6,13 @@ export const TOOL_DEF: NativeTool = {
   function: {
     name: 'get_repo_map',
     description:
-      'Generates a compressed semantic AST map of the entire repository. ' +
-      'Use this tool FIRST when exploring a codebase to instantly know where components, functions, and classes are defined ' +
-      'without guessing file paths. ' +
-      'Returns a multi-line map: each file on its own header line, with its exported symbols indented below it. ' +
-      'After calling this, you can navigate directly to any symbol with read_file or replace_symbol.',
+      'Generate a panoramic, Aider-style map of the active workspace (or worktree, when one is open). ' +
+      'Output is two-tiered: (1) a directory TREE up to depth 6 with a per-file symbol count in parentheses, ' +
+      'followed by (2) per-file symbol blocks — TS/JS exports via TypeScript AST, plus regex-extracted ' +
+      'top-level functions/classes for Python, Go, Rust, Java, Ruby, C#, PHP, Kotlin, Swift. ' +
+      'MANDATORY USE: call this BEFORE editing any file you have not already read in this session. ' +
+      'Skipping it leads to MATCH ERRORS, ghost imports, and panicked grep loops. ' +
+      'After calling, navigate directly with read_file (verbatim) or replace_symbol (AST-bounded).',
     parameters: {
       type: 'object',
       properties: {},
