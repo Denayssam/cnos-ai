@@ -3,6 +3,8 @@ import * as fs   from 'fs';
 import * as path from 'path';
 import * as cp   from 'child_process';
 import { NativeTool, ToolResult } from '../shared';
+import { acquireMergeMutex } from '../../utils/gitSafety';
+import { appendTask, getCurrentInProgressTask } from '../../utils/dagController';
 
 export const TOOL_DEF: NativeTool = {
   type: 'function',
@@ -101,13 +103,25 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   }
 
   // Step 2 — merge worktree branch into the main workspace's current branch
-  // v8.17.4: on merge failure the engine takes BOTH recovery actions itself —
-  // git merge --abort to clear the dirty MERGING state, then a full discard
-  // (worktree remove + branch -D + state file unlink). v8.17.3 left the agent
-  // a "discard the worktree" instruction; in dogfooding the @coder panicked
-  // and tried to "fix" the conflict with raw git instead. v8.17.4 removes the
-  // choice — the engine cleans up atomically and tells the agent to end its
-  // turn so the @manager can reschedule the task.
+  // v8.18.0 (Phase 4): Sequential Merge Mutex + DAG Conflict Auto-Resolution.
+  // The merge attempt now runs under a process-wide file lock (.fluxo/merge.lock)
+  // so concurrent agents serialize at the git controller. On conflict failure
+  // the engine still auto-aborts and discards (v8.17.4), but instead of just
+  // telling the agent "task FAILED, manager reschedule", it dynamically injects
+  // a HIGH PRIORITY conflict-resolution task into the live DAG with the
+  // captured conflict context — the dispatcher will pick it up on the next
+  // tick.
+  const mutex = acquireMergeMutex(workspacePath, `worktree:${branchName}`);
+  if (!mutex) {
+    return {
+      success: false,
+      output:
+        `ExitWorktree (merge): could not acquire .fluxo/merge.lock within 30s — ` +
+        `another agent is currently merging. Wait for the in-flight merge to complete, ` +
+        `then retry exit_worktree(action='merge').`,
+    };
+  }
+
   try {
     cp.execSync(
       `git merge "${branchName}" --no-ff -m "Merge worktree '${branchName}': ${commitMsg}"`,
@@ -115,22 +129,91 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
     );
   } catch (e: any) {
     const stderr = (e.stderr?.toString() || e.message || '').slice(0, 400);
-    // (a) Abort the in-flight merge so the workspace is no longer in MERGING state.
+
+    // (a) Capture conflict context BEFORE we abort. Once the merge is aborted
+    // the conflict markers vanish from main — we need the file list and a
+    // snippet of the marker block while the workspace is still in MERGING.
+    let conflictFiles: string[] = [];
+    try {
+      conflictFiles = cp.execSync('git diff --name-only --diff-filter=U', { cwd: workspacePath, stdio: 'pipe' })
+        .toString().trim().split(/\r?\n/).filter(Boolean);
+    } catch { /* no unmerged files reported — fall back to empty list */ }
+
+    const conflictSnippets: string[] = [];
+    for (const rel of conflictFiles.slice(0, 6)) {
+      try {
+        const raw = fs.readFileSync(path.join(workspacePath, rel), 'utf-8');
+        const start = raw.indexOf('<<<<<<<');
+        if (start >= 0) {
+          const slice = raw.slice(start, start + 1500);
+          conflictSnippets.push(`---\n**${rel}** (first conflict block):\n\`\`\`\n${slice}\n\`\`\``);
+        }
+      } catch { /* unreadable file — skip */ }
+    }
+
+    // (b) Abort the in-flight merge so the workspace is no longer in MERGING state.
     try { cp.execSync('git merge --abort',                  { cwd: workspacePath, stdio: 'pipe' }); } catch { /* nothing to abort */ }
-    // (b) Auto-discard the worktree — same operations the action='discard' branch runs.
+    // (c) Auto-discard the worktree — same operations the action='discard' branch runs.
     try { cp.execSync(`git worktree remove --force "${worktreePath}"`, { cwd: workspacePath, stdio: 'pipe' }); } catch { /* worktree dir may already be gone */ }
     try { cp.execSync('git worktree prune',                  { cwd: workspacePath, stdio: 'pipe' }); } catch { /* non-fatal */ }
     try { cp.execSync(`git branch -D "${branchName}"`,       { cwd: workspacePath, stdio: 'pipe' }); } catch { /* non-fatal */ }
     try { fs.unlinkSync(stateFilePath); } catch { /* non-fatal */ }
 
+    // (d) Release mutex BEFORE we touch the DAG — keep the critical section tight.
+    mutex.release();
+
+    // (e) Dynamically inject a HIGH PRIORITY conflict-resolution task. The
+    // dispatcher (Phase 2) will pick it up on the next tick once its parent
+    // task has reached a terminal status (the dispatcher's lifecycle hook
+    // marks the failed task FAILED right after this tool returns).
+    const failedTask = getCurrentInProgressTask(workspacePath);
+    const fileList   = conflictFiles.length > 0 ? conflictFiles.join(', ') : 'unknown files';
+    // depends_on is intentionally EMPTY so the dispatcher picks the conflict
+    // task up on the next tick. Listing the failed parent here would block
+    // the task forever — getReadyTasks only unblocks when parents are
+    // COMPLETED, and the parent will be marked FAILED by the dispatcher's
+    // lifecycle hook moments after this tool returns. The causal/audit link
+    // to the parent is preserved verbatim in the description below.
+    const dagInjected = appendTask(workspacePath, {
+      idPrefix: 'conflict',
+      agent_type: '@coder',
+      depends_on: [],
+      description:
+        `URGENT: Resolve Git Merge Conflict in ${fileList}\n\n` +
+        `[PRIORITY: HIGH — auto-injected by ExitWorktreeTool v8.18.0]\n\n` +
+        (failedTask
+          ? `Parent task: ${failedTask.id} (${failedTask.description}) — its worktree branch '${branchName}' could not be merged into main due to codebase collisions. The engine has already aborted the merge and discarded the broken worktree. You are now starting from a clean main.\n\n`
+          : `A worktree merge for branch '${branchName}' failed due to codebase collisions. The engine has already aborted the merge and discarded the broken worktree. You are now starting from a clean main.\n\n`) +
+        `RESOLUTION PROTOCOL — DO NOT skip steps:\n` +
+        `1. Call get_repo_map first to regain spatial awareness of the workspace (the panoramic shield will block other tools until you do).\n` +
+        `2. For EACH file listed above, call read_file to see its current state on main.\n` +
+        `3. Reconstruct the changes from the parent task using the conflict snippets captured below — they show exactly which lines collided and what the parent task tried to introduce. The HEAD side (above =======) is what main has now; the branch side (below =======) is what the parent task wanted.\n` +
+        `4. Mathematically resolve the logic: keep the side whose semantics are correct, or merge both if they are independent (different functions, different keys, etc.). Never just delete a side.\n` +
+        `5. Apply each resolution as a unified-diff-precise search_and_replace (see UDIFF rule v8.17.3). Read each file before editing, copy verbatim.\n` +
+        `6. Run npm run build (or the project's build command) to verify the resolution compiles.\n` +
+        `7. End your turn cleanly — do NOT enter a worktree for this task; the resolution applies directly on main.\n\n` +
+        (conflictSnippets.length > 0
+          ? `── CAPTURED CONFLICT SNIPPETS (pre-abort) ──\n${conflictSnippets.join('\n')}\n`
+          : `── No conflict snippets could be captured — inspect the files in the list directly. ──\n`) +
+        `\n── git stderr (first 400 chars) ──\n${stderr}\n`,
+    });
+
+    const queuedNote = dagInjected
+      ? ` New task '${dagInjected.id}' was queued in .fluxo/dag_state.json${failedTask ? ` (depends on ${failedTask.id})` : ''}.`
+      : ' (DAG was not active — no follow-up task was queued; surface the conflict to the @manager directly.)';
+
     return {
       success: false,
       output:
-        `[MERGE CONFLICT] Codebase collision detected. The worktree was ` +
-        `automatically discarded by the engine. End your turn immediately so the ` +
-        `Manager can reschedule this task.\n\n` +
+        `[MERGE CONFLICT] A collision occurred. A priority conflict-resolution task ` +
+        `has been queued in the DAG. Exit your turn immediately.${queuedNote}\n\n` +
+        `Files in conflict: ${fileList}\n\n` +
         `Underlying git output (first 400 chars):\n${stderr}`,
     };
+  } finally {
+    // Belt-and-suspenders: if the merge succeeded we drop the mutex here too.
+    // The catch path above already released it before injecting the DAG task.
+    try { mutex.release(); } catch { /* already released */ }
   }
 
   // Step 3 — cleanup worktree & branch

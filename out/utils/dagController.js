@@ -45,6 +45,8 @@ exports.read = read;
 exports.updateTaskStatus = updateTaskStatus;
 exports.getReadyTasks = getReadyTasks;
 exports.exists = exists;
+exports.appendTask = appendTask;
+exports.getCurrentInProgressTask = getCurrentInProgressTask;
 exports.renderMarkdown = renderMarkdown;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
@@ -216,6 +218,54 @@ function getReadyTasks(workspacePath) {
 }
 function exists(workspacePath) {
     return fs.existsSync(dagFilePath(workspacePath));
+}
+/**
+ * Append a single task to the live DAG. Returns the new Task on success or
+ * null if no DAG exists / the file is unreadable. The new task always starts
+ * in PENDING status; the dispatcher will pick it up on the next iteration
+ * tick once its depends_on parents are COMPLETED.
+ */
+function appendTask(workspacePath, input) {
+    const state = read(workspacePath);
+    if (!state) {
+        return null;
+    }
+    const prefix = (input.idPrefix ?? 'auto').replace(/[^a-zA-Z0-9_-]/g, '');
+    const existingIds = new Set(state.tasks.map(t => t.id));
+    let n = state.tasks.length + 1;
+    let id = `${prefix}-${n}`;
+    while (existingIds.has(id)) {
+        n++;
+        id = `${prefix}-${n}`;
+    }
+    const newTask = {
+        id,
+        description: input.description,
+        agent_type: input.agent_type,
+        status: 'PENDING',
+        depends_on: Array.isArray(input.depends_on) ? input.depends_on.filter(d => existingIds.has(d)) : [],
+    };
+    state.tasks.push(newTask);
+    write(workspacePath, state);
+    return newTask;
+}
+/**
+ * Find the most recently-started IN_PROGRESS task in the DAG. Used by
+ * ExitWorktreeTool to identify which task "owns" the merge attempt that
+ * just failed, so the auto-injected conflict-resolution task can list it as
+ * a dependency. Returns null if the DAG is missing or no task is in flight.
+ */
+function getCurrentInProgressTask(workspacePath) {
+    const state = read(workspacePath);
+    if (!state) {
+        return null;
+    }
+    const inFlight = state.tasks.filter(t => t.status === 'IN_PROGRESS');
+    if (inFlight.length === 0) {
+        return null;
+    }
+    inFlight.sort((a, b) => (b.started_at ?? '').localeCompare(a.started_at ?? ''));
+    return inFlight[0];
 }
 // ─── Human-readable rendering ───────────────────────────────────────────────
 // Used by ProposePlanTool to keep IMPLEMENTATION_PLAN.md alive as a review

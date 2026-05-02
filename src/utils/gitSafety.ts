@@ -1,6 +1,91 @@
 import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // ─── Git Safety Utilities (v8.15.0 — The Time Machine) ───────────────────────
+
+// ─── Sequential Merge Mutex (v8.18.0 — Phase 4) ─────────────────────────────
+// Cross-process file lock that serializes worktree merges into the main
+// branch. Multiple parallel agents (or multiple VS Code windows operating on
+// the same repo) calling exit_worktree(merge) at the same time would race on
+// git's index — partial merges, lost commits, half-applied refs. The mutex
+// queues them: the first agent through holds the lock, the rest busy-wait
+// (with bounded retry) until the holder releases or the lock is detected as
+// stale.
+//
+// Why a sync busy-wait: the entire ExitWorktreeTool.execute() runs as a
+// synchronous call from the engine. We cannot await — we must block until
+// the lock is acquired or the deadline passes. execSync already blocks the
+// event loop end-to-end, so a brief Atomics.wait inside the same tool call
+// has identical scheduling impact.
+
+const MERGE_LOCK_RELATIVE  = path.join('.fluxo', 'merge.lock');
+const MERGE_LOCK_TIMEOUT   = 30_000; // ms — abandon if we cannot get the lock in 30 s
+const MERGE_LOCK_STALE_MS  = 60_000; // ms — a lock older than 60 s is treated as orphaned
+const MERGE_LOCK_POLL_MS   = 100;    // ms — sleep between acquisition retries
+
+function syncSleep(ms: number): void {
+  // Atomics.wait blocks the event loop without spin-burning CPU.
+  const sab = new SharedArrayBuffer(4);
+  const view = new Int32Array(sab);
+  Atomics.wait(view, 0, 0, ms);
+}
+
+function ensureLockDir(workspacePath: string): void {
+  fs.mkdirSync(path.join(workspacePath, '.fluxo'), { recursive: true });
+}
+
+function isStale(lockPath: string): boolean {
+  try {
+    const stat = fs.statSync(lockPath);
+    return Date.now() - stat.mtimeMs > MERGE_LOCK_STALE_MS;
+  } catch {
+    return false;
+  }
+}
+
+export interface MergeMutexHandle {
+  release: () => void;
+  acquiredAt: number;
+}
+
+/**
+ * Acquire a process-wide (and cross-process) merge mutex by atomically
+ * creating .fluxo/merge.lock. Blocks for up to MERGE_LOCK_TIMEOUT ms.
+ * On timeout, returns null so the caller can decide whether to fail or retry.
+ */
+export function acquireMergeMutex(workspacePath: string, holderId: string): MergeMutexHandle | null {
+  ensureLockDir(workspacePath);
+  const lockPath = path.join(workspacePath, MERGE_LOCK_RELATIVE);
+  const deadline = Date.now() + MERGE_LOCK_TIMEOUT;
+  const payload  = JSON.stringify({ holder: holderId, pid: process.pid, acquired_at: new Date().toISOString() });
+
+  while (Date.now() < deadline) {
+    try {
+      // wx flag = create + exclusive — fails atomically if the file already exists.
+      const fd = fs.openSync(lockPath, 'wx');
+      fs.writeSync(fd, payload);
+      fs.closeSync(fd);
+      return {
+        acquiredAt: Date.now(),
+        release: () => {
+          try { fs.unlinkSync(lockPath); } catch { /* lock already cleaned */ }
+        },
+      };
+    } catch (err: any) {
+      if (err.code !== 'EEXIST') { return null; }
+      // Stale lock: orphaned by a previous run. Force-remove and retry.
+      if (isStale(lockPath)) {
+        try { fs.unlinkSync(lockPath); } catch { /* race with another waker — re-loop */ }
+        continue;
+      }
+      syncSleep(MERGE_LOCK_POLL_MS);
+    }
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export function hasUncommittedChanges(cwd: string): boolean {
   try {
