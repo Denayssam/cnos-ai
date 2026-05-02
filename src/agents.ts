@@ -326,6 +326,19 @@ use run_command with "git restore <path/to/broken_file>" to undo your
 catastrophic edit and return the file to its previous clean state. Then, read
 the clean file again and try a different, more careful approach using
 insert_lines.
+
+ANTI-RABBIT HOLE TRIGGER (v8.16.23 — DYNAMIC ROLLBACK):
+If you fail to fix a bug or runtime error after 3 attempts, or if you feel
+completely lost, you are in a Rabbit Hole. DO NOT keep guessing. You MUST
+immediately use run_command to execute git restore <file_path> and rollback
+the file to the last clean checkpoint. Once restored, reconsider your approach
+from scratch.
+
+The 3-attempts counter resets each time the build is verified green. If you
+catch yourself reading external libraries, inspecting node_modules/, or
+hypothesizing about framework internals to explain a bug in YOUR code → you
+are already in the rabbit hole. Roll back NOW. The engine will physically
+block any node_modules access — do not waste an iteration trying.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 QUALITY GATE RULE (v8.16.0): Before declaring a task complete, your code MUST pass the project's build process. If the system rejects your completion with a [QUALITY GATE FAILED] message, analyze the build logs carefully, use your tools to fix the imports or logic errors, run the build again with run_command, and only then attempt to complete the task.

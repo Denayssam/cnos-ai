@@ -894,6 +894,33 @@ export async function* runAgentLoop(
         .join(', ');
       yield { type: 'toolCall', name: toolName, args, displayArgs };
 
+      // ── Rabbit Hole Hard Block (v8.16.23) ────────────────────────────────────
+      // When a build/runtime error appears, the @coder occasionally drifts into
+      // inspecting node_modules/ instead of rolling back its own edits. Blocks
+      // any read/search/terminal tool whose args reference node_modules as a
+      // path segment. Whole-word boundary check so filenames like
+      // "node_modules_check.ts" still pass through.
+      const _rabbitHoleGated = toolName === 'read_file' || toolName === 'grep' ||
+                               toolName === 'glob' || toolName === 'search_and_replace' ||
+                               toolName === 'run_command';
+      if (_rabbitHoleGated) {
+        const _rabbitRe = /(?:^|[\/\\\s"'`])node_modules(?:[\/\\\s"'`]|$)/i;
+        const _rabbitHit = Object.values(args).some(
+          v => typeof v === 'string' && _rabbitRe.test(v)
+        );
+        if (_rabbitHit) {
+          const _rhMsg =
+            "[SYSTEM BLOCK] RABBIT HOLE DETECTED. You are strictly forbidden from " +
+            "inspecting or debugging 'node_modules/'. The bug is in your own code, " +
+            "not in the external libraries. Look at the files you just modified.";
+          debugLog(workspacePath, `[Rabbit Hole] ${toolName} blocked — args referenced node_modules`);
+          yield { type: 'toolResult', name: toolName, success: false, output: _rhMsg };
+          messages.push({ role: 'tool', tool_call_id: tc.id, name: toolName, content: _rhMsg });
+          continue;
+        }
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
       // ── Worktree Path Redirect (v8.8.0) ──────────────────────────────────────
       // When a git worktree is active, ALL file and command operations are silently
       // redirected to the worktree directory. The LLM uses normal relative paths
