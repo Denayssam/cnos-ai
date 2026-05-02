@@ -408,6 +408,19 @@ export async function* runAgentLoop(
   const dispatchedReady = new Set<string>();
   // ─────────────────────────────────────────────────────────────────────────
 
+  // ─── Panoramic Physical Shield (v8.17.4) ─────────────────────────────────
+  // The v8.17.3 PANORAMIC RULE was a prompt-level directive — the LLM ignored
+  // it under load and dove straight into grep/glob/search_in_files/
+  // search_and_replace, burning tokens to triangulate code it could have read
+  // for free with get_repo_map. v8.17.4 promotes the rule to a physical
+  // engine block: gated tools fail-fast with a [SYSTEM SHIELD] notice until
+  // the agent calls get_repo_map at least once this session. Only @coder and
+  // @designer are gated — @manager and @planner have other read paths.
+  let hasSeenRepoMap = false;
+  const PANORAMIC_GATED_AGENTS = new Set(['coder', 'designer']);
+  const PANORAMIC_GATED_TOOLS  = new Set(['grep', 'glob', 'search_in_files', 'search_and_replace']);
+  // ─────────────────────────────────────────────────────────────────────────
+
   // ── v8.16.7: Git Auto-Checkpointing (Smart Auto-Commit) ──────────────────
   // If the human has uncommitted changes, createSilentCheckpoint now auto-saves
   // them as a WIP commit BEFORE creating the agent's anchor commit. On rollback,
@@ -1050,6 +1063,26 @@ export async function* runAgentLoop(
         .join(', ');
       yield { type: 'toolCall', name: toolName, args, displayArgs };
 
+      // ── Panoramic Physical Shield (v8.17.4) ──────────────────────────────────
+      // Promote the v8.17.3 prompt-level PANORAMIC RULE to a hard engine block.
+      // For @coder and @designer, the search/edit family (grep, glob,
+      // search_in_files, search_and_replace) is physically gated until the
+      // agent has called get_repo_map at least once in this session. The block
+      // fires BEFORE the Rabbit Hole guard so the shield message reaches the
+      // LLM even if the agent also tried to grep into node_modules.
+      if (PANORAMIC_GATED_AGENTS.has(agentId) &&
+          PANORAMIC_GATED_TOOLS.has(toolName) &&
+          !hasSeenRepoMap) {
+        const shieldMsg =
+          '[SYSTEM SHIELD] You are operating blind. You MUST call get_repo_map ' +
+          'to gain spatial awareness before searching or editing.';
+        debugLog(workspacePath, `[Panoramic Shield] ${toolName} blocked for @${agentId} — get_repo_map not yet called`);
+        yield { type: 'toolResult', name: toolName, success: false, output: shieldMsg };
+        messages.push({ role: 'tool', tool_call_id: tc.id, name: toolName, content: shieldMsg });
+        continue;
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
       // ── Rabbit Hole Hard Block (v8.16.23) ────────────────────────────────────
       // When a build/runtime error appears, the @coder occasionally drifts into
       // inspecting node_modules/ instead of rolling back its own edits. Blocks
@@ -1565,6 +1598,16 @@ export async function* runAgentLoop(
             toolName === 'replace_symbol' || toolName === 'replace_block' ||
             toolName === 'search_and_replace') {
           consecutiveBuildFailures = 0;
+        }
+        // ─────────────────────────────────────────────────────────────────────────
+
+        // ── v8.17.4: Lift the Panoramic Physical Shield once the agent has seen the map ──
+        // A successful get_repo_map call is the only event that flips this flag.
+        // From here on, gated tools (grep/glob/search_in_files/search_and_replace)
+        // execute normally for the rest of the session.
+        if (toolName === 'get_repo_map' && !hasSeenRepoMap) {
+          hasSeenRepoMap = true;
+          debugLog(workspacePath, `[Panoramic Shield] Lifted for @${agentId} — get_repo_map call succeeded`);
         }
         // ─────────────────────────────────────────────────────────────────────────
 

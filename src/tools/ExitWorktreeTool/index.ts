@@ -101,11 +101,13 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   }
 
   // Step 2 — merge worktree branch into the main workspace's current branch
-  // v8.17.3: on merge failure (typically conflicts) we MUST NOT leave the main
-  // workspace in a half-merged state. The agent has no reliable way to resolve
-  // conflicts mid-loop, and a dirty MERGING state poisons every subsequent git
-  // command in the session. Auto-abort here, return a single clean directive
-  // the agent can act on (discard the worktree, surface to the manager).
+  // v8.17.4: on merge failure the engine takes BOTH recovery actions itself —
+  // git merge --abort to clear the dirty MERGING state, then a full discard
+  // (worktree remove + branch -D + state file unlink). v8.17.3 left the agent
+  // a "discard the worktree" instruction; in dogfooding the @coder panicked
+  // and tried to "fix" the conflict with raw git instead. v8.17.4 removes the
+  // choice — the engine cleans up atomically and tells the agent to end its
+  // turn so the @manager can reschedule the task.
   try {
     cp.execSync(
       `git merge "${branchName}" --no-ff -m "Merge worktree '${branchName}': ${commitMsg}"`,
@@ -113,22 +115,20 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
     );
   } catch (e: any) {
     const stderr = (e.stderr?.toString() || e.message || '').slice(0, 400);
-    let abortNote = '';
-    try {
-      cp.execSync('git merge --abort', { cwd: workspacePath, stdio: 'pipe' });
-      abortNote = ' (git merge --abort succeeded — workspace restored to pre-merge state)';
-    } catch (abortErr: any) {
-      // Most often this means we never entered MERGING (e.g. fast-forward
-      // refused for an unrelated reason). Either way the workspace is not
-      // dirty with conflict markers — surface the original error and move on.
-      abortNote = ' (no MERGING state to abort)';
-    }
+    // (a) Abort the in-flight merge so the workspace is no longer in MERGING state.
+    try { cp.execSync('git merge --abort',                  { cwd: workspacePath, stdio: 'pipe' }); } catch { /* nothing to abort */ }
+    // (b) Auto-discard the worktree — same operations the action='discard' branch runs.
+    try { cp.execSync(`git worktree remove --force "${worktreePath}"`, { cwd: workspacePath, stdio: 'pipe' }); } catch { /* worktree dir may already be gone */ }
+    try { cp.execSync('git worktree prune',                  { cwd: workspacePath, stdio: 'pipe' }); } catch { /* non-fatal */ }
+    try { cp.execSync(`git branch -D "${branchName}"`,       { cwd: workspacePath, stdio: 'pipe' }); } catch { /* non-fatal */ }
+    try { fs.unlinkSync(stateFilePath); } catch { /* non-fatal */ }
+
     return {
       success: false,
       output:
-        `[MERGE CONFLICT] The merge failed due to codebase collisions. ` +
-        `The merge was cleanly aborted${abortNote}. ` +
-        `Exit the worktree with action='discard' and report the conflict to the Manager.\n\n` +
+        `[MERGE CONFLICT] Codebase collision detected. The worktree was ` +
+        `automatically discarded by the engine. End your turn immediately so the ` +
+        `Manager can reschedule this task.\n\n` +
         `Underlying git output (first 400 chars):\n${stderr}`,
     };
   }

@@ -61,6 +61,26 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
     }
   }
 
+  // ── Raw Git Branching/Merging Block (v8.17.4) ────────────────────────────────
+  // The v8.17.1 RAW_GIT_WORKFLOW_BLOCK was a prompt-level rule. Under merge
+  // conflict pressure the LLM ignored it and panicked with raw `git checkout`
+  // / `git merge`, fighting the worktree engine and corrupting MERGING state.
+  // Promote to a tool-level physical block: any segment of the command (split
+  // on |, ;, &) that starts with `git checkout` or `git merge` fails fast.
+  // `git restore` is already short-circuited above so file-level rollback is
+  // unaffected. `git merge --abort` is allowed because it is a recovery path,
+  // not a branching/merging operation.
+  const RAW_GIT_BLOCK_PATTERN = /^\s*git\s+(checkout|merge)\b/i;
+  const MERGE_ABORT_ALLOW     = /^\s*git\s+merge\s+--abort\b/i;
+  const _gitSegments = cmd.split(/\s*[|;&]+\s*/);
+  if (_gitSegments.some(seg => RAW_GIT_BLOCK_PATTERN.test(seg) && !MERGE_ABORT_ALLOW.test(seg))) {
+    return {
+      success: false,
+      output: '[SYSTEM BLOCK] Raw git branching/merging is physically disabled. Use exit_worktree.',
+    };
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+
   // ── Vite Panic Blocker (v8.16.12) ────────────────────────────────────────────
   // When npm run build fails, the LLM tends to panic and try to delete dist/,
   // .vite cache, node_modules/.cache, or pass --force to bypass "stale cache".
