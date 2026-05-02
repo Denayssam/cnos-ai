@@ -43,6 +43,7 @@ const agentMailbox_1 = require("./utils/agentMailbox");
 const repoMap_1 = require("./utils/repoMap");
 const gitSafety_1 = require("./utils/gitSafety");
 const buildValidator_1 = require("./utils/buildValidator");
+const DagController = __importStar(require("./utils/dagController"));
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 function resolveEndpointAndKey(model, config) {
     // Bare "deepseek-*" (no slash) → DeepSeek direct API. Models with "deepseek/" prefix go to OpenRouter.
@@ -359,6 +360,13 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
     // Reserved for Vector Memory integration.
     // Example: await contextIndexer.index(messages, workspacePath);
     // ──────────────────────────────────────────────────────────────────────────
+    // ─── DAG Dispatch Tracker (v8.17.0 — Phase 1) ────────────────────────────
+    // Tasks already announced as 'Ready for Instantiation' so the engine does not
+    // re-log the same dispatch resolution every iteration. Dispatch identity is
+    // (taskId + agent_type) because the agent_type can shift if the @manager
+    // rewrites the DAG mid-flight.
+    const dispatchedReady = new Set();
+    // ─────────────────────────────────────────────────────────────────────────
     // ── v8.16.7: Git Auto-Checkpointing (Smart Auto-Commit) ──────────────────
     // If the human has uncommitted changes, createSilentCheckpoint now auto-saves
     // them as a WIP commit BEFORE creating the agent's anchor commit. On rollback,
@@ -384,6 +392,30 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
         debugLog(workspacePath, `--- Iteration ${iterations}/${MAX_ITERATIONS} ---`);
         yield { type: 'iterationCount', count: iterations, max: MAX_ITERATIONS };
         yield { type: 'thinking', text: iterations === 1 ? `Agent ${agent.name} is planning…` : `Iteration ${iterations}: processing…` };
+        // ── DAG Dispatch Evaluation (v8.17.0 — Phase 1) ──────────────────────────
+        // Scan .fluxo/dag_state.json once per iteration. Any PENDING task whose
+        // depends_on parents are all COMPLETED is announced as ready. Phase 1 only
+        // logs the resolution — Phase 2 will actually delegate the task to the
+        // declared agent_type and flip its status to IN_PROGRESS.
+        if (workspacePath && DagController.exists(workspacePath)) {
+            try {
+                const ready = DagController.getReadyTasks(workspacePath);
+                for (const t of ready) {
+                    const key = `${t.id}:${t.agent_type}`;
+                    if (dispatchedReady.has(key)) {
+                        continue;
+                    }
+                    dispatchedReady.add(key);
+                    const msg = `[DAG Engine] Task ${t.id} is unblocked and ready for ${t.agent_type}`;
+                    debugLog(workspacePath, msg);
+                    yield { type: 'thinking', text: `🧭 ${msg}` };
+                }
+            }
+            catch (e) {
+                debugLog(workspacePath, `[DAG Engine] Dispatch evaluation failed: ${e?.message ?? String(e)}`);
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────────
         // ── Inter-Agent Mailbox drain (v8.2.0) ───────────────────────────────────────
         // Sub-agents running in parallel can send_message to this agent. Drain and
         // inject as user turns so the LLM receives them naturally in context.
