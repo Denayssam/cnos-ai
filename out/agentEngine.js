@@ -921,17 +921,19 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                 else if (toolName === 'search_and_replace' && nativeEditCallback) {
                     yield { type: 'thinking', text: '🔍 Applying VS Code native edit…' };
                     result = await nativeEditCallback(String(args.path ?? ''), String(args.search_snippet ?? ''), String(args.replace_snippet ?? ''));
-                    // ── Smart Failure Interceptor ──────────────────────────────────────
-                    // Inject an engine-level hint BEFORE the Circuit Breaker can fire,
-                    // steering the agent toward get_code_structure instead of blind retry.
+                    // ── Smart Failure Interceptor (v8.16.22 — Strict Fallback) ─────────
+                    // The previous gentle hint allowed the agent to drift into grep abuse
+                    // when search_and_replace missed. Replace with a strict directive that
+                    // forbids grep / guessing entirely and pins read_file as the only
+                    // legal recovery path.
                     if (!result.success) {
                         result = {
                             ...result,
                             output: result.output +
-                                '\n\nCONSEJO DEL MOTOR: El texto no coincide exactamente. ' +
-                                'Las causas más comunes son: indentación cambiada, líneas insertadas/eliminadas, o espacios invisibles. ' +
-                                'SIGUIENTE PASO OBLIGATORIO: llama get_code_structure sobre el archivo para obtener el mapa de líneas actualizado, ' +
-                                'luego usa read_file con el rango exacto (start_line/end_line) para ver el bloque real antes de reintentar.',
+                                '\n\n[SYSTEM ENFORCEMENT] MATCH ERROR. You hallucinated the search_snippet. ' +
+                                "You are STRICTLY FORBIDDEN from using 'grep' or guessing to fix this. " +
+                                "You MUST immediately use 'read_file' to extract the exact lines verbatim. " +
+                                'Any other action will result in system failure.',
                         };
                     }
                     // ──────────────────────────────────────────────────────────────────

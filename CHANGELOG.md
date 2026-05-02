@@ -2,6 +2,16 @@
 
 ---
 
+## [v8.16.22] - The Strict Fallback Patch
+
+**Objetivo:** En las pruebas de Escenario 4 el @coder agotó sus 25 iteraciones intentando editar un archivo. Cuando `search_and_replace` falló con un MATCH ERROR, el agente ignoró el consejo del motor de usar `read_file` y empezó a abusar del `grep` con cadenas genéricas (`return`, `function`, `.`) intentando triangular la posición del bloque. El "CONSEJO DEL MOTOR" original era demasiado amable — sugerencias suaves que el LLM podía interpretar como opcionales. Esta versión endurece la salida con prohibición explícita de grep + único path de recuperación pinned a `read_file`.
+
+- **Smart Failure Interceptor endurecido (`src/agentEngine.ts`):** El antiguo "CONSEJO DEL MOTOR" después de un fallo de `search_and_replace` (`"El texto no coincide exactamente. Las causas más comunes son... SIGUIENTE PASO OBLIGATORIO: llama get_code_structure..."`) era una sugerencia conversacional que el LLM podía ignorar. Reemplazado por una directiva imperativa en mayúsculas: _"[SYSTEM ENFORCEMENT] MATCH ERROR. You hallucinated the search_snippet. You are STRICTLY FORBIDDEN from using 'grep' or guessing to fix this. You MUST immediately use 'read_file' to extract the exact lines verbatim. Any other action will result in system failure."_ El cambio de tono ("CONSEJO" → "[SYSTEM ENFORCEMENT]"), la prohibición explícita de grep, y la amenaza de "system failure" hacen que el LLM interprete el output como un blocker no-negociable, no como un tip.
+- **GREP ABUSE RULE (`src/agents.ts` — @coder):** Nuevo bloque `NON-NEGOTIABLE` insertado en el system prompt del @coder, justo antes del TASK COMPLETION PROTOCOL. Establece la regla en una línea — _"You must NEVER use the grep tool as a substitute for reading code before an edit. If an edit fails, your ONLY allowed recovery path is to use read_file"_ — y la refuerza con tres patrones prohibidos explícitos (grep("return"), grep("function"), triangulación por repeated grep) y un patrón requerido único (`read_file → copy verbatim → retry search_and_replace`). Cierra con la distinción semántica: _"grep is a SEARCH tool, not a READ tool. Use it to locate which file contains a symbol you have not yet seen — never to inspect a file you are about to edit."_ Defensa por anclaje conceptual: el LLM entiende *por qué* el patrón es incorrecto, no sólo que está prohibido.
+- **Resultado:** El @coder con un fallo de match ya tiene un único camino legal — leer el archivo, copiar verbatim, reintentar. La prohibición vive en dos capas: el output del motor (visible en cada fallo) y el system prompt (visible en cada turno). Ambas dicen lo mismo: `read_file` es el único recovery path.
+
+---
+
 ## [v8.16.21] - The Graceful Handoff Patch
 
 **Objetivo:** En el Escenario 3 de dogfooding, el @coder inyectó un componente masivo, el `npm run build` pasó limpio, y aun así quedó atrapado en un bucle infinito. El motivo: intentaba cerrar la sesión emitiendo el `ORCHESTRATOR'S REPORT` y el hard-block Anti-Gaslighting (v8.16.14) lo interceptaba una y otra vez. Tenía la prohibición pero no tenía vía de escape. Esta versión le da un ramp de salida legal y único.
