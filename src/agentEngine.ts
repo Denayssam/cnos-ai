@@ -75,6 +75,41 @@ function resolveEndpointAndKey(model: string, config: EngineConfig): { endpointU
 }
 const MAX_ITERATIONS = 25;
 
+// ─── RBAC Categories (v8.19.0 — Phase 3 Deep MCP) ───────────────────────────
+// Principle of Least Privilege for MCP tools. Each agent role is allowed a
+// fixed set of category tags; a tool is admitted iff its inferred categories
+// (set by mcpClient.inferCategories) overlap the role's allow-set. Tools with
+// no categories ("unknown") are denied for every role EXCEPT @manager — the
+// orchestrator gets a permissive fallback so it can still operate when the
+// inference misses an exotic server.
+const RBAC_CATEGORIES: Record<string, Set<string>> = {
+  designer: new Set(['design', 'ui', 'figma', 'image']),
+  coder:    new Set(['database', 'compiler', 'git', 'github', 'devops']),
+  manager:  new Set(['pm', 'jira', 'github', 'git', 'project', 'issues']),
+};
+
+function applyMcpRbac(
+  agentId: string,
+  tools: NativeTool[],
+  categoryMap: Record<string, string[]>
+): NativeTool[] {
+  const allowed = RBAC_CATEGORIES[agentId];
+  return tools.filter(t => {
+    const cats = categoryMap[t.function.name] ?? [];
+    if (cats.length === 0) {
+      // Unknown category: only the @manager keeps the tool.
+      return agentId === 'manager';
+    }
+    if (!allowed) {
+      // Roles without an explicit RBAC entry (planner, dashboard, payments…)
+      // get nothing by default — Principle of Least Privilege.
+      return false;
+    }
+    return cats.some(c => allowed.has(c));
+  });
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 const MAX_LOG_SIZE = 2 * 1024 * 1024;
 
 // ── HITL Safe-Command Whitelist (v8.10.0) ────────────────────────────────────
@@ -232,7 +267,12 @@ export async function* runAgentLoop(
   callMcpToolCallback?: (name: string, args: any) => Promise<{ success: boolean; output: string }>,
   worktreeReviewCallback?: (branch: string, worktreePath: string) => Promise<'merge' | 'discard'>,
   replaceSymbolCallback?: (filePath: string, symbolName: string, newCode: string) => Promise<{ success: boolean; output: string }>,
-  hitlCommandCallback?: (command: string) => Promise<boolean>
+  hitlCommandCallback?: (command: string) => Promise<boolean>,
+  // v8.19.0 — per-tool category map keyed by full tool name (mcp_<server>_<tool>).
+  // Drives the RBAC filter that runs immediately below. If absent, every tool
+  // is treated as 'unknown' and only the @manager keeps access — a safe fallback
+  // that satisfies "deny by default unless the agent is the @manager".
+  mcpToolCategories: Record<string, string[]> = {}
 ): AsyncGenerator<AgentEvent> {
 
   // 1. Intent Detection (Routing)
@@ -259,8 +299,17 @@ export async function* runAgentLoop(
 
   const agent = AGENTS[agentId] || AGENTS.coder;
   let agentTools: NativeTool[] = getNativeTools(agent.tools);
+  // v8.19.0 — RBAC filter for MCP tools. The filter consults RBAC_CATEGORIES
+  // and the per-tool category map produced by mcpClient.inferCategories.
+  // Tools with unmatched categories are dropped silently from the agent's
+  // tool surface; the LLM never sees them and cannot call them.
+  let allowedMcpTools: NativeTool[] = [];
   if (mcpTools && mcpTools.length > 0) {
-    agentTools.push(...mcpTools);
+    allowedMcpTools = applyMcpRbac(agentId, mcpTools, mcpToolCategories);
+    if (allowedMcpTools.length > 0) {
+      agentTools.push(...allowedMcpTools);
+    }
+    debugLog(workspacePath, `[MCP RBAC] @${agentId} — granted ${allowedMcpTools.length}/${mcpTools.length} MCP tool(s)`);
   }
 
   // ─── Tool Masker (Deep Masking v7.18.0) ────────────────────────────────────
@@ -316,7 +365,9 @@ export async function* runAgentLoop(
     } catch { /* memory file unreadable — proceed without it */ }
   }
 
-  const baseSystemPrompt = buildAgentSystemPrompt(agentId);
+  // v8.19.0 — pass hasMcpTools so the [EXTERNAL MCP KNOWLEDGE] block is only
+  // injected when the RBAC filter actually admitted at least one external tool.
+  const baseSystemPrompt = buildAgentSystemPrompt(agentId, allowedMcpTools.length > 0);
   let systemPrompt = workspaceMemoryBlock
     ? baseSystemPrompt + workspaceMemoryBlock
     : baseSystemPrompt;
@@ -508,7 +559,8 @@ export async function* runAgentLoop(
               callMcpToolCallback,
               worktreeReviewCallback,
               replaceSymbolCallback,
-              hitlCommandCallback
+              hitlCommandCallback,
+              mcpToolCategories
             );
 
             yield { type: 'thinking', text: `━━━ DAG dispatch · ${t.id} → @${targetAgentId} ━━━` };
@@ -1405,7 +1457,8 @@ export async function* runAgentLoop(
               callMcpToolCallback,
               undefined,              // no worktree review
               undefined,              // no replace symbol
-              undefined               // no HITL — planner is read-only
+              undefined,              // no HITL — planner is read-only
+              mcpToolCategories       // v8.19.0 — RBAC filter will deny unknown-category tools to planner
             );
 
             for await (const event of plannerGen) {
@@ -1481,7 +1534,8 @@ export async function* runAgentLoop(
                 callMcpToolCallback,
                 worktreeReviewCallback,
                 replaceSymbolCallback,
-                hitlCommandCallback    // HITL propagated to all swarm sub-agents
+                hitlCommandCallback,    // HITL propagated to all swarm sub-agents
+                mcpToolCategories        // v8.19.0 — each sub-agent re-applies its own RBAC filter
               );
 
               for await (const event of subGen) {

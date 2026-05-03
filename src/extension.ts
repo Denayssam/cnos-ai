@@ -474,6 +474,7 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
     };
 
     const mcpTools = _mcpClient.getMcpTools();
+    const mcpToolCategories = _mcpClient.getMcpToolCategories();
 
     // ── LSP Symbol Replace callback (v8.5.0) ─────────────────────────────────
     // Uses VS Code's Language Server to locate a named AST symbol and replace it
@@ -622,7 +623,8 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
       async (name, args) => await _mcpClient.callMcpTool(name, args),
       worktreeReviewCallback,
       replaceSymbolCallback,
-      hitlCommandCallback
+      hitlCommandCallback,
+      mcpToolCategories
     )) {
       _postToPanel({ ...event });
       if (event.type === 'streamChunk') { fullAssistantText += event.text; }
@@ -1020,7 +1022,11 @@ export function activate(context: vscode.ExtensionContext): void {
   _extensionUri = context.extensionUri;
   _context = context;
 
-  _mcpClient = new McpSwarmClient();
+  // v8.19.0 — pass the workspace root so the client also reads
+  // .fluxo/mcp_servers.json (per-project MCP config) on top of the
+  // user-scoped fluxo.mcpServers VSCode setting.
+  const _initWsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  _mcpClient = new McpSwarmClient(_initWsPath);
   _mcpClient.initialize();
 
   // Initialize conversation persistence

@@ -459,6 +459,7 @@ async function _handleSendMessage(userText, model, workerModel, context) {
             }
         };
         const mcpTools = _mcpClient.getMcpTools();
+        const mcpToolCategories = _mcpClient.getMcpToolCategories();
         // ── LSP Symbol Replace callback (v8.5.0) ─────────────────────────────────
         // Uses VS Code's Language Server to locate a named AST symbol and replace it
         // atomically — no line numbers, no string matching, no brace counting.
@@ -575,7 +576,7 @@ async function _handleSendMessage(userText, model, workerModel, context) {
             return choice === 'Permitir';
         };
         // ─────────────────────────────────────────────────────────────────────────────
-        for await (const event of (0, agentEngine_1.runAgentLoop)(userText, agentId, _conversationHistory, engineConfig, workspacePath, _currentAbortController.signal, _sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, async (name, args) => await _mcpClient.callMcpTool(name, args), worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback)) {
+        for await (const event of (0, agentEngine_1.runAgentLoop)(userText, agentId, _conversationHistory, engineConfig, workspacePath, _currentAbortController.signal, _sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, async (name, args) => await _mcpClient.callMcpTool(name, args), worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback, mcpToolCategories)) {
             _postToPanel({ ...event });
             if (event.type === 'streamChunk') {
                 fullAssistantText += event.text;
@@ -940,7 +941,11 @@ function ensureGitignore(workspacePath) {
 function activate(context) {
     _extensionUri = context.extensionUri;
     _context = context;
-    _mcpClient = new mcpClient_1.McpSwarmClient();
+    // v8.19.0 — pass the workspace root so the client also reads
+    // .fluxo/mcp_servers.json (per-project MCP config) on top of the
+    // user-scoped fluxo.mcpServers VSCode setting.
+    const _initWsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    _mcpClient = new mcpClient_1.McpSwarmClient(_initWsPath);
     _mcpClient.initialize();
     // Initialize conversation persistence
     _conversationHistory = context.workspaceState.get(STORAGE_KEY) || [];

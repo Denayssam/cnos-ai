@@ -65,6 +65,35 @@ function resolveEndpointAndKey(model, config) {
     return { endpointUrl: OPENROUTER_URL, resolvedKey: config.apiKey, resolvedModel: model };
 }
 const MAX_ITERATIONS = 25;
+// ─── RBAC Categories (v8.19.0 — Phase 3 Deep MCP) ───────────────────────────
+// Principle of Least Privilege for MCP tools. Each agent role is allowed a
+// fixed set of category tags; a tool is admitted iff its inferred categories
+// (set by mcpClient.inferCategories) overlap the role's allow-set. Tools with
+// no categories ("unknown") are denied for every role EXCEPT @manager — the
+// orchestrator gets a permissive fallback so it can still operate when the
+// inference misses an exotic server.
+const RBAC_CATEGORIES = {
+    designer: new Set(['design', 'ui', 'figma', 'image']),
+    coder: new Set(['database', 'compiler', 'git', 'github', 'devops']),
+    manager: new Set(['pm', 'jira', 'github', 'git', 'project', 'issues']),
+};
+function applyMcpRbac(agentId, tools, categoryMap) {
+    const allowed = RBAC_CATEGORIES[agentId];
+    return tools.filter(t => {
+        const cats = categoryMap[t.function.name] ?? [];
+        if (cats.length === 0) {
+            // Unknown category: only the @manager keeps the tool.
+            return agentId === 'manager';
+        }
+        if (!allowed) {
+            // Roles without an explicit RBAC entry (planner, dashboard, payments…)
+            // get nothing by default — Principle of Least Privilege.
+            return false;
+        }
+        return cats.some(c => allowed.has(c));
+    });
+}
+// ─────────────────────────────────────────────────────────────────────────────
 const MAX_LOG_SIZE = 2 * 1024 * 1024;
 // ── HITL Safe-Command Whitelist (v8.10.0) ────────────────────────────────────
 // Commands matching any pattern are auto-approved. Everything else pauses for
@@ -205,7 +234,12 @@ function pruneToolResults(messages) {
     });
 }
 // ─── Agent Loop ───────────────────────────────────────────────────────────────
-async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, config, workspacePath, abortSignal, sentinelHasError = false, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools = [], callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback) {
+async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, config, workspacePath, abortSignal, sentinelHasError = false, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools = [], callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback, 
+// v8.19.0 — per-tool category map keyed by full tool name (mcp_<server>_<tool>).
+// Drives the RBAC filter that runs immediately below. If absent, every tool
+// is treated as 'unknown' and only the @manager keeps access — a safe fallback
+// that satisfies "deny by default unless the agent is the @manager".
+mcpToolCategories = {}) {
     // 1. Intent Detection (Routing)
     // ── v8.16.6: Skip routing for sub-agent invocations ──────────────────────
     // The @planner is invoked from enter_plan_mode with a FIXED role. Re-routing
@@ -232,8 +266,17 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
     }
     const agent = agents_1.AGENTS[agentId] || agents_1.AGENTS.coder;
     let agentTools = (0, tools_1.getNativeTools)(agent.tools);
+    // v8.19.0 — RBAC filter for MCP tools. The filter consults RBAC_CATEGORIES
+    // and the per-tool category map produced by mcpClient.inferCategories.
+    // Tools with unmatched categories are dropped silently from the agent's
+    // tool surface; the LLM never sees them and cannot call them.
+    let allowedMcpTools = [];
     if (mcpTools && mcpTools.length > 0) {
-        agentTools.push(...mcpTools);
+        allowedMcpTools = applyMcpRbac(agentId, mcpTools, mcpToolCategories);
+        if (allowedMcpTools.length > 0) {
+            agentTools.push(...allowedMcpTools);
+        }
+        debugLog(workspacePath, `[MCP RBAC] @${agentId} — granted ${allowedMcpTools.length}/${mcpTools.length} MCP tool(s)`);
     }
     // ─── Tool Masker (Deep Masking v7.18.0) ────────────────────────────────────
     // Extended regex handles intermediate text: "PROHIBIDO usar la herramienta search_and_replace"
@@ -284,7 +327,9 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
         }
         catch { /* memory file unreadable — proceed without it */ }
     }
-    const baseSystemPrompt = (0, agents_1.buildAgentSystemPrompt)(agentId);
+    // v8.19.0 — pass hasMcpTools so the [EXTERNAL MCP KNOWLEDGE] block is only
+    // injected when the RBAC filter actually admitted at least one external tool.
+    const baseSystemPrompt = (0, agents_1.buildAgentSystemPrompt)(agentId, allowedMcpTools.length > 0);
     let systemPrompt = workspaceMemoryBlock
         ? baseSystemPrompt + workspaceMemoryBlock
         : baseSystemPrompt;
@@ -442,7 +487,7 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                         `cleanly so the orchestrator can mark this task as COMPLETED.`;
                     const subEvents = [];
                     try {
-                        const subGen = runAgentLoop(taskPrompt, targetAgentId, [], { ...effectiveConfig, model: config.workerModel || config.model }, workspacePath, abortSignal, sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback);
+                        const subGen = runAgentLoop(taskPrompt, targetAgentId, [], { ...effectiveConfig, model: config.workerModel || config.model }, workspacePath, abortSignal, sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback, mcpToolCategories);
                         yield { type: 'thinking', text: `━━━ DAG dispatch · ${t.id} → @${targetAgentId} ━━━` };
                         for await (const ev of subGen) {
                             subEvents.push(ev);
@@ -1305,7 +1350,8 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                         undefined, // no native edit
                         getCodeStructureCallback, mcpTools, callMcpToolCallback, undefined, // no worktree review
                         undefined, // no replace symbol
-                        undefined // no HITL — planner is read-only
+                        undefined, // no HITL — planner is read-only
+                        mcpToolCategories // v8.19.0 — RBAC filter will deny unknown-category tools to planner
                         );
                         for await (const event of plannerGen) {
                             plannerEventBuffer.push(event);
@@ -1361,7 +1407,8 @@ async function* runAgentLoop(userMessage, initialAgentId, conversationHistory, c
                                 ? `${member.task}\n\n--- INCOMING MESSAGES ---\n${pendingMsgs.join('\n')}`
                                 : member.task;
                             const subGen = runAgentLoop(taskMessage, subAgentId, [], // each sub-agent starts with a clean conversation slate
-                            { ...effectiveConfig, model: config.workerModel || config.model }, workspacePath, abortSignal, sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback // HITL propagated to all swarm sub-agents
+                            { ...effectiveConfig, model: config.workerModel || config.model }, workspacePath, abortSignal, sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback, // HITL propagated to all swarm sub-agents
+                            mcpToolCategories // v8.19.0 — each sub-agent re-applies its own RBAC filter
                             );
                             for await (const event of subGen) {
                                 eventBuffers[idx].push(event);

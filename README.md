@@ -2,7 +2,7 @@
 
 Fluxo AI no es solo otro autocompletador de código. Es un **Motor Cognitivo (Tier-1)** integrado nativamente en Visual Studio Code, diseñado para Managers, Arquitectos y Tech Leads que requieren una colaboración segura y guiada (Human-in-the-Loop) con modelos de lenguaje.
 
-![Version](https://img.shields.io/badge/version-v8.18.1-blue)
+![Version](https://img.shields.io/badge/version-v8.19.0-blue)
 ![Architecture](https://img.shields.io/badge/architecture-Structural_Isolation-orange)
 ![Status](https://img.shields.io/badge/status-Active_Development-success)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -15,7 +15,7 @@ Los LLMs actuales son brillantes creando código desde cero, pero deficientes ha
 
 ---
 
-## 🚀 Características Principales (Motor v8.18.1 — Pathing & DAG Injection Patch)
+## 🚀 Características Principales (Motor v8.19.0 — Phase 3: Deep MCP & RBAC)
 
 | Característica | Descripción |
 |---|---|

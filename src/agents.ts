@@ -1070,8 +1070,30 @@ export function routeToAgent(message: string): string {
   return 'coder'; // default
 }
 
+// ─── MCP Knowledge Block (v8.19.0 — Phase 3 Deep MCP) ──────────────────────
+// Injected only when the engine's RBAC filter has actually granted MCP tools
+// to this agent. Tells the LLM that external tools are live in its toolset
+// and frames them as "live context from the outside world" so it reaches for
+// them when its native tools cannot satisfy the task. Read-only agents and
+// agents that ended up with zero MCP tools after RBAC do NOT see this block.
+const MCP_KNOWLEDGE_BLOCK = `
+─── [EXTERNAL MCP KNOWLEDGE] (v8.19.0 — Phase 3) ──────────────────────────────
+
+You have been granted access to dynamically loaded external tools via the
+Model Context Protocol. Use them to fetch live context from the outside world.
+
+These tools are prefixed with 'mcp_<server>_<tool>' in your toolset and have
+been filtered to your role by the engine's RBAC layer — every tool you can
+see is one you are explicitly authorized to call. When a task requires real
+data (issue trackers, design files, databases, repository state, deploy
+status, etc.) prefer calling the matching MCP tool over guessing from your
+training cutoff or asking the user.
+
+────────────────────────────────────────────────────────────────────────────────
+`;
+
 /** Build full system prompt for an agent including tools and the shared separation protocol */
-export function buildAgentSystemPrompt(agentId: string): string {
+export function buildAgentSystemPrompt(agentId: string, hasMcpTools: boolean = false): string {
   const agent = AGENTS[agentId] || AGENTS.coder;
   // Inject OS_DIRECTIVE only for agents that have access to run_command.
   // This avoids polluting read-only agents (@planner) with OS-specific command advice.
@@ -1080,7 +1102,9 @@ export function buildAgentSystemPrompt(agentId: string): string {
   // it is the only tool the rule constrains, and read-only agents like @planner do
   // not need the noise in their system prompt.
   const gitBlock = agent.tools.includes('run_command') ? RAW_GIT_WORKFLOW_BLOCK : '';
-  return `${MANIFESTO_REF}${agent.systemPrompt}${osBlock}\n${SEPARATION_PROTOCOL}${gitBlock}`;
+  // v8.19.0 — only mention MCP if RBAC actually admitted at least one external tool.
+  const mcpBlock = hasMcpTools ? MCP_KNOWLEDGE_BLOCK : '';
+  return `${MANIFESTO_REF}${agent.systemPrompt}${osBlock}\n${SEPARATION_PROTOCOL}${gitBlock}${mcpBlock}`;
 }
 
 /** Get all agents as a list for UI display */
