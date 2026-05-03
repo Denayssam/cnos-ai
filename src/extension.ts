@@ -610,6 +610,69 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
     };
     // ─────────────────────────────────────────────────────────────────────────────
 
+    // ── LSP Passive Feedback Callback (v8.23.0) ─────────────────────────────────
+    // Polls vscode.languages.getDiagnostics for the recently-edited files BEFORE
+    // the engine runs npm run build. The TS/JSX language server is already
+    // running and indexing every open document; querying its diagnostics is
+    // effectively free compared to a compiler invocation. Returns one
+    // human-readable line per diagnostic (file:line: message) suitable for
+    // injecting straight into the agent's message stream. Errors and warnings
+    // both flow through — the agent treats them uniformly. Filtered down to
+    // Error and Warning severity to silence Information/Hint chatter (LSPs
+    // emit a lot of "consider extracting this" hints that are not actionable
+    // pre-build).
+    //
+    // Behavior contract (matches the engine's expectations):
+    //   • Returns [] (not throws) when no diagnostics — the engine treats this
+    //     as "nothing to surface, proceed to Quality Gate".
+    //   • Resolves bare repo-relative paths against the workspace, just like
+    //     the get_code_structure callback does.
+    //   • Each path is opened (so the LSP indexes it if it wasn't already)
+    //     and given a short settle window — TS server can take ~300ms to
+    //     update diagnostics on a freshly-edited file. Total budget capped at
+    //     ~1.2s across all files so we do not block the gate noticeably.
+    const getDiagnosticsCallback = async (relPaths: string[]): Promise<string[]> => {
+      if (!Array.isArray(relPaths) || relPaths.length === 0) { return []; }
+      const out: string[] = [];
+      const settleMs = 300;
+      try {
+        for (const rel of relPaths.slice(0, 5)) {
+          if (typeof rel !== 'string' || !rel.trim()) { continue; }
+          let cleanPath = rel.trim();
+          // Strip /workspace/ Docker-bias and worktree-prefix hallucinations
+          // mirror the same heuristics get_code_structure uses.
+          if (cleanPath.startsWith('/workspace/'))      { cleanPath = cleanPath.substring(11); }
+          else if (cleanPath.startsWith('workspace/'))  { cleanPath = cleanPath.substring(10); }
+          else if (cleanPath.startsWith('\\workspace\\')) { cleanPath = cleanPath.substring(11); }
+          const finalPath = path.isAbsolute(cleanPath) ? cleanPath : path.join(workspacePath, cleanPath);
+          if (!fs.existsSync(finalPath)) { continue; }
+          const uri = vscode.Uri.file(finalPath);
+          try {
+            await vscode.workspace.openTextDocument(uri);
+            await new Promise<void>(r => setTimeout(r, settleMs));
+          } catch { /* continue with whatever diagnostics already exist */ }
+          const diags = vscode.languages.getDiagnostics(uri);
+          for (const d of diags) {
+            if (d.severity !== vscode.DiagnosticSeverity.Error && d.severity !== vscode.DiagnosticSeverity.Warning) {
+              continue;
+            }
+            const sev = d.severity === vscode.DiagnosticSeverity.Error ? 'error' : 'warning';
+            const line = d.range.start.line + 1;
+            const msg = (d.message || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+            out.push(`${cleanPath}:${line} [${sev}] ${msg}`);
+            if (out.length >= 10) { break; }
+          }
+          if (out.length >= 10) { break; }
+        }
+      } catch (err: any) {
+        // Defensive: never throw — engine treats absence/empty as "no LSP".
+        console.error('[Fluxo LSP Passive] callback error:', err);
+        return [];
+      }
+      return out;
+    };
+    // ─────────────────────────────────────────────────────────────────────────────
+
     for await (const event of runAgentLoop(
       userText,
       agentId,
@@ -626,7 +689,8 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
       worktreeReviewCallback,
       replaceSymbolCallback,
       hitlCommandCallback,
-      mcpToolCategories
+      mcpToolCategories,
+      getDiagnosticsCallback
     )) {
       _postToPanel({ ...event });
       if (event.type === 'streamChunk') { fullAssistantText += event.text; }

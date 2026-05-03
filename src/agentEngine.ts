@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { executeTool, getNativeTools, NativeTool } from './tools';
 import { stripWorktreePrefix } from './tools/shared';
-import { compactToolFailures } from './utils/condenser';
+import { compactToolFailures, proactiveCompact } from './utils/condenser';
 import { AGENTS, buildAgentSystemPrompt, ROUTER_PROMPT, REVISOR_PROMPT, SUMMARIZER_PROMPT } from './agents';
 import { AgentMailbox } from './utils/agentMailbox';
 import { buildRepoMap } from './utils/repoMap';
@@ -274,7 +274,15 @@ export async function* runAgentLoop(
   // Drives the RBAC filter that runs immediately below. If absent, every tool
   // is treated as 'unknown' and only the @manager keeps access — a safe fallback
   // that satisfies "deny by default unless the agent is the @manager".
-  mcpToolCategories: Record<string, string[]> = {}
+  mcpToolCategories: Record<string, string[]> = {},
+  // v8.23.0 — LSP Passive Feedback. Polls vscode.languages.getDiagnostics for
+  // the recently edited files BEFORE the Quality Gate runs npm run build, so
+  // the agent learns about missing props / undeclared symbols / type
+  // mismatches without paying the cost of a full compiler invocation. Returns
+  // a list of human-readable diagnostic strings (already trimmed and capped).
+  // Engine treats absence (undefined/null callback) as "no LSP available" —
+  // skips the check silently so non-VS Code execution paths are unaffected.
+  getDiagnosticsCallback?: (relPaths: string[]) => Promise<string[]>
 ): AsyncGenerator<AgentEvent> {
 
   // 1. Intent Detection (Routing)
@@ -431,6 +439,13 @@ export async function* runAgentLoop(
   let planCheckCount = 0;
   let consecutiveBuildFailures = 0;  // ── v8.16.1: Quality Gate circuit breaker counter
   let bypassQualityGate = false;     // ── v8.16.1: set to true when user approves bypass
+  // v8.23.0 — LSP Passive Feedback bookkeeping. Tracks the recently edited
+  // files so the diagnostics callback knows which files to poll, and a per-
+  // turn cap so we never block the same completion attempt more than once
+  // (otherwise a stubborn diagnostic could trap the agent in an infinite
+  // pre-build loop).
+  const recentlyEditedFiles = new Set<string>();
+  let lspPassiveInjected = false;
 
   // ── Worktree Session State (v8.8.0) ──────────────────────────────────────────
   // Initialized from disk so worktree context survives across iterations and is
@@ -562,7 +577,8 @@ export async function* runAgentLoop(
               worktreeReviewCallback,
               replaceSymbolCallback,
               hitlCommandCallback,
-              mcpToolCategories
+              mcpToolCategories,
+              getDiagnosticsCallback
             );
 
             yield { type: 'thinking', text: `━━━ DAG dispatch · ${t.id} → @${targetAgentId} ━━━` };
@@ -780,6 +796,40 @@ export async function* runAgentLoop(
           continue;
         }
         debugLog(workspacePath, 'Plan Verification: completion signal confirmed — exiting loop');
+        // ── v8.23.0: LSP Passive Feedback — pre-build "sixth sense" ─────────
+        // Cheaper than validateBuild (no compiler invocation, just queries the
+        // already-running TS/JSX language server for diagnostics on the files
+        // we just edited). If the LSP sees missing props, undeclared symbols,
+        // or type mismatches, surface them BEFORE we pay the cost of the full
+        // build. The agent gets the warning, fixes the typo, and on its next
+        // completion attempt the gate runs cleanly. Capped at one injection
+        // per turn (lspPassiveInjected) — a stubborn diagnostic must not trap
+        // the agent in an infinite pre-build loop. Reset on green build.
+        if (
+          getDiagnosticsCallback && !lspPassiveInjected &&
+          recentlyEditedFiles.size > 0 && workspacePath && !bypassQualityGate
+        ) {
+          try {
+            const _diagnostics = await getDiagnosticsCallback([...recentlyEditedFiles].slice(0, 5));
+            if (_diagnostics.length > 0) {
+              lspPassiveInjected = true;
+              const _diagBlock = _diagnostics.slice(0, 8).map(d => `  • ${d}`).join('\n');
+              const _passiveMsg =
+                `[LSP PASSIVE FEEDBACK] The Language Server detected ${_diagnostics.length} unresolved issue(s) ` +
+                `in the files you just edited:\n${_diagBlock}\n\n` +
+                `MANDATORY: Fix these BEFORE running npm run build or declaring the task done. ` +
+                `These are AST-level signals from the running TS/JSX server — they will become ` +
+                `compiler errors on the next build attempt.`;
+              yield { type: 'thinking', text: `🧭 LSP passive feedback: ${_diagnostics.length} issue(s) detected` };
+              messages.push({ role: 'user', content: _passiveMsg });
+              debugLog(workspacePath, `[LSP Passive] Injected ${_diagnostics.length} diagnostic(s) before Quality Gate`);
+              continue;
+            }
+          } catch (err: any) {
+            debugLog(workspacePath, `[LSP Passive] callback failed: ${err?.message ?? err} — falling through to Quality Gate`);
+          }
+        }
+        // ────────────────────────────────────────────────────────────────────
         // ── v8.16.0/8.16.1: Quality Gate + Escape Hatch ──────────────────────
         if (workspacePath && toolCallHistory.length > 0 && !buildFailureCtx && !bypassQualityGate) {
           yield { type: 'thinking', text: '🏗️ Quality Gate: validating build before completion…' };
@@ -1482,7 +1532,8 @@ export async function* runAgentLoop(
               undefined,              // no worktree review
               undefined,              // no replace symbol
               undefined,              // no HITL — planner is read-only
-              mcpToolCategories       // v8.19.0 — RBAC filter will deny unknown-category tools to planner
+              mcpToolCategories,      // v8.19.0 — RBAC filter will deny unknown-category tools to planner
+              undefined               // v8.23.0 — no LSP passive feedback for the planner (read-only, never edits)
             );
 
             for await (const event of plannerGen) {
@@ -1559,7 +1610,8 @@ export async function* runAgentLoop(
                 worktreeReviewCallback,
                 replaceSymbolCallback,
                 hitlCommandCallback,    // HITL propagated to all swarm sub-agents
-                mcpToolCategories        // v8.19.0 — each sub-agent re-applies its own RBAC filter
+                mcpToolCategories,       // v8.19.0 — each sub-agent re-applies its own RBAC filter
+                getDiagnosticsCallback   // v8.23.0 — sub-agents also get LSP passive feedback before their gate
               );
 
               for await (const event of subGen) {
@@ -1762,6 +1814,22 @@ export async function* runAgentLoop(
       if ((toolName === 'replace_lines' || toolName === 'write_file') && result.success) {
         lastEditedFile = (args.path as string) || null;
       }
+      // v8.23.0 — Broader edit tracking for the LSP Passive Feedback poller.
+      // Captures every successful edit across all editing tools so the LSP
+      // check sees the full set of recently-touched files, not just the
+      // single file that gates SYNTAX_RECOVERY. Capped implicitly by Set
+      // semantics — same file edited 5 times stays one entry. Reset on a
+      // green build below (see run_command success branch).
+      const _EDIT_TOOLS_FOR_LSP = new Set([
+        'write_file', 'replace_lines', 'replace_block',
+        'replace_symbol', 'search_and_replace', 'insert_lines',
+      ]);
+      if (_EDIT_TOOLS_FOR_LSP.has(toolName) && result.success) {
+        const _editPath = (args.path ?? args.file_path) as string | undefined;
+        if (typeof _editPath === 'string' && _editPath.trim()) {
+          recentlyEditedFiles.add(_editPath.trim());
+        }
+      }
 
       // Build failure tracking + mandatory fix injection
       if (toolName === 'run_command') {
@@ -1779,6 +1847,13 @@ export async function* runAgentLoop(
           } else {
             buildFailureCtx = '';
             lastEditedFile = null;
+            // v8.23.0 — green build means the recently-edited set has been
+            // proven by the compiler; flush it so the next LSP poll only
+            // covers files touched AFTER this checkpoint. Also reset the
+            // per-turn LSP injection guard so a follow-up edit cycle gets a
+            // fresh diagnostic check.
+            recentlyEditedFiles.clear();
+            lspPassiveInjected = false;
           }
         }
       }
@@ -1866,6 +1941,25 @@ export async function* runAgentLoop(
         role: 'user',
         content: '⚡ RESULTADO RECIBIDO. Si el build está roto o la tarea incompleta, llama la siguiente herramienta. Si completaste TODOS los pasos y el build está limpio, envía tu Execution Report final (sin tool calls).',
       });
+    }
+
+    // ── Active Auto-Condenser (v8.23.0) ────────────────────────────────────
+    // Run once per outer iteration AFTER all tool results have been pushed
+    // and the iteration's user-side nudge is in place. Compacts stale tool
+    // failures and superseded edit results from the older portion of the
+    // history, leaving the live working window untouched. This is the
+    // cognitive analogue of the v8.22.0 reactive condenser: that one fires
+    // when one tool burns the breaker; this one fires every iteration on the
+    // accumulated residue across all tools, so Context Window Intoxication
+    // never gets a chance to set in even when no single tool trips its
+    // breaker. Idempotent and silent — if there is nothing to compact (small
+    // history, no stale residue), it is a no-op.
+    const _autoCompact = proactiveCompact(messages);
+    if (_autoCompact.compactedFailures > 0 || _autoCompact.compactedRedundantEdits > 0) {
+      debugLog(
+        workspacePath,
+        `[Auto-Condenser] Compacted ${_autoCompact.compactedFailures} failure(s) + ${_autoCompact.compactedRedundantEdits} redundant edit(s) at index ${_autoCompact.insertedAt} (history now ${messages.length} msgs)`,
+      );
     }
   }
 

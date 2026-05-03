@@ -26,6 +26,7 @@
 //   • Returns the number of messages collapsed so the caller can log it.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.compactToolFailures = compactToolFailures;
+exports.proactiveCompact = proactiveCompact;
 function compactToolFailures(messages, toolName, count = 3) {
     if (count <= 0 || messages.length === 0) {
         return { compacted: 0, insertedAt: null };
@@ -65,5 +66,171 @@ function compactToolFailures(messages, toolName, count = 3) {
     };
     messages.splice(earliest, 0, condenserMessage);
     return { compacted: indices.length, insertedAt: earliest };
+}
+// ─── Active Auto-Condenser (v8.23.0) ─────────────────────────────────────────
+// The reactive condenser above only fires when the Circuit Breaker fires for a
+// single tool. In long sessions the broader failure pattern is "Context Window
+// Intoxication": dozens of stale tool messages — old failure traces, repeated
+// search_and_replace results on the same file, redundant grep hits — pile up
+// in the history and crowd out the live problem. Symptoms include the LLM
+// re-declaring an existing function (it forgot it created the symbol earlier),
+// re-reading the same file three times in a row, or re-trying a known-bad
+// tool variant because the failure is buried 12 turns back.
+//
+// Inspired by the "compact" routine in Anthropic's own agent loop (the active
+// auto-compactor that monitors history size between LLM calls), this routine
+// runs ONCE PER ITERATION after the tool-result push. It leaves the most
+// recent K messages untouched (the live working window) and walks the older
+// portion looking for two specific kinds of stale residue:
+//
+//   1. Tool failures (role=tool, content starts with one of the well-known
+//      engine-injected failure prefixes — MANAGER DIRECTIVE / SYSTEM ERROR /
+//      [CIRCUIT / [SOFT BLOCK / [SYNTAX / etc).
+//   2. Repeated successful edits on the same file via the same tool — only
+//      the MOST RECENT successful edit per (tool, path) tuple matters; older
+//      successes are stale because they describe an older state of the file.
+//
+// All matches in the older window are removed and replaced with a single
+// `[COMPACTED MEMORY]` system message that summarizes counts + distinct files
+// touched. Idempotent: re-running on a history that already has the marker is
+// a no-op (the marker itself is excluded from compaction).
+const FAILURE_PREFIXES = [
+    'MANAGER DIRECTIVE: The tool failed',
+    'SYSTEM ERROR',
+    'SYSTEM OVERRIDE',
+    '[CIRCUIT',
+    '[SOFT BLOCK',
+    '[SYNTAX ERROR DETECTED]',
+    '[SYSTEM ENGINE ERROR]',
+    '[SYSTEM SHIELD]',
+    '[SYSTEM BLOCK]',
+    '[YIELD TO HUMAN',
+    'CRITICAL ERROR',
+    'CRITICAL AUDIT FAILURE',
+    'FILE NOT FOUND',
+    'ERROR:',
+    'Error:',
+];
+function isFailureContent(content) {
+    if (typeof content !== 'string') {
+        return false;
+    }
+    return FAILURE_PREFIXES.some(p => content.startsWith(p));
+}
+function pathKeyFromArgsLikeContent(_content) {
+    // Tool-result messages do not carry args — we read the path from the
+    // adjacent assistant tool_call. Helper kept as a placeholder for future
+    // when the engine threads structured metadata through the result.
+    return null;
+}
+function proactiveCompact(messages, opts = {}) {
+    const keepTail = opts.keepTail ?? 10;
+    const minMessages = opts.minMessages ?? 24;
+    if (messages.length < minMessages) {
+        return { compactedFailures: 0, compactedRedundantEdits: 0, insertedAt: null };
+    }
+    const cutoff = Math.max(0, messages.length - keepTail);
+    // Pass 1: scan the older portion (indices [0, cutoff)) for failure messages
+    // and for the most-recent-per-(tool,path) edit successes.
+    //
+    // For redundant edit detection we walk backwards through the older portion
+    // so that the FIRST entry we see for a given (tool, path) tuple is the most
+    // recent and is preserved; everything older with the same tuple is marked
+    // stale.
+    const failureIndices = [];
+    const redundantEditIndices = [];
+    const seenLatestEdit = new Set();
+    const distinctFiles = new Set();
+    const distinctFailingTools = new Set();
+    // Collect the assistant tool_call args alongside their tool result indices.
+    // The args carry the path; the tool result carries the success state.
+    // Map: tool_call_id → { name, path }
+    const callArgsById = new Map();
+    for (const m of messages) {
+        if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+            for (const tc of m.tool_calls) {
+                let parsed = {};
+                try {
+                    parsed = JSON.parse(tc.function.arguments || '{}');
+                }
+                catch { /* ignore */ }
+                const p = (parsed.path ?? parsed.file_path ?? parsed.absolute_path ?? null);
+                callArgsById.set(tc.id, {
+                    name: tc.function.name,
+                    path: typeof p === 'string' ? p : null,
+                });
+            }
+        }
+    }
+    for (let i = cutoff - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role !== 'tool') {
+            continue;
+        }
+        if (typeof m.content === 'string' && m.content.startsWith('[COMPACTED MEMORY]')) {
+            continue; // never re-compact ourselves
+        }
+        if (typeof m.content === 'string' && m.content.startsWith('[CONDENSER]')) {
+            continue; // never collide with the per-tool reactive condenser
+        }
+        if (isFailureContent(m.content)) {
+            failureIndices.push(i);
+            if (m.name) {
+                distinctFailingTools.add(m.name);
+            }
+            const meta = m.tool_call_id ? callArgsById.get(m.tool_call_id) : undefined;
+            if (meta?.path) {
+                distinctFiles.add(meta.path);
+            }
+            continue;
+        }
+        // Redundant edit detection: only for known editing tools, success path.
+        const EDIT_TOOLS = new Set(['search_and_replace', 'replace_block', 'replace_lines', 'replace_symbol', 'insert_lines']);
+        if (m.name && EDIT_TOOLS.has(m.name)) {
+            const meta = m.tool_call_id ? callArgsById.get(m.tool_call_id) : undefined;
+            const pathKey = meta?.path || pathKeyFromArgsLikeContent(m.content);
+            if (pathKey) {
+                const tupleKey = `${m.name}::${pathKey}`;
+                if (seenLatestEdit.has(tupleKey)) {
+                    redundantEditIndices.push(i);
+                    distinctFiles.add(pathKey);
+                }
+                else {
+                    seenLatestEdit.add(tupleKey);
+                }
+            }
+        }
+    }
+    const totalToCompact = failureIndices.length + redundantEditIndices.length;
+    if (totalToCompact === 0) {
+        return { compactedFailures: 0, compactedRedundantEdits: 0, insertedAt: null };
+    }
+    // Splice everything in descending index order so removals don't shift
+    // later indices. Combine and sort.
+    const allIndices = [...failureIndices, ...redundantEditIndices].sort((a, b) => b - a);
+    const earliestRemoved = allIndices[allIndices.length - 1];
+    for (const idx of allIndices) {
+        messages.splice(idx, 1);
+    }
+    const filesNote = distinctFiles.size > 0
+        ? ` Affected files: ${[...distinctFiles].slice(0, 5).join(', ')}${distinctFiles.size > 5 ? `, +${distinctFiles.size - 5} more` : ''}.`
+        : '';
+    const toolsNote = distinctFailingTools.size > 0
+        ? ` Tools that previously failed: ${[...distinctFailingTools].join(', ')}.`
+        : '';
+    const compactedMessage = {
+        role: 'system',
+        content: `[COMPACTED MEMORY] Earlier in this session ${failureIndices.length} tool failure(s)` +
+            (redundantEditIndices.length > 0 ? ` and ${redundantEditIndices.length} superseded edit result(s)` : '') +
+            ` were removed from history to save context.${toolsNote}${filesNote}` +
+            ` Trust the current state of the files; do NOT re-declare symbols you have already created` +
+            ` and do NOT retry the failed tool variants. Reason from the live working window only.`,
+    };
+    messages.splice(earliestRemoved, 0, compactedMessage);
+    return {
+        compactedFailures: failureIndices.length,
+        compactedRedundantEdits: redundantEditIndices.length,
+        insertedAt: earliestRemoved,
+    };
 }
 //# sourceMappingURL=condenser.js.map
