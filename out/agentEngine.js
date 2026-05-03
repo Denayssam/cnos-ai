@@ -1540,6 +1540,39 @@ getDiagnosticsCallback) {
             }
             // ─────────────────────────────────────────────────────────────────────────
             const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+            // ── Financial Killswitch (v8.24.0 — NON-NEGOTIABLE) ──────────────────────
+            // Hard engine abort the moment ANY tool result carries the `[YIELD TO HUMAN`
+            // sentinel. These payloads are emitted by tools that detected an OS-level
+            // failure the LLM cannot fix (Node lost cmd.exe via ENOENT on Windows,
+            // System32 dropped from PATH, ComSpec emptied, etc.). In the v8.23.x and
+            // earlier behavior, the YIELD payload was pushed back into the message
+            // history; the LLM read it, ignored the explicit "DO NOT retry" directive,
+            // and burned the rest of MAX_ITERATIONS hallucinating MCP servers and
+            // PowerShell evasions trying to "fix" a problem that lives outside the
+            // process — costing real money per recovery attempt with zero chance of
+            // success. The fix is structural: the result NEVER reaches the LLM. We
+            // surface the tool output to the user (so they see what tool produced
+            // the YIELD), emit a clear final error explaining what happened and what
+            // the human needs to do, and terminate the generator before any further
+            // API call. Detection is on the literal substring `[YIELD TO HUMAN` so
+            // the v8.16.8 cmd.exe payload, the v8.16.2 IO_CORE breaker payload, and
+            // any future tool that opts into this protocol all hit the same break.
+            if (typeof result.output === 'string' && result.output.includes('[YIELD TO HUMAN')) {
+                yield { type: 'toolResult', name: toolName, success: result.success, output: result.output, duration };
+                debugLog(workspacePath, `[Financial Killswitch] '${toolName}' returned YIELD_TO_HUMAN — aborting loop to prevent API drain`);
+                yield {
+                    type: 'streamChunk',
+                    text: '\n\n🛑 **[FINANCIAL KILLSWITCH — v8.24.0]** A tool reported a fatal OS-level error ' +
+                        '(see the tool output above). The agent loop has been halted before any further ' +
+                        'LLM call to prevent burning API credits on a problem that lives outside the ' +
+                        'process (typically a missing shell, broken PATH, or detached terminal). ' +
+                        'Resolve the underlying environment issue (restart VS Code from a fresh terminal, ' +
+                        'verify %ComSpec% on Windows, etc.) and retry the task.',
+                };
+                yield { type: 'streamEnd' };
+                return;
+            }
+            // ─────────────────────────────────────────────────────────────────────────
             yield { type: 'toolResult', name: toolName, success: result.success, output: result.output, duration };
             debugLog(workspacePath, `Tool ${toolName}: success=${result.success}${!result.success ? ` — ${result.output.slice(0, 300)}` : ''}`);
             // ── v8.16.1: Quality Gate Bypass Detection ───────────────────────────────

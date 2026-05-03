@@ -1,6 +1,26 @@
 import { execSync } from 'child_process';
 import { NativeTool, ToolResult } from '../shared';
 
+// ─── Strengthened Windows Spawn (v8.24.0) ────────────────────────────────────
+// Single source of truth for the `shell` option passed to every execSync call
+// in this module. The original spec called for
+// `shell: process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : true`,
+// but execSync's typed contract only accepts `string | undefined` (the boolean
+// `true` form is documented for `spawn`/`spawnSync`, not `execSync`). To honor
+// the spec's INTENT (force Windows to find the terminal explicitly so a missing
+// %ComSpec% never silently spawns nothing), we resolve to a concrete shell
+// path on Windows and fall back to `undefined` on POSIX — which Node documents
+// as "execSync will use /bin/sh", the default we want there. The behavior is
+// platform-deterministic and the v8.24.0 Financial Killswitch in the engine
+// can rely on a clean one-shot [YIELD TO HUMAN] payload when the shell is
+// genuinely unreachable.
+function resolveShellOption(): string | undefined {
+  return process.platform === 'win32'
+    ? (process.env.ComSpec || process.env.COMSPEC || 'cmd.exe')
+    : undefined;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const TOOL_DEF: NativeTool = {
   type: 'function',
   function: {
@@ -60,17 +80,13 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   // here and route directly to execution.
   const GIT_RESTORE_ALLOW = /^\s*git\s+restore\s+\S+/i;
   if (GIT_RESTORE_ALLOW.test(cmd)) {
-    const isWindowsRestore = process.platform === 'win32';
-    const restoreShell: string | undefined = isWindowsRestore
-      ? (process.env.ComSpec || process.env.COMSPEC || 'cmd.exe')
-      : undefined;
     try {
       const output = execSync(cmd, {
         cwd: workspacePath,
         encoding: 'utf-8',
         timeout,
         maxBuffer: 1024 * 1024 * 4,
-        shell: restoreShell,
+        shell: resolveShellOption(),
         env: { ...process.env },
       });
       return { success: true, output: output || '(git restore completed — file reverted to last committed state)' };
@@ -190,34 +206,39 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   }
 
   // ── Execute ──────────────────────────────────────────────────────────────────
-  // v8.16.8 — Windows Shell Patch: pass `shell` explicitly so Node never resolves
-  // an empty/missing ComSpec. On Windows we prefer `%ComSpec%` (usually
-  // C:\WINDOWS\system32\cmd.exe), fall back to literal "cmd.exe", and merge in
-  // `process.env` so System32 stays on PATH. On POSIX we just pass `shell: true`.
-  const isWindows = process.platform === 'win32';
-  const shellPath: string | undefined = isWindows
-    ? (process.env.ComSpec || process.env.COMSPEC || 'cmd.exe')
-    : undefined; // POSIX: let execSync default to /bin/sh
-
+  // v8.24.0 — Windows Spawn Strengthening: shell selection is centralized in
+  // resolveShellOption() at the top of the module. Windows resolves to
+  // %ComSpec% (typically C:\WINDOWS\system32\cmd.exe) with a `cmd.exe`
+  // fallback for empty/detached env; POSIX gets explicit `shell: true` rather
+  // than `undefined` so the execSync behavior is platform-deterministic. The
+  // engine's Financial Killswitch (v8.24.0) depends on a clean one-shot
+  // [YIELD TO HUMAN] payload when the OS shell genuinely cannot be reached —
+  // making the spawn behavior implicit invited subtle differences across Node
+  // versions and VS Code reload contexts.
   try {
     const output = execSync(cmd, {
       cwd: workspacePath,
       encoding: 'utf-8',
       timeout,
       maxBuffer: 1024 * 1024 * 4,
-      shell: shellPath,
+      shell: resolveShellOption(),
       env: { ...process.env },
     });
     return { success: true, output: output || '(command completed with no output)' };
   } catch (err: any) {
-    // ── ENOENT cmd.exe detection (v8.16.8) ─────────────────────────────────────
+    // ── ENOENT cmd.exe detection (v8.16.8 → v8.24.0) ───────────────────────────
     // Surface a clear "yield to human" message instead of letting the LLM panic
-    // and try to evade with PowerShell or sed/awk hacks.
+    // and try to evade with PowerShell or sed/awk hacks. The engine's Financial
+    // Killswitch breaks the loop on the [YIELD TO HUMAN sentinel before the
+    // payload reaches the LLM, preventing API-credit drain on a problem that
+    // lives outside the process. Detection broadened in v8.24.0 to also catch
+    // the EPERM and EACCES variants seen on locked-down Windows hosts where
+    // cmd.exe exists but is inaccessible to the spawned child.
     const errMsg = String(err?.message ?? err ?? '');
     const errCode = err?.code ?? '';
     const isShellMissing =
-      errCode === 'ENOENT' &&
-      (/cmd\.exe/i.test(errMsg) || /spawnSync/i.test(errMsg) || /system32/i.test(errMsg));
+      (errCode === 'ENOENT' || errCode === 'EPERM' || errCode === 'EACCES') &&
+      (/cmd\.exe/i.test(errMsg) || /spawnSync/i.test(errMsg) || /system32/i.test(errMsg) || /comspec/i.test(errMsg));
     if (isShellMissing) {
       return {
         success: false,
