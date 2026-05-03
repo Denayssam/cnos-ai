@@ -33,12 +33,46 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.stripWorktreePrefix = stripWorktreePrefix;
 exports.rejectIfAbsolutePath = rejectIfAbsolutePath;
 exports.safePath = safePath;
 exports.searchRecursive = searchRecursive;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 // ─── Shared Helpers ───────────────────────────────────────────────────────────
+// ─── Worktree Prefix Sanitizer (v8.22.0) ────────────────────────────────────
+// The engine routes every file-tool call into the active worktree dynamically
+// (the agent's "current sandbox"). Under recovery pressure the LLM still
+// hallucinates the explicit worktree path on the front of its arguments —
+// e.g. `.fluxo/worktrees/fluxo-wt-abc123/src/components/App.jsx` — which
+// double-nests the path and produces a fatal FILE NOT FOUND. v8.21.0 already
+// blocks `cd .fluxo/worktrees/...` at the run_command level (terminal vector);
+// this helper closes the same hole on the file-tool vector by silently
+// stripping the prefix in-place rather than failing. The agent is auto-
+// corrected without spending an iteration on an error message it would only
+// retry incorrectly.
+//
+// Pattern matches: optional leading slash/backslash + `.fluxo` + sep(s) +
+// `worktrees` + sep(s) + one path segment (the worktree id) + sep(s).
+// Case-insensitive (Windows). Tolerates both `/` and `\`.
+const WORKTREE_PREFIX_REGEX = /^[\\/]?\.fluxo[\\/]+worktrees[\\/]+[^\\/]+[\\/]+/i;
+function stripWorktreePrefix(rawPath) {
+    if (typeof rawPath !== 'string' || !rawPath) {
+        return { cleaned: rawPath, stripped: false };
+    }
+    const trimmed = rawPath.trimStart();
+    if (!WORKTREE_PREFIX_REGEX.test(trimmed)) {
+        return { cleaned: rawPath, stripped: false };
+    }
+    const cleaned = trimmed.replace(WORKTREE_PREFIX_REGEX, '');
+    // Edge case: bare `.fluxo/worktrees/<id>/` with no tail — nothing to do,
+    // return original so downstream "missing path" errors stay legible.
+    if (!cleaned) {
+        return { cleaned: rawPath, stripped: false };
+    }
+    return { cleaned, stripped: true };
+}
+// ────────────────────────────────────────────────────────────────────────────
 // ─── Absolute Path Shield (v8.18.1) ─────────────────────────────────────────
 // Phase 4 dogfooding revealed the LLM hallucinating Windows-absolute paths
 // like C:/Users/erick/source/repos/... when reading or analyzing files. The

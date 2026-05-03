@@ -38,6 +38,8 @@ exports.summarizeHistory = summarizeHistory;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const tools_1 = require("./tools");
+const shared_1 = require("./tools/shared");
+const condenser_1 = require("./utils/condenser");
 const agents_1 = require("./agents");
 const agentMailbox_1 = require("./utils/agentMailbox");
 const repoMap_1 = require("./utils/repoMap");
@@ -959,6 +961,27 @@ mcpToolCategories = {}) {
                 }
             }
             // ─────────────────────────────────────────────────────────────────────────
+            // ── Worktree Prefix Sanitizer (v8.22.0) ──────────────────────────────────
+            // The engine already executes tools inside the active worktree dynamically,
+            // but the LLM still hallucinates the explicit `.fluxo/worktrees/<id>/` head
+            // on its arguments under recovery pressure — which double-nests the path
+            // and turns into a fatal FILE NOT FOUND. Auto-correct silently across all
+            // file-tool path keys: `path`, `file_path`, `absolute_path`, `path_filter`
+            // (grep), and `cwd` (glob). The agent never sees an error; the iteration
+            // proceeds with the cleaned path. Failing loudly here was the v8.18.x
+            // approach for absolute paths, but worktree-prefix is a different failure
+            // mode — the LLM has the right repo-relative tail, just an extra head — so
+            // a silent fix is correct: it preserves intent and saves an iteration.
+            for (const pArg of ['path', 'file_path', 'absolute_path', 'path_filter', 'cwd']) {
+                if (typeof args[pArg] === 'string') {
+                    const { cleaned, stripped } = (0, shared_1.stripWorktreePrefix)(args[pArg]);
+                    if (stripped) {
+                        debugLog(workspacePath, `[Worktree Sanitizer] ${toolName}.${pArg}: "${args[pArg]}" → "${cleaned}"`);
+                        args[pArg] = cleaned;
+                    }
+                }
+            }
+            // ─────────────────────────────────────────────────────────────────────────
             // ── Deep Masking: Soft Fail ───────────────────────────────────────────────
             // If the LLM hallucinates a call to a disabled tool, intercept it before
             // Sherlock or execution — return a corrective error, never a panic crash.
@@ -1519,6 +1542,19 @@ mcpToolCategories = {}) {
                                 `emite tu reporte y pídele ayuda al usuario para que ajuste el código manualmente.`,
                         };
                         debugLog(workspacePath, `Circuit Breaker activated for ${toolName} after ${fails} consecutive failures`);
+                        // ── Micro-Condenser (v8.22.0) ────────────────────────────────────
+                        // The breaker fired → the agent has just spent N iterations re-
+                        // reading its own raw stack traces for this tool. Collapse the
+                        // last 3 prior failure messages into a single [CONDENSER] system
+                        // marker so the next LLM call sees one explicit corrective signal
+                        // instead of a wall of redundant errors. The current iteration's
+                        // CB-activated message is still pushed normally below — the LLM
+                        // gets exactly one fresh error + one condenser reminder.
+                        const _condenseResult = (0, condenser_1.compactToolFailures)(messages, toolName, 3);
+                        if (_condenseResult.compacted > 0) {
+                            debugLog(workspacePath, `[Condenser] Compacted ${_condenseResult.compacted} prior '${toolName}' failure(s) into a single system marker at index ${_condenseResult.insertedAt}`);
+                        }
+                        // ─────────────────────────────────────────────────────────────────
                     }
                 }
             }
