@@ -2,7 +2,7 @@
   "name": "fluxo-ai",
   "displayName": "Fluxo AI — Agent Swarm",
   "description": "Autonomous AI coding agent powered by OpenRouter. Writes files, runs commands, routes to specialized agents (Coder, Designer, Dashboard, Payments).",
-  "version": "8.19.0",
+  "version": "8.20.0",
   "publisher": "fluxotechai",
   "repository": {
     "type": "git",
@@ -78,6 +78,21 @@
         "command": "fluxo.toggleSentinel",
         "title": "Fluxo: Toggle Sentinel",
         "icon": "$(eye)"
+      },
+      {
+        "command": "fluxo.mcp.add",
+        "title": "Fluxo: Add MCP Server",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "fluxo.mcp.remove",
+        "title": "Fluxo: Remove MCP Server",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "fluxo.mcp.list",
+        "title": "Fluxo: List MCP Servers",
+        "icon": "$(list-tree)"
       }
     ],
     "menus": {

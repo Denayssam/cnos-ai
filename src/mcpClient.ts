@@ -4,6 +4,8 @@ import * as path from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { NativeTool } from './tools';
+import { ensureStarterPack } from './utils/mcpConfigWriter';
+import { resolvePlaceholders } from './utils/mcpRegistry';
 
 interface McpServerConfig {
   command: string;
@@ -76,6 +78,20 @@ export class McpSwarmClient {
 
     let workspaceConfig: Record<string, McpServerConfig> = {};
     if (this.workspacePath) {
+      // v8.20.0 — Zero-Config Auto-Injection. If the workspace has never
+      // configured MCP, drop a starter pack JSON onto disk before we try to
+      // read it. ensureStarterPack is idempotent and only writes when the
+      // file is missing, so a user who deleted everything intentionally is
+      // never surprised by a re-seed mid-session.
+      try {
+        const written = ensureStarterPack(this.workspacePath);
+        if (written.length > 0) {
+          console.log(`[Fluxo MCP] Auto-injected starter pack into .fluxo/mcp_servers.json: ${written.join(', ')}`);
+        }
+      } catch (err: any) {
+        console.error(`[Fluxo MCP] Failed to auto-inject starter pack: ${err?.message ?? err}`);
+      }
+
       const fp = path.join(this.workspacePath, '.fluxo', 'mcp_servers.json');
       try {
         if (fs.existsSync(fp)) {
@@ -96,6 +112,27 @@ export class McpSwarmClient {
     return { ...userConfig, ...workspaceConfig };
   }
 
+  /**
+   * v8.20.0 — resolve ${ENV:...} / ${ARG:...:default} placeholders in a
+   * server config before we hand it to the StdioClientTransport. Applied to
+   * every string in args + every value in env. Servers that need a real env
+   * var (BRAVE_API_KEY, GITHUB_TOKEN) read it from process.env transparently.
+   */
+  private _resolveServerConfig(serverConfig: McpServerConfig): McpServerConfig {
+    const resolved: McpServerConfig = {
+      command: resolvePlaceholders(serverConfig.command),
+      args: serverConfig.args?.map(a => resolvePlaceholders(a)),
+    };
+    if (serverConfig.env) {
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(serverConfig.env)) {
+        env[k] = resolvePlaceholders(v);
+      }
+      resolved.env = env;
+    }
+    return resolved;
+  }
+
   private async _initializeAsync() {
     const config = this._loadMergedConfig();
     if (!config || Object.keys(config).length === 0) {
@@ -103,8 +140,19 @@ export class McpSwarmClient {
       return;
     }
 
-    for (const [serverName, serverConfig] of Object.entries(config)) {
-      try {
+    // v8.20.0 — Parallel boot. Cold `npx -y` fetches can take 10-30s on a
+    // fresh cache; running servers serially used to make startup time scale
+    // linearly with N servers. Parallelizing keeps total init bounded by the
+    // slowest server. A failure on one server never blocks the others, and
+    // never throws — the whole batch is wrapped in Promise.allSettled.
+    //
+    // Per-server connect timeout bumped 5s → 30s so first-run npx fetches
+    // have headroom. Transports that miss the deadline are explicitly
+    // closed to avoid orphan node processes.
+    const CONNECT_TIMEOUT_MS = 30_000;
+    await Promise.allSettled(
+      Object.entries(config).map(async ([serverName, rawConfig]) => {
+        const serverConfig = this._resolveServerConfig(rawConfig);
         const transport = new StdioClientTransport({
           command: serverConfig.command,
           args: serverConfig.args,
@@ -112,22 +160,26 @@ export class McpSwarmClient {
         });
 
         const client = new Client(
-          { name: 'fluxo-ai', version: '8.19.0' },
+          { name: 'fluxo-ai', version: '8.20.0' },
           { capabilities: {} }
         );
 
-        await Promise.race([
-          client.connect(transport),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 5000))
-        ]);
-
-        this.clients.set(serverName, client);
-        this.transports.set(serverName, transport);
-        console.log(`[Fluxo MCP] Connected to server: ${serverName}`);
-      } catch (err: any) {
-        console.error(`[Fluxo MCP] Failed to connect to server ${serverName}:`, err);
-      }
-    }
+        try {
+          await Promise.race([
+            client.connect(transport),
+            new Promise((_, reject) => setTimeout(() => reject(new Error(`Connection timeout (${CONNECT_TIMEOUT_MS}ms) — likely a slow npx fetch on first run`)), CONNECT_TIMEOUT_MS))
+          ]);
+          this.clients.set(serverName, client);
+          this.transports.set(serverName, transport);
+          console.log(`[Fluxo MCP] Connected to server: ${serverName}`);
+        } catch (err: any) {
+          console.error(`[Fluxo MCP] Failed to connect to server ${serverName}:`, err?.message ?? err);
+          // Clean up the transport on failure so we don't leak a dangling
+          // child process holding a stdio pipe.
+          try { await transport.close(); } catch { /* nothing more to clean */ }
+        }
+      })
+    );
 
     await this._cacheTools(config);
     this.isInitialized = true;

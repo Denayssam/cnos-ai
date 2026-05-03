@@ -6,6 +6,8 @@ import { runAgentLoop, ChatMessage, EngineConfig, summarizeHistory } from './age
 import { routeToAgent, getAgentList } from './agents';
 import { Sentinel } from './sentinel';
 import { McpSwarmClient } from './mcpClient';
+import { listRegistry } from './utils/mcpRegistry';
+import { addServer, removeServer, listConfigured } from './utils/mcpConfigWriter';
 
 // ─── State Management ─────────────────────────────────────────────────────────
 
@@ -1127,6 +1129,82 @@ export function activate(context: vscode.ExtensionContext): void {
           ? '🟢 Sentinel activated — monitoring terminal for errors'
           : '⚫ Sentinel deactivated'
       );
+    }),
+
+    // ── MCP Commands (v8.20.0 — Zero-Config UX) ─────────────────────────────
+    // QuickPick-driven UI on top of the same mcpConfigWriter the CLI uses.
+    // Workspace is auto-detected; if no folder is open, fall back to the
+    // user's home or report and bail gracefully.
+    vscode.commands.registerCommand('fluxo.mcp.add', async () => {
+      const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!wsPath) {
+        vscode.window.showWarningMessage('Fluxo MCP: open a workspace folder first — server config lives in <workspace>/.fluxo/mcp_servers.json.');
+        return;
+      }
+      const items = listRegistry().map(e => ({
+        label: `${e.starter ? '★ ' : '  '}${e.alias}`,
+        description: e.categories.join(', '),
+        detail: e.description,
+        alias: e.alias,
+      }));
+      const pick = await vscode.window.showQuickPick(items, {
+        placeHolder: 'Select an MCP server to add to .fluxo/mcp_servers.json',
+        matchOnDescription: true,
+        matchOnDetail: true,
+      });
+      if (!pick) { return; }
+      const result = addServer(wsPath, pick.alias);
+      if (!result.ok) {
+        vscode.window.showErrorMessage(`Fluxo MCP: ${result.reason}`);
+      } else {
+        vscode.window.showInformationMessage(
+          result.reason ?? `✅ Added "${result.alias}" to .fluxo/mcp_servers.json. Reload the window for the new server to take effect.`
+        );
+      }
+    }),
+
+    vscode.commands.registerCommand('fluxo.mcp.remove', async () => {
+      const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!wsPath) {
+        vscode.window.showWarningMessage('Fluxo MCP: open a workspace folder first.');
+        return;
+      }
+      const configured = listConfigured(wsPath);
+      const aliases = Object.keys(configured).sort();
+      if (aliases.length === 0) {
+        vscode.window.showInformationMessage('Fluxo MCP: no servers configured in this workspace.');
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(aliases, {
+        placeHolder: 'Select an MCP server to remove',
+      });
+      if (!pick) { return; }
+      const result = removeServer(wsPath, pick);
+      if (!result.ok) {
+        vscode.window.showErrorMessage(`Fluxo MCP: ${result.reason}`);
+      } else {
+        vscode.window.showInformationMessage(result.reason ?? `🗑️ Removed "${pick}" from .fluxo/mcp_servers.json. Reload the window to disconnect.`);
+      }
+    }),
+
+    vscode.commands.registerCommand('fluxo.mcp.list', async () => {
+      const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!wsPath) {
+        vscode.window.showWarningMessage('Fluxo MCP: open a workspace folder first.');
+        return;
+      }
+      const configured = listConfigured(wsPath);
+      const aliases = Object.keys(configured).sort();
+      if (aliases.length === 0) {
+        vscode.window.showInformationMessage('Fluxo MCP: no servers configured. Run "Fluxo: Add MCP Server" to install one.');
+        return;
+      }
+      const lines = aliases.map(a => {
+        const cfg = configured[a];
+        const cmd = `${cfg.command} ${(cfg.args ?? []).join(' ')}`.trim();
+        return `• ${a} — ${cmd}`;
+      });
+      vscode.window.showInformationMessage(`Configured MCP servers (${aliases.length}):\n${lines.join('\n')}`, { modal: true });
     })
   );
 
