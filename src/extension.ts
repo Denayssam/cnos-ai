@@ -8,6 +8,7 @@ import { Sentinel } from './sentinel';
 import { McpSwarmClient } from './mcpClient';
 import { listRegistry } from './utils/mcpRegistry';
 import { addServer, removeServer, listConfigured } from './utils/mcpConfigWriter';
+import { rollbackToLastCheckpoint } from './utils/gitSafety';
 
 // ─── State Management ─────────────────────────────────────────────────────────
 
@@ -302,6 +303,47 @@ async function _handleMessage(msg: any, context: vscode.ExtensionContext): Promi
       if (_pendingWorktreeReview) {
         _pendingWorktreeReview(msg.action === 'discard' ? 'discard' : 'merge');
         _pendingWorktreeReview = undefined;
+      }
+      break;
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Restore Workspace Only — North Star v8.25.0 ──────────────────────────
+    // Atomic rollback to the last fluxo-auto-checkpoint via the existing
+    // gitSafety.rollbackToLastCheckpoint helper (runs `git reset --hard
+    // HEAD~1`). The Smart Auto-Commit flow from v8.16.7 means any human WIP
+    // edits made before the agent's checkpoint are preserved as their own
+    // commit and survive the rollback — only the agent's anchor + everything
+    // layered on top gets discarded. We still gate the call behind a modal
+    // confirmation because reset --hard is irreversible from the UI; the
+    // dialog is intentionally explicit about which checkpoint is being
+    // dropped so a user cannot click through it absent-mindedly.
+    case 'restoreWorkspace': {
+      const folders = vscode.workspace.workspaceFolders;
+      if (!folders?.length) {
+        vscode.window.showWarningMessage('Restore Workspace: no hay un workspace activo.');
+        break;
+      }
+      const wsPath = folders[0].uri.fsPath;
+      const choice = await vscode.window.showWarningMessage(
+        '⟲ Restore Workspace Only\n\n' +
+        'Vas a revertir TODO lo que el agente cambió desde el último checkpoint ' +
+        '(git reset --hard HEAD~1). Cualquier edición manual previa al checkpoint ' +
+        'fue auto-guardada como WIP commit y SE PRESERVA. Esta acción no se puede ' +
+        'deshacer desde la UI.\n\n¿Continuar?',
+        { modal: true },
+        'Restaurar',
+      );
+      if (choice !== 'Restaurar') {
+        _postToPanel({ type: 'restoreResult', success: false, output: 'Restauración cancelada por el usuario.' });
+        break;
+      }
+      const result = rollbackToLastCheckpoint(wsPath);
+      _postToPanel({ type: 'restoreResult', success: result.success, output: result.output });
+      if (result.success) {
+        vscode.window.showInformationMessage('✓ Workspace restaurado al último checkpoint.');
+      } else {
+        vscode.window.showErrorMessage(`Restore falló: ${result.output}`);
       }
       break;
     }
@@ -1022,6 +1064,7 @@ function _buildHtml(webview: vscode.Webview): string {
         <select id="worker-model-select" class="model-select" title="Worker Model"></select>
       </div>
       <button id="sentinel-btn" class="header-btn sentinel-btn" title="Sentinel Guard — Protege contra comandos peligrosos. Click para activar/desactivar."><span class="sentinel-icon">👁</span><span class="sentinel-label">Guard</span></button>
+      <button id="restore-btn" class="header-btn restore-btn" title="Restore Workspace Only — Revierte el último checkpoint del agente (git reset --hard HEAD~1). Tu trabajo manual quedó guardado como WIP commit por v8.16.7.">⟲</button>
       <button id="streaming-info-btn" class="header-btn" title="Streaming: Renderizado de texto en tiempo real. Las respuestas aparecen gradualmente mientras el modelo genera.">ⓘ</button>
       <button id="settings-btn" class="header-btn" title="Settings">⚙</button>
     </div>

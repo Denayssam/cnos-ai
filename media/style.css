@@ -593,6 +593,23 @@ body { display: flex; flex-direction: column; height: 100vh; }
   animation: glowPulse 2s ease-in-out infinite;
 }
 
+/* ─── Restore Workspace Only Button (North Star v8.25.0) ───────────────────── */
+/* Atomic rollback to the last fluxo-auto-checkpoint — destructive in spirit  */
+/* (git reset --hard HEAD~1) but safe by design (the v8.16.7 Smart Auto-Commit */
+/* preserves any human WIP as its own commit before the agent's anchor lands).  */
+/* Tinted amber to telegraph "this undoes the last agent run" without using a   */
+/* full danger red, which is reserved for the Sentinel active state.            */
+.restore-btn {
+  font-size: 16px;
+  line-height: 1;
+  color: rgba(245, 158, 11, 0.85);
+}
+.restore-btn:hover {
+  color: rgb(245, 158, 11);
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+}
+
 /* ─── Sentinel Button ────────────────────────────────────────────────────────── */
 .sentinel-btn {
   position: relative;

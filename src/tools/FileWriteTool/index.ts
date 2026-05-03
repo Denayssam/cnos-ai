@@ -29,6 +29,37 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   const fp = safePath(workspacePath, args.path);
   const agentId = typeof args.agent_id === 'string' ? args.agent_id : 'agent';
 
+  // ── Aider-style Overwrite Block (v8.25.0 — North Star) ──────────────────────
+  // Hard-block: write_file may NEVER touch a file that already exists. Forces
+  // the agent toward AST/diff editing tools (replace_block, replace_symbol,
+  // replace_lines, search_and_replace, insert_lines) which surgically edit
+  // existing files instead of nuking them. Aligns the swarm with Aider's
+  // unified-diff discipline — no agent can quietly destroy unrelated code by
+  // re-emitting an entire file with a "small fix" inside.
+  // Position: after safePath() so the existsSync check uses the resolved
+  // absolute path; before syntax validation and lock acquisition since both
+  // are wasted work if we are about to reject.
+  //
+  // Whitelist: paths under `.fluxo/` are the engine's state space (the
+  // @planner's IMPLEMENTATION_PLAN.md, the @manager's memory.md, the
+  // improvements log, the active_worktree.json, the DAG state, the MCP
+  // config, etc.). Those files are designed to be overwritten on every run
+  // — they describe ephemeral engine state, not user code. The block exists
+  // to protect USER source from blind overwrites, so the engine's own state
+  // namespace is the natural exception. Match both POSIX (`.fluxo/`) and
+  // Windows (`.fluxo\`) separators because the path normalization
+  // middleware in agentEngine.ts (v8.5.2) emits forward slashes by default
+  // but the engine still receives backslashes from a few legacy code paths.
+  const _rawPath = String(args.path ?? '');
+  const _isFluxoState = _rawPath.startsWith('.fluxo/') || _rawPath.startsWith('.fluxo\\');
+  if (fs.existsSync(fp) && !_isFluxoState) {
+    return {
+      success: false,
+      output: '[SYSTEM BLOCK] Prohibido usar write_file en archivos existentes. Debes usar replace_block o replace_symbol.',
+    };
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+
   // ── AST Syntax Validation (v8.14.0 — Syntax Shield) ─────────────────────────
   // Runs before lock acquisition — no point locking if the content is broken.
   // Skipped for non-TS/JS extensions (markdown, JSON, CSS, etc.) automatically.

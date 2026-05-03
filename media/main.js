@@ -22,6 +22,7 @@
   const wheelProgress   = document.getElementById('wheel-progress');
   const wheelContainer  = document.getElementById('token-wheel-container');
   const sentinelBtn     = document.getElementById('sentinel-btn');
+  const restoreBtn      = document.getElementById('restore-btn');
   const contextBar      = document.getElementById('context-bar');
   const contextBarFile  = document.getElementById('context-bar-file');
   const contextBarAction = document.getElementById('context-bar-action');
@@ -807,7 +808,7 @@
     messagesEl.innerHTML = `
       <div class="welcome-card">
         <div class="welcome-logo">🐾</div>
-        <h2 class="welcome-title">Fluxo AI <span class="welcome-version">v8.24.0</span></h2>
+        <h2 class="welcome-title">Fluxo AI <span class="welcome-version">v8.25.0</span></h2>
         <div class="welcome-tips">
           <div class="tip"><span class="tip-key">↵</span> Send</div>
           <div class="tip-sep">·</div>
@@ -1002,6 +1003,10 @@
   document.getElementById('settings-btn').addEventListener('click', () => vscode.postMessage({ type: 'openSettings' }));
   cancelBtn.addEventListener('click', () => vscode.postMessage({ type: 'cancelStream' }));
   sentinelBtn?.addEventListener('click', () => vscode.postMessage({ type: 'sentinelToggle' }));
+  // North Star v8.25.0 — Restore Workspace Only (Cline-style atomic rollback).
+  // Confirmation dialog lives extension-side (vscode.window.showWarningMessage)
+  // because git reset --hard HEAD~1 is destructive; we just signal intent here.
+  restoreBtn?.addEventListener('click', () => vscode.postMessage({ type: 'restoreWorkspace' }));
   document.getElementById('streaming-info-btn')?.addEventListener('click', () => vscode.postMessage({ type: 'showStreamingInfo' }));
   managerModelSelect.addEventListener('change', () => vscode.postMessage({ type: 'saveModel', managerModel: managerModelSelect.value }));
   workerModelSelect.addEventListener('change', () => vscode.postMessage({ type: 'saveModel', workerModel: workerModelSelect.value }));
