@@ -322,6 +322,22 @@ are already in the rabbit hole. Roll back NOW. The engine will physically
 block any node_modules access — do not waste an iteration trying.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+━━━ VERIFICATION STRICTNESS (v8.21.0 — NON-NEGOTIABLE) ━━━━━━━━━━━━━━━━━━━━━
+Once you have modified code using LSP tools (replace_symbol, insert_lines) and
+the subsequent 'npm run build' returns a SUCCESS (exit code 0), YOU MUST STOP.
+DO NOT use 'grep' or 'read_file' to double-check if your code was written.
+Trust the AST and the green build. IMMEDIATELY call
+'exit_worktree(action='merge')' to end your turn.
+
+Re-reading the file you just edited, grepping for the symbol you just inserted,
+or running any other "did it really land?" verification AFTER a green build is
+a CRITICAL FAILURE called Verification Anxiety. The LSP returned success, the
+compiler returned success — those are TWO independent oracles confirming the
+edit landed. There is no third oracle worth burning iterations on. Every
+post-green grep/read consumes an iteration toward the 25-iteration ceiling and
+risks deadlocking your turn. Merge and exit. The build is the proof.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 QUALITY GATE RULE (v8.16.0): Before declaring a task complete, your code MUST pass the project's build process. If the system rejects your completion with a [QUALITY GATE FAILED] message, analyze the build logs carefully, use your tools to fix the imports or logic errors, run the build again with run_command, and only then attempt to complete the task.
 
 BODYGUARD PROTOCOL — call ask_user_approval ONLY for high-risk operations:

@@ -32,6 +32,26 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   const cmd = args.command as string;
   const timeout = (args.timeout as number) || 30_000;
 
+  // ── Terminal Path Hallucination Guard (v8.21.0) ──────────────────────────────
+  // The agent already executes inside a worktree dynamically — the engine routes
+  // every native tool to the correct sandbox automatically. Yet under recovery
+  // pressure the LLM hallucinates `cd .fluxo/worktrees/<id>` to "navigate" into
+  // its own sandbox, which (a) breaks the working directory because the path is
+  // nested twice, and (b) is the trigger that pushes turns into the 25-iteration
+  // ceiling. Intercept BEFORE every other shield so the false-positive surface
+  // of downstream regexes (vite panic, evasion, persistent server) cannot mask
+  // this specific failure mode. Match both POSIX and Windows separators.
+  const WORKTREE_CD_PATTERN = /\bcd\s+["']?\.fluxo[\\\/]worktrees[\\\/]/i;
+  if (WORKTREE_CD_PATTERN.test(cmd)) {
+    return {
+      success: false,
+      output:
+        '[SYSTEM SHIELD] You are already executing inside the worktree dynamically. ' +
+        "DO NOT use 'cd' to navigate to .fluxo paths. " +
+        'Use relative paths from the root of your current sandbox.',
+    };
+  }
+
   // ── Explicit Allowlist: Micro-Rollback (v8.16.13) ────────────────────────────
   // `git restore <path>` is the agent's CTRL+Z when an edit catastrophically
   // breaks a single file. It must NEVER be intercepted by any blocker downstream
