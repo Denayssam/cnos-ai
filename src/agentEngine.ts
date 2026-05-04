@@ -1984,6 +1984,7 @@ export async function* runAgentLoop(
       const planFilePath = (args.path as string || '').replace(/\\/g, '/').toLowerCase();
       const isPlanBrake = agentId !== 'planner' && result.success && (
         toolName === 'propose_plan' ||
+        toolName === 'enter_plan_mode' || // v8.28.1 — entering plan mode is itself a brake event
         ((toolName === 'write_file' || toolName === 'replace_lines') &&
           planFilePath.includes('implementation_plan'))
       );

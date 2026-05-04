@@ -2,6 +2,17 @@
 
 ---
 
+## [v8.28.1] - Hotfix: Enter Plan Mode Hard Brake
+
+**Objetivo:** Hotfix de regresión severa descubierta en producción. El HARD BRAKE del motor (`src/agentEngine.ts:1985`) — el mecanismo que pausa físicamente la sesión cuando un agente presenta un plan al usuario para aprobación — solo reconocía `propose_plan` y los writes a `IMPLEMENTATION_PLAN.md` como triggers de pausa, pero NO `enter_plan_mode`. Resultado: cuando el @manager ejecutaba `enter_plan_mode` (que internamente spawnea al @planner para producir el plan y devuelve control), el brake no disparaba, el loop seguía corriendo, y el @manager re-llamaba `enter_plan_mode` indefinidamente porque desde su perspectiva "el plan no se había emitido todavía". Loop infinito hasta hit MAX_ITERATIONS o cancelación del usuario.
+
+- **Inyección de `enter_plan_mode` en la condición `isPlanBrake` (`src/agentEngine.ts:1987`):** Cambio quirúrgico de una línea — añadido `toolName === 'enter_plan_mode' ||` entre el branch de `propose_plan` y el branch del write a `implementation_plan`. Comentario inline `// v8.28.1 — entering plan mode is itself a brake event` documenta la intención. La rationale es que `enter_plan_mode` ES semánticamente equivalente a "plan presented to user" — el sub-spawn del @planner ya escribió `.fluxo/IMPLEMENTATION_PLAN.md` y devolvió, así que el trigger de pausa debe disparar igual que si el agente padre hubiera escrito el archivo directamente. El bypass `agentId !== 'planner'` se mantiene intacto: el propio @planner durante su spawn nunca brakea (escribiría el plan, brakearía a sí mismo, deadlock); solo el @manager o cualquier otro padre que invoque enter_plan_mode brakea cuando recibe el control de vuelta.
+- **Sin cambios al PLAN_PAUSE_DIRECTIVE:** El mensaje que el motor inyecta como tool result al detectar el brake (`SYSTEM DIRECTIVE: Plan presented to user. Execution is now PAUSED. You must wait for the user to explicitly click 'Aprobar' o 'Solicitar Cambios'. Do not execute any further actions.`) queda exactamente igual — el contrato con el LLM no cambia, solo se amplía el set de eventos que lo disparan.
+- **UI versioning (`media/main.js`):** Welcome card title bumped a `v8.28.1`.
+- **Resultado:** Cierra el loop infinito post-`enter_plan_mode` introducido como regresión. El @manager ahora frena correctamente después de un `enter_plan_mode` exitoso y espera la decisión del humano antes de continuar — comportamiento equivalente al que ya tenía con `propose_plan` y los writes directos a IMPLEMENTATION_PLAN.md. Single-line hotfix, ningún otro comportamiento del motor cambia.
+
+---
+
 ## [v8.28.0] - The DevSecOps Patch: Token-Free Security Audit Tool
 
 **Objetivo:** El usuario necesita poder pedirle a Fluxo "audita el repo y dime qué tan expuesto estoy" sin que el motor leakee el código completo al LLM (caro en tokens, leak de secretos al historial, e iteraciones quemadas en greps a ciegas). El paradigma correcto es "Scanner Local + Fixer LLM": una herramienta nativa Node.js corre el escaneo SAST 100% en el extension host, devuelve un reporte corto + redactado, y SOLO ese reporte llega al LLM, que entonces orquesta los fixes vía los editing tools existentes. v8.28.0 trae la primera implementación de ese paradigma — `security_audit` — más el protocolo de uso obligatorio en el system prompt del @manager para que el LLM no caiga en la tentación de hacer grep manual a ciegas cuando le pidan auditar.

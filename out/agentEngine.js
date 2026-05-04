@@ -1837,6 +1837,7 @@ listMcpResourcesCallback) {
             // part of enter_plan_mode — it must not trigger a pause in the parent loop.
             const planFilePath = (args.path || '').replace(/\\/g, '/').toLowerCase();
             const isPlanBrake = agentId !== 'planner' && result.success && (toolName === 'propose_plan' ||
+                toolName === 'enter_plan_mode' || // v8.28.1 — entering plan mode is itself a brake event
                 ((toolName === 'write_file' || toolName === 'replace_lines') &&
                     planFilePath.includes('implementation_plan')));
             const PLAN_PAUSE_DIRECTIVE = "SYSTEM DIRECTIVE: Plan presented to user. Execution is now PAUSED. " +
