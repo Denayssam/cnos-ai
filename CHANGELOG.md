@@ -2,6 +2,17 @@
 
 ---
 
+## [v8.28.2] - Hotfix: Planner Stale State Fix
+
+**Objetivo:** Hotfix para un bug de estado descubierto en el intercept de `enter_plan_mode` en `src/agentEngine.ts`. El retry harness de v8.16.5 (`while (plannerAttempt < MAX_PLANNER_ATTEMPTS && !fs.existsSync(planFile))`) usaba la presencia de `IMPLEMENTATION_PLAN.md` en disco como condición de salida — correcto para sesiones limpias. Pero si un plan de una sesión anterior ya existía en `.fluxo/IMPLEMENTATION_PLAN.md`, el `!fs.existsSync(planFile)` evaluaba `false` desde el primer tick, el while nunca entraba, el @planner nunca se instanciaba, y el @manager recibía silenciosamente el plan stale como si fuera el nuevo. Síntoma observable: el @manager ejecutaba el plan de la tarea anterior en vez del de la tarea actual, causando ediciones de código completamente equivocadas.
+
+- **Stale Plan Cleanup (`src/agentEngine.ts:1557-1564`):** Inserción de 7 líneas entre la declaración de `const planFile = ...` y el comentario `// ── v8.16.5: Mandatory Output Enforcement Loop`. Si el archivo existe, `fs.unlinkSync(planFile)` lo borra antes de que el while evalúe por primera vez. El `try/catch` es intencional — un file locked en Windows o un error de permisos nunca debe bloquear el arranque de la fase de planning. La operación es idempotente: si el archivo no existe, `fs.existsSync` devuelve false y el bloque se salta sin error.
+- **Sin cambios al while ni al retry harness:** El bucle v8.16.5 y sus tres intentos de escalación siguen funcionando exactamente igual — simplemente ahora el `fs.existsSync(planFile)` al que se opone el `!` parte de `false` garantizado en lugar de depender del estado residual de sesiones anteriores.
+- **UI versioning (`media/main.js`):** Welcome card title bumped a `v8.28.2`.
+- **Resultado:** El @planner siempre se instancia con una pizarra limpia cuando el @manager invoca `enter_plan_mode`, independientemente de las sesiones anteriores. Hotfix de una sola inserción; ningún otro comportamiento del motor cambia.
+
+---
+
 ## [v8.28.1] - Hotfix: Enter Plan Mode Hard Brake
 
 **Objetivo:** Hotfix de regresión severa descubierta en producción. El HARD BRAKE del motor (`src/agentEngine.ts:1985`) — el mecanismo que pausa físicamente la sesión cuando un agente presenta un plan al usuario para aprobación — solo reconocía `propose_plan` y los writes a `IMPLEMENTATION_PLAN.md` como triggers de pausa, pero NO `enter_plan_mode`. Resultado: cuando el @manager ejecutaba `enter_plan_mode` (que internamente spawnea al @planner para producir el plan y devuelve control), el brake no disparaba, el loop seguía corriendo, y el @manager re-llamaba `enter_plan_mode` indefinidamente porque desde su perspectiva "el plan no se había emitido todavía". Loop infinito hasta hit MAX_ITERATIONS o cancelación del usuario.

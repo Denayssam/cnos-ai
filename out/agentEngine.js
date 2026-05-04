@@ -1458,6 +1458,20 @@ listMcpResourcesCallback) {
                         fs.mkdirSync(path.join(workspacePath, '.fluxo'), { recursive: true });
                     }
                     const planFile = path.join(workspacePath, '.fluxo', 'IMPLEMENTATION_PLAN.md');
+                    // ── v8.28.2: Stale Plan Cleanup ──────────────────────────────────────────
+                    // If a previous session left IMPLEMENTATION_PLAN.md on disk, the
+                    // `while (!fs.existsSync(planFile))` guard below would skip the planner
+                    // entirely, leaving the @manager with a stale plan from a prior task. Wipe
+                    // the old file before the retry loop so the planner always runs on a fresh
+                    // slate. The try/catch is intentional — a locked file on Windows or a
+                    // permission error must never block the planning phase from starting.
+                    try {
+                        if (fs.existsSync(planFile)) {
+                            fs.unlinkSync(planFile);
+                        }
+                    }
+                    catch { /* silenciar errores */ }
+                    // ─────────────────────────────────────────────────────────────────────────
                     // ── v8.16.5: Mandatory Output Enforcement Loop ──────────────────────────
                     // The planner has historically suffered from "premature termination" — yielding
                     // conversational text instead of calling write_file. We now wrap the sub-loop
