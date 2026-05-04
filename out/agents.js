@@ -138,7 +138,7 @@ exports.AGENTS = {
         emoji: '💻',
         color: '#3b82f6',
         description: 'General coding: creates files, runs commands, fixes bugs',
-        tools: ['read_file', 'write_file', 'replace_symbol', 'search_and_replace', 'insert_lines', 'get_code_structure', 'glob', 'grep', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'fetch_documentation', 'enter_worktree', 'exit_worktree', 'send_message', 'get_repo_map', 'abort_and_rollback'],
+        tools: ['read_file', 'write_file', 'replace_symbol', 'search_and_replace', 'insert_lines', 'get_code_structure', 'glob', 'grep', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'fetch_documentation', 'enter_worktree', 'exit_worktree', 'send_message', 'get_repo_map', 'abort_and_rollback', 'security_audit'],
         isolation: 'worktree',
         keywords: [
             'código', 'code', 'función', 'function', 'clase', 'class',
@@ -589,7 +589,7 @@ Vague steps ("update the component") are a FAILURE — be precise ("replace_symb
         emoji: '🧭',
         color: '#8b5cf6',
         description: 'Orchestration, complex planning, and emergency debugging',
-        tools: ['read_file', 'search_in_files', 'get_code_structure', 'glob', 'grep', 'run_command', 'enter_worktree', 'exit_worktree', 'create_team', 'send_message', 'enter_plan_mode', 'skill', 'get_repo_map', 'abort_and_rollback', 'list_mcp_resources'],
+        tools: ['read_file', 'search_in_files', 'get_code_structure', 'glob', 'grep', 'run_command', 'enter_worktree', 'exit_worktree', 'create_team', 'send_message', 'enter_plan_mode', 'skill', 'get_repo_map', 'abort_and_rollback', 'list_mcp_resources', 'security_audit'],
         isolation: 'worktree',
         keywords: [
             'manager', 'gestiona', 'organiza', 'planifica', 'proyecto',
@@ -597,6 +597,40 @@ Vague steps ("update the component") are a FAILURE — be precise ("replace_symb
             'estancado', 'stuck', 'complex', 'complejo', 'pasos',
         ],
         systemPrompt: `You are Fluxo Manager — the primary orchestrator.
+
+━━━ SECURITY AUDIT PROTOCOL (v8.28.0 — NON-NEGOTIABLE) ━━━━━━━━━━━━━━━━━━━━━
+Cuando el usuario te pida auditar el código o buscar vulnerabilidades, NUNCA
+uses read_file o grep para buscar a ciegas. Llama INMEDIATAMENTE a la
+herramienta 'security_audit'. Analiza su reporte de bajo coste y, si hay
+vulnerabilidades o secretos expuestos, usa create_team para que el @coder
+mueva los secretos al archivo .env o actualice los paquetes afectados.
+
+Triggers obligatorios para 'security_audit' (no opcionales):
+  • "audita", "audit", "auditoría", "audita el código"
+  • "busca vulnerabilidades", "scan for vulnerabilities", "vulnerabilities"
+  • "secretos expuestos", "leaked secrets", "exposed API keys", "claves expuestas"
+  • "security review", "revisión de seguridad", "review de seguridad"
+  • "npm audit", "dependency advisories", "vulnerabilidades de dependencias"
+
+Razón arquitectónica: 'security_audit' corre 100% local (Node.js + regex +
+npm audit), NO consume tokens del LLM, y sus findings ya vienen redactados
+(secrets en formato <prefix>…<sufijo> para que el reporte mismo sea seguro).
+Hacer grep manual a ciegas sobre el repo es lento, caro en iteraciones, y
+puede leakear el secreto en plain text al historial de la conversación.
+
+Flujo completo después del audit:
+  1. Llama 'security_audit' (sin parámetros).
+  2. Lee el reporte. Si dice "No security issues found. Code is clean." →
+     responde al usuario con esa misma frase y termina la tarea.
+  3. Si hay SECRETS — para cada finding, ordena al @coder via create_team:
+     leer el archivo, mover el secreto a .env (creándolo si no existe),
+     reemplazar el literal en código por process.env.NOMBRE, y agregar
+     el archivo a .gitignore si aún no está.
+  4. Si hay DEPENDENCIES con high/critical — ordena al @coder ejecutar
+     'npm audit fix' y verificar build verde después.
+  5. NUNCA pegues el secret completo (ni siquiera el redactado) en
+     respuestas finales al usuario — solo file:line + provider name.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ─── SHELL SCOPE — IRON RULE (v8.10.0) ──────────────────────────────────────
 TIENES ESTRICTAMENTE PROHIBIDO usar run_command para crear, mover o eliminar archivos
