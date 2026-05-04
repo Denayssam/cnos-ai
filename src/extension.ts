@@ -9,6 +9,7 @@ import { McpSwarmClient } from './services/mcp/client';
 import { listRegistry } from './utils/mcpRegistry';
 import { addServer, removeServer, listConfigured } from './utils/mcpConfigWriter';
 import { rollbackToLastCheckpoint } from './utils/gitSafety';
+import { cleanupOrphanedWorktrees } from './utils/cleanupRegistry';
 
 // ─── State Management ─────────────────────────────────────────────────────────
 
@@ -127,6 +128,22 @@ function cleanupLogsOnActivation(): void {
       });
     }
   } catch { /* non-fatal */ }
+
+  // ── v8.27.0 — Orphaned-Worktree Auto-Cleanup (Phase 3.3) ──────────────────
+  // Background janitor sweeps any .fluxo/worktrees/<branch> directory whose
+  // branch is not the currently-active one (per .fluxo/active_worktree.json).
+  // Idempotent + silent — zero orphans ⇒ no-op. Failures inside the helper
+  // are isolated per-orphan so a single stuck worktree never blocks the rest.
+  // Wrapped in try/catch here so even a catastrophic exception in the helper
+  // never blocks extension activation (the entire cleanup pass is best-effort).
+  try {
+    const destroyed = cleanupOrphanedWorktrees(wsPath);
+    if (destroyed.length > 0) {
+      console.log(`[Fluxo Cleanup] Destroyed ${destroyed.length} orphan worktree(s): ${destroyed.join(', ')}`);
+    }
+  } catch (err: any) {
+    console.error('[Fluxo Cleanup] Orphan-worktree sweep failed:', err?.message ?? err);
+  }
 }
 
 // ─── Panel Manager ────────────────────────────────────────────────────────────

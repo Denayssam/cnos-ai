@@ -3,6 +3,7 @@ import * as path from 'path';
 import { executeTool, getNativeTools, NativeTool } from './tools';
 import { stripWorktreePrefix } from './tools/shared';
 import { compactToolFailures, proactiveCompact } from './utils/condenser';
+import { extractMemories } from './services/extractMemories/extractMemories';
 import { AGENTS, buildAgentSystemPrompt, ROUTER_PROMPT, REVISOR_PROMPT, SUMMARIZER_PROMPT } from './agents';
 import { AgentMailbox } from './utils/agentMailbox';
 import { buildRepoMap } from './utils/repoMap';
@@ -49,7 +50,9 @@ export interface EngineConfig {
   geminiApiKey?: string;
 }
 
-interface ApiResponse {
+// v8.27.0 — exported alongside callOpenRouterBlocking so external services
+// (src/services/extractMemories etc.) can type the awaited result correctly.
+export interface ApiResponse {
   content: string | null;
   tool_calls: NativeToolCall[];
 }
@@ -864,6 +867,15 @@ export async function* runAgentLoop(
           debugLog(workspacePath, '[Quality Gate] Passed — accepting completion');
         }
         // ─────────────────────────────────────────────────────────────────────
+        // ── v8.27.0 — Background Memory Extraction (Phase 3.3) ───────────────
+        // Fire-and-forget: spawn the extractor on the resolved success path
+        // (Orchestrator's Report / ALL STEPS COMPLETE + green Quality Gate or
+        // no QG required). The .catch() at the call site guarantees a failed
+        // extraction never propagates to the agent loop. The user's stream
+        // closes immediately; the bullet (if any) lands in .fluxo/memory.md
+        // a few seconds later in the background.
+        extractMemories(messages, config, workspacePath).catch(() => { /* swallow */ });
+        // ─────────────────────────────────────────────────────────────────────
         yield { type: 'streamEnd' };
         return;
       }
@@ -944,6 +956,11 @@ export async function* runAgentLoop(
       }
       // ─────────────────────────────────────────────────────────────────────
       debugLog(workspacePath, 'Ending: no tool calls → final response (ghostRetries exhausted)');
+      // v8.27.0 — Same background memory extraction as the Orchestrator's
+      // Report path above. This branch fires when the agent ends with text
+      // alone (no tool calls) after Quality Gate passed — also a clean
+      // success exit, so the extractor runs identically.
+      extractMemories(messages, config, workspacePath).catch(() => { /* swallow */ });
       yield { type: 'streamEnd' };
       return;
     }
@@ -2069,7 +2086,12 @@ async function detectIntent(userMessage: string, config: EngineConfig, signal: A
 
 // ─── OpenRouter API ───────────────────────────────────────────────────────────
 
-async function callOpenRouterBlocking(
+// v8.27.0 — exported so the background services layer
+// (src/services/extractMemories) can issue its own short LLM calls without
+// re-implementing endpoint resolution / key picking / OpenRouter headers.
+// The function stays in agentEngine.ts because it is the canonical engine
+// transport — services consume it as a thin RPC primitive.
+export async function callOpenRouterBlocking(
   messages: ChatMessage[],
   config: EngineConfig,
   signal: AbortSignal,

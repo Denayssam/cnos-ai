@@ -34,12 +34,14 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runAgentLoop = runAgentLoop;
+exports.callOpenRouterBlocking = callOpenRouterBlocking;
 exports.summarizeHistory = summarizeHistory;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const tools_1 = require("./tools");
 const shared_1 = require("./tools/shared");
 const condenser_1 = require("./utils/condenser");
+const extractMemories_1 = require("./services/extractMemories/extractMemories");
 const agents_1 = require("./agents");
 const agentMailbox_1 = require("./utils/agentMailbox");
 const repoMap_1 = require("./utils/repoMap");
@@ -770,6 +772,15 @@ listMcpResourcesCallback) {
                     debugLog(workspacePath, '[Quality Gate] Passed — accepting completion');
                 }
                 // ─────────────────────────────────────────────────────────────────────
+                // ── v8.27.0 — Background Memory Extraction (Phase 3.3) ───────────────
+                // Fire-and-forget: spawn the extractor on the resolved success path
+                // (Orchestrator's Report / ALL STEPS COMPLETE + green Quality Gate or
+                // no QG required). The .catch() at the call site guarantees a failed
+                // extraction never propagates to the agent loop. The user's stream
+                // closes immediately; the bullet (if any) lands in .fluxo/memory.md
+                // a few seconds later in the background.
+                (0, extractMemories_1.extractMemories)(messages, config, workspacePath).catch(() => { });
+                // ─────────────────────────────────────────────────────────────────────
                 yield { type: 'streamEnd' };
                 return;
             }
@@ -848,6 +859,11 @@ listMcpResourcesCallback) {
             }
             // ─────────────────────────────────────────────────────────────────────
             debugLog(workspacePath, 'Ending: no tool calls → final response (ghostRetries exhausted)');
+            // v8.27.0 — Same background memory extraction as the Orchestrator's
+            // Report path above. This branch fires when the agent ends with text
+            // alone (no tool calls) after Quality Gate passed — also a clean
+            // success exit, so the extractor runs identically.
+            (0, extractMemories_1.extractMemories)(messages, config, workspacePath).catch(() => { });
             yield { type: 'streamEnd' };
             return;
         }
@@ -1904,6 +1920,11 @@ async function detectIntent(userMessage, config, signal) {
     return (response.content || '').trim().toLowerCase();
 }
 // ─── OpenRouter API ───────────────────────────────────────────────────────────
+// v8.27.0 — exported so the background services layer
+// (src/services/extractMemories) can issue its own short LLM calls without
+// re-implementing endpoint resolution / key picking / OpenRouter headers.
+// The function stays in agentEngine.ts because it is the canonical engine
+// transport — services consume it as a thin RPC primitive.
 async function callOpenRouterBlocking(messages, config, signal, tools, toolChoiceRequired) {
     const fetchSignal = signal.aborted ? signal : (AbortSignal.timeout ? AbortSignal.timeout(120000) : signal);
     const { endpointUrl, resolvedKey, resolvedModel } = resolveEndpointAndKey(config.model, config);
