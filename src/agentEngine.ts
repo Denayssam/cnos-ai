@@ -1047,6 +1047,30 @@ export async function* runAgentLoop(
         const readFileDirective = syntaxTargets.length > 0
           ? `\n\nSYNTAX_RECOVERY_DIRECTIVE: ANTES de enviar cualquier replace_lines, ejecuta read_file en ${syntaxTargets.map((p: string) => `"${p}"`).join(', ')}. Ver el estado actual del archivo es OBLIGATORIO — está prohibido adivinar líneas sin leer primero.`
           : '';
+        // ── v8.26.1 — Sherlock 400 Hotfix (Schema Closure) ──────────────────────
+        // The OpenAI / OpenRouter Chat Completions schema requires that EVERY
+        // tool_call emitted by an assistant message be answered by a tool
+        // message carrying the matching tool_call_id BEFORE the next request.
+        // The previous Sherlock-rejection path violated this: it pushed a
+        // user-role recovery directive and `continue`d without ever emitting
+        // the role:'tool' answers for the calls in tcToExecute. Result: the
+        // next callOpenRouterBlocking request crashed with HTTP 400
+        // "An assistant message with 'tool_calls' must be followed by tool
+        // messages responding to each 'tool_call_id'". The fix mirrors the
+        // v8.23.1 Safe Compaction discipline: never break the assistant→tool
+        // pairing — emit a stub answer for every blocked call so the schema
+        // closes cleanly. Push BEFORE the user message so the turn ordering
+        // is exactly: assistant(tool_calls) → tool×N (blocked stubs) → user
+        // (recovery directive) → next assistant.
+        for (const tc of tcToExecute) {
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            name: tc.function.name,
+            content: '[AUDIT BLOCKED] The Sherlock Auditor rejected this tool call. See the critical audit failure message below.',
+          });
+        }
+        // ─────────────────────────────────────────────────────────────────────
         messages.push({ role: 'user', content: `CRITICAL AUDIT FAILURE: ${revisorResult.content}\n\nRECUPERACIÓN OBLIGATORIA: (1) Relee el error arriba con cuidado. (2) Ejecuta read_file en el archivo afectado para ver su estado actual antes de cualquier nuevo replace_lines. (3) Solo corrige el problema específico señalado; no toques nada más.${readFileDirective}` });
         continue;
       }
