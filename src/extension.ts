@@ -5,7 +5,7 @@ import * as cp from 'child_process';
 import { runAgentLoop, ChatMessage, EngineConfig, summarizeHistory } from './agentEngine';
 import { routeToAgent, getAgentList } from './agents';
 import { Sentinel } from './sentinel';
-import { McpSwarmClient } from './mcpClient';
+import { McpSwarmClient } from './services/mcp/client';
 import { listRegistry } from './utils/mcpRegistry';
 import { addServer, removeServer, listConfigured } from './utils/mcpConfigWriter';
 import { rollbackToLastCheckpoint } from './utils/gitSafety';
@@ -732,7 +732,11 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
       replaceSymbolCallback,
       hitlCommandCallback,
       mcpToolCategories,
-      getDiagnosticsCallback
+      getDiagnosticsCallback,
+      // v8.26.0 — Phase 3.4 MCP resource discovery. The McpSwarmClient owns
+      // the live stdio transports, so the engine routes list_mcp_resources
+      // calls back here to reach them.
+      async (serverName: string) => await _mcpClient.listResources(serverName)
     )) {
       _postToPanel({ ...event });
       if (event.type === 'streamChunk') { fullAssistantText += event.text; }

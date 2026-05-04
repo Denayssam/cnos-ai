@@ -80,7 +80,7 @@ const MAX_ITERATIONS = 25;
 // ─── RBAC Categories (v8.19.0 — Phase 3 Deep MCP) ───────────────────────────
 // Principle of Least Privilege for MCP tools. Each agent role is allowed a
 // fixed set of category tags; a tool is admitted iff its inferred categories
-// (set by mcpClient.inferCategories) overlap the role's allow-set. Tools with
+// (set by services/mcp/client.inferCategories) overlap the role's allow-set. Tools with
 // no categories ("unknown") are denied for every role EXCEPT @manager — the
 // orchestrator gets a permissive fallback so it can still operate when the
 // inference misses an exotic server.
@@ -282,7 +282,16 @@ export async function* runAgentLoop(
   // a list of human-readable diagnostic strings (already trimmed and capped).
   // Engine treats absence (undefined/null callback) as "no LSP available" —
   // skips the check silently so non-VS Code execution paths are unaffected.
-  getDiagnosticsCallback?: (relPaths: string[]) => Promise<string[]>
+  getDiagnosticsCallback?: (relPaths: string[]) => Promise<string[]>,
+  // v8.26.0 — Phase 3.4 MCP resource discovery. Wired to
+  // McpSwarmClient.listResources(serverName) in extension.ts. The engine
+  // intercepts `list_mcp_resources` tool calls before executeTool dispatches
+  // and routes them through this callback so the live stdio transports owned
+  // by the extension host can be reached. Returns the standard
+  // {success, output} envelope. Engine treats absence as "MCP service not
+  // initialized" and lets the tool's placeholder execute() surface a clean
+  // engine error.
+  listMcpResourcesCallback?: (serverName: string) => Promise<{ success: boolean; output: string }>
 ): AsyncGenerator<AgentEvent> {
 
   // 1. Intent Detection (Routing)
@@ -310,7 +319,7 @@ export async function* runAgentLoop(
   const agent = AGENTS[agentId] || AGENTS.coder;
   let agentTools: NativeTool[] = getNativeTools(agent.tools);
   // v8.19.0 — RBAC filter for MCP tools. The filter consults RBAC_CATEGORIES
-  // and the per-tool category map produced by mcpClient.inferCategories.
+  // and the per-tool category map produced by services/mcp/client.inferCategories.
   // Tools with unmatched categories are dropped silently from the agent's
   // tool surface; the LLM never sees them and cannot call them.
   let allowedMcpTools: NativeTool[] = [];
@@ -578,7 +587,8 @@ export async function* runAgentLoop(
               replaceSymbolCallback,
               hitlCommandCallback,
               mcpToolCategories,
-              getDiagnosticsCallback
+              getDiagnosticsCallback,
+              listMcpResourcesCallback
             );
 
             yield { type: 'thinking', text: `━━━ DAG dispatch · ${t.id} → @${targetAgentId} ━━━` };
@@ -1358,6 +1368,21 @@ export async function* runAgentLoop(
         } else if (toolName.startsWith('mcp_') && callMcpToolCallback) {
           yield { type: 'thinking', text: `🔌 MCP: Calling external tool ${toolName}…` };
           result = await callMcpToolCallback(toolName, args);
+        } else if (toolName === 'list_mcp_resources' && listMcpResourcesCallback) {
+          // ── v8.26.0 — Phase 3.4 MCP resource discovery ────────────────────
+          // Synchronous executeTool can't reach the live stdio transports in
+          // the extension host, so we route through the async callback before
+          // dispatch. Mirrors the get_code_structure / replace_symbol pattern.
+          const _serverName = String(args.server_name ?? '').trim();
+          if (!_serverName) {
+            result = {
+              success: false,
+              output: 'list_mcp_resources: missing required `server_name` argument. Provide the alias from .fluxo/mcp_servers.json (e.g. "github", "n8n").',
+            };
+          } else {
+            yield { type: 'thinking', text: `🔌 MCP: Discovering resources on ${_serverName}…` };
+            result = await listMcpResourcesCallback(_serverName);
+          }
         } else if (toolName === 'replace_symbol' && replaceSymbolCallback) {
           // ── LSP Symbol Replace (v8.5.0) ────────────────────────────────────────
           yield { type: 'thinking', text: '🔬 LSP: locating AST symbol…' };
@@ -1533,7 +1558,8 @@ export async function* runAgentLoop(
               undefined,              // no replace symbol
               undefined,              // no HITL — planner is read-only
               mcpToolCategories,      // v8.19.0 — RBAC filter will deny unknown-category tools to planner
-              undefined               // v8.23.0 — no LSP passive feedback for the planner (read-only, never edits)
+              undefined,              // v8.23.0 — no LSP passive feedback for the planner (read-only, never edits)
+              listMcpResourcesCallback // v8.26.0 — Phase 3.4 resource discovery (planner DOES use this)
             );
 
             for await (const event of plannerGen) {
@@ -1611,7 +1637,8 @@ export async function* runAgentLoop(
                 replaceSymbolCallback,
                 hitlCommandCallback,    // HITL propagated to all swarm sub-agents
                 mcpToolCategories,       // v8.19.0 — each sub-agent re-applies its own RBAC filter
-                getDiagnosticsCallback   // v8.23.0 — sub-agents also get LSP passive feedback before their gate
+                getDiagnosticsCallback,  // v8.23.0 — sub-agents also get LSP passive feedback before their gate
+                listMcpResourcesCallback // v8.26.0 — Phase 3.4 resource discovery propagated to swarm sub-agents
               );
 
               for await (const event of subGen) {

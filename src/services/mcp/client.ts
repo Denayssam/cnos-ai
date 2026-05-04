@@ -1,11 +1,48 @@
+// ─── Fluxo MCP Service Layer (v8.26.0 — Phase 3.4) ──────────────────────────
+//
+// History: this file used to live at src/mcpClient.ts as the monolithic MCP
+// integration surface. v8.26.0 extracts it into a dedicated services layer
+// (`src/services/mcp/`) in preparation for Phase 4 work — n8n/SaaS automation
+// flows that need additional services (resource discovery, prompt templates,
+// long-running webhook handlers) to live alongside the client without
+// re-monolithizing.
+//
+// What MOVED unchanged from src/mcpClient.ts (zero behavior regression):
+//   • McpServerConfig interface
+//   • CATEGORY_KEYWORDS heuristic + inferCategories()
+//   • McpSwarmClient class — _loadMergedConfig (auto-injection of starter
+//     pack via ensureStarterPack), _resolveServerConfig (${ENV:...} /
+//     ${ARG:...} placeholder resolution), _initializeAsync with
+//     Promise.allSettled parallel boot + 30s connect timeout + transport
+//     cleanup on timeout, _cacheTools with explicit/inferred category
+//     merging, and the public surface (initialize, getMcpTools,
+//     getMcpToolCategories, callMcpTool, destroy).
+//
+// What is NEW in v8.26.0:
+//   • listResources(serverName) — atomic discovery of remote resources
+//     (n8n workflow files, DB schemas, config blobs) for the new
+//     ListMcpResourcesTool. Wired through the agent engine via a callback
+//     interceptor so @planner and @manager can enumerate what an MCP
+//     server exposes BEFORE deciding which tool to call.
+//
+// PRESERVED INVARIANTS (must remain true on every refactor):
+//   1. Parallel boot via Promise.allSettled — no server's slow npx fetch
+//      blocks the others; one failed server does not abort the batch.
+//   2. RBAC category map (toolCategories) is keyed by full mcp_<server>_<tool>
+//      name and consumed by agentEngine.applyMcpRbac at runtime.
+//   3. Placeholder resolution runs on every string in args + every value in
+//      env BEFORE the StdioClientTransport is constructed.
+//   4. ensureStarterPack is idempotent — re-running on a workspace with
+//      existing .fluxo/mcp_servers.json is a no-op.
+
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { NativeTool } from './tools';
-import { ensureStarterPack } from './utils/mcpConfigWriter';
-import { resolvePlaceholders } from './utils/mcpRegistry';
+import { NativeTool } from '../../tools';
+import { ensureStarterPack } from '../../utils/mcpConfigWriter';
+import { resolvePlaceholders } from '../../utils/mcpRegistry';
 
 interface McpServerConfig {
   command: string;
@@ -20,7 +57,7 @@ interface McpServerConfig {
   categories?: string[];
 }
 
-// ─── Category Inference (v8.19.0) ───────────────────────────────────────────
+// ─── Category Inference (v8.19.0, moved verbatim in v8.26.0) ────────────────
 // Heuristic mapping from server/tool/description text to RBAC categories.
 // Multi-tag: a single tool can carry several categories (e.g. GitHub provides
 // both git ops and issue/PR project-management surfaces). The RBAC filter in
@@ -160,7 +197,7 @@ export class McpSwarmClient {
         });
 
         const client = new Client(
-          { name: 'fluxo-ai', version: '8.20.0' },
+          { name: 'fluxo-ai', version: '8.26.0' },
           { capabilities: {} }
         );
 
@@ -264,6 +301,80 @@ export class McpSwarmClient {
     } catch (err: any) {
       return { success: false, output: `MCP call failed: ${err.message}` };
     }
+  }
+
+  /**
+   * v8.26.0 — Phase 3.4 resource discovery. MCP servers expose two parallel
+   * surfaces: `tools` (callable functions, already cached during init) and
+   * `resources` (readable URIs — n8n workflow JSON blobs, database schemas,
+   * config files, prompt templates). The agent needs to enumerate resources
+   * BEFORE deciding which tool to call against them, much like an LSP
+   * `textDocument/documentSymbol` precedes a refactor.
+   *
+   * Returns the same { success, output } envelope as callMcpTool so the
+   * engine intercept and the existing tool-result pipeline treat it
+   * uniformly. Output is a human-readable list (uri / name / mimeType /
+   * description) — formatted for direct injection into the LLM's context
+   * with low parsing overhead.
+   *
+   * Defensive: if the server does not advertise the resources/list capability
+   * the SDK throws — we trap and return a clean failure rather than letting
+   * the engine see a raw exception.
+   */
+  public async listResources(serverName: string): Promise<{ success: boolean; output: string }> {
+    if (!serverName || typeof serverName !== 'string') {
+      return { success: false, output: 'list_mcp_resources: missing or invalid `server_name` argument.' };
+    }
+    const client = this.clients.get(serverName);
+    if (!client) {
+      const available = Array.from(this.clients.keys());
+      return {
+        success: false,
+        output:
+          `MCP Server not found: "${serverName}". ` +
+          (available.length > 0
+            ? `Available servers: ${available.join(', ')}.`
+            : 'No MCP servers are currently connected — check .fluxo/mcp_servers.json.'),
+      };
+    }
+    try {
+      const response = await Promise.race([
+        client.listResources(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('listResources timeout (5s)')), 5000)),
+      ]) as any;
+      const resources: any[] = Array.isArray(response?.resources) ? response.resources : [];
+      if (resources.length === 0) {
+        return {
+          success: true,
+          output: `MCP server "${serverName}" exposes 0 resources. The server may only provide tools, or the resources/list capability is unimplemented.`,
+        };
+      }
+      const lines = resources.slice(0, 50).map(r => {
+        const parts = [
+          `uri: ${r.uri ?? '(missing)'}`,
+          `name: ${r.name ?? '(unnamed)'}`,
+        ];
+        if (r.mimeType) { parts.push(`mimeType: ${r.mimeType}`); }
+        if (r.description) { parts.push(`description: ${String(r.description).slice(0, 200)}`); }
+        return `- ${parts.join(' | ')}`;
+      });
+      const truncated = resources.length > 50 ? `\n…(showing first 50 of ${resources.length})` : '';
+      return {
+        success: true,
+        output: `MCP server "${serverName}" exposes ${resources.length} resource(s):\n\n${lines.join('\n')}${truncated}`,
+      };
+    } catch (err: any) {
+      return { success: false, output: `list_mcp_resources("${serverName}") failed: ${err?.message ?? String(err)}` };
+    }
+  }
+
+  /**
+   * v8.26.0 — utility for the new ListMcpResourcesTool's error path. Returns
+   * the list of currently connected server names so the tool can suggest
+   * valid alternatives when the agent asks about a typo'd server.
+   */
+  public getConnectedServerNames(): string[] {
+    return Array.from(this.clients.keys());
   }
 
   public async destroy() {

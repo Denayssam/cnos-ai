@@ -42,7 +42,7 @@ const cp = __importStar(require("child_process"));
 const agentEngine_1 = require("./agentEngine");
 const agents_1 = require("./agents");
 const sentinel_1 = require("./sentinel");
-const mcpClient_1 = require("./mcpClient");
+const client_1 = require("./services/mcp/client");
 const mcpRegistry_1 = require("./utils/mcpRegistry");
 const mcpConfigWriter_1 = require("./utils/mcpConfigWriter");
 const gitSafety_1 = require("./utils/gitSafety");
@@ -696,7 +696,11 @@ async function _handleSendMessage(userText, model, workerModel, context) {
             return out;
         };
         // ─────────────────────────────────────────────────────────────────────────────
-        for await (const event of (0, agentEngine_1.runAgentLoop)(userText, agentId, _conversationHistory, engineConfig, workspacePath, _currentAbortController.signal, _sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, async (name, args) => await _mcpClient.callMcpTool(name, args), worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback, mcpToolCategories, getDiagnosticsCallback)) {
+        for await (const event of (0, agentEngine_1.runAgentLoop)(userText, agentId, _conversationHistory, engineConfig, workspacePath, _currentAbortController.signal, _sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, async (name, args) => await _mcpClient.callMcpTool(name, args), worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback, mcpToolCategories, getDiagnosticsCallback, 
+        // v8.26.0 — Phase 3.4 MCP resource discovery. The McpSwarmClient owns
+        // the live stdio transports, so the engine routes list_mcp_resources
+        // calls back here to reach them.
+        async (serverName) => await _mcpClient.listResources(serverName))) {
             _postToPanel({ ...event });
             if (event.type === 'streamChunk') {
                 fullAssistantText += event.text;
@@ -1066,7 +1070,7 @@ function activate(context) {
     // .fluxo/mcp_servers.json (per-project MCP config) on top of the
     // user-scoped fluxo.mcpServers VSCode setting.
     const _initWsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    _mcpClient = new mcpClient_1.McpSwarmClient(_initWsPath);
+    _mcpClient = new client_1.McpSwarmClient(_initWsPath);
     _mcpClient.initialize();
     // Initialize conversation persistence
     _conversationHistory = context.workspaceState.get(STORAGE_KEY) || [];

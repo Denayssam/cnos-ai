@@ -483,7 +483,7 @@ ${WEB_ARCHITECTURE_SOP}`,
         emoji: '📋',
         color: '#6366f1',
         description: 'Analyzes the codebase and produces a structured implementation plan',
-        tools: ['get_repo_map', 'read_file', 'write_file', 'ask_user_approval'],
+        tools: ['get_repo_map', 'read_file', 'write_file', 'ask_user_approval', 'list_mcp_resources'],
         keywords: [],
         systemPrompt: `You are Fluxo Planner — a Senior Software Architect and Technical Lead.
 
@@ -589,7 +589,7 @@ Vague steps ("update the component") are a FAILURE — be precise ("replace_symb
         emoji: '🧭',
         color: '#8b5cf6',
         description: 'Orchestration, complex planning, and emergency debugging',
-        tools: ['read_file', 'search_in_files', 'get_code_structure', 'glob', 'grep', 'run_command', 'enter_worktree', 'exit_worktree', 'create_team', 'send_message', 'enter_plan_mode', 'skill', 'get_repo_map', 'abort_and_rollback'],
+        tools: ['read_file', 'search_in_files', 'get_code_structure', 'glob', 'grep', 'run_command', 'enter_worktree', 'exit_worktree', 'create_team', 'send_message', 'enter_plan_mode', 'skill', 'get_repo_map', 'abort_and_rollback', 'list_mcp_resources'],
         isolation: 'worktree',
         keywords: [
             'manager', 'gestiona', 'organiza', 'planifica', 'proyecto',

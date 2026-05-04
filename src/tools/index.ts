@@ -27,6 +27,7 @@ import * as EnterPlanModeTool     from './EnterPlanModeTool';
 import * as SkillTool             from './SkillTool';
 import * as GetRepoMapTool        from './GetRepoMapTool';
 import * as AbortAndRollbackTool  from './AbortAndRollbackTool';
+import * as ListMcpResourcesTool  from './ListMcpResourcesTool';
 import { ToolResult, NativeTool } from './shared';
 
 export { ToolResult, NativeTool };
@@ -63,6 +64,7 @@ const ALL_TOOLS = [
   SkillTool,
   GetRepoMapTool,
   AbortAndRollbackTool,
+  ListMcpResourcesTool,
 ];
 
 export const TOOL_DEFINITIONS: NativeTool[] = ALL_TOOLS.map(t => t.TOOL_DEF);
