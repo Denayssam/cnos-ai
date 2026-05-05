@@ -2,6 +2,14 @@
 
 ---
 
+## [v8.31.1] - Hotfix: Webview Panel Survives Reload Window
+
+**Objetivo:** Restaurar la persistencia del panel de Fluxo AI tras `Developer: Reload Window`. El usuario reportó que el panel del chat se cerraba después de cualquier reload, perdiendo el estado visual y obligándolo a re-abrirlo manualmente desde el sidebar.
+
+- **Activation Event para el WebviewPanel (`package.json` — v8.31.1):** El serializer del panel ya estaba correctamente registrado en [src/extension.ts:1198](src/extension.ts#L1198) vía `vscode.window.registerWebviewPanelSerializer('fluxo.chatPanel', ...)`. Sin embargo, faltaba el activation event correspondiente en `package.json`. VS Code requiere `"onWebviewPanel:<viewType>"` para activar la extensión a tiempo durante la restauración del layout — sin ese evento, cuando VS Code intenta deserializar el panel huérfano post-reload, la extensión todavía no está activa, no hay serializer registrado, y VS Code descarta el panel silenciosamente. La activación previa vía `onStartupFinished` se dispara DESPUÉS del momento crítico de restauración del layout. El fix añade `"onWebviewPanel:fluxo.chatPanel"` al array de `activationEvents`. Cero cambios en `extension.ts` — el serializer ya estaba completo (restaura `_panel`, `webview.options`, `html`, `onDidReceiveMessage`, `onDidDispose`).
+
+---
+
 ## [v8.31.0] - The Tolerance & Rigor Patch
 
 **Objetivo:** Cerrar dos brechas distintas que causan fallos en agentes Tier-1 (Gemini/Claude) bajo estrés. La primera es de tolerancia (aceptar nombres de argumentos comunes pero no canónicos); la segunda es de rigor (forzar a que la memoria persistente sea un post-mortem accionable, no un log de éxitos genéricos). Las dos son ortogonales y se combinan: el motor tolera más en la entrada de las herramientas, pero exige más estructura en las lecciones que se persisten.
