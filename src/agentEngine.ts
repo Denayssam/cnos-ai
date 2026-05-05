@@ -367,21 +367,29 @@ export async function* runAgentLoop(
     .slice(-12)
     .filter(m => m.role === 'user' || m.role === 'assistant');
 
-  // Workspace Memory injection — read .fluxo/memory.md once per session
+  // Agent Memory injection (v8.30.0) — read .fluxo/memory.md once per session.
+  // Cap at 15KB to avoid token exhaustion. Framed as persistent lessons, not rules.
+  const MEMORY_SIZE_CAP = 15_360; // 15KB
   let workspaceMemoryBlock = '';
   if (workspacePath) {
     const memoryFilePath = path.join(workspacePath, '.fluxo', 'memory.md');
     try {
       if (fs.existsSync(memoryFilePath)) {
-        const memoryContent = fs.readFileSync(memoryFilePath, 'utf-8').trim();
-        if (memoryContent) {
-          workspaceMemoryBlock =
-            '\n\n--- WORKSPACE MEMORY & RULES ---\n' +
-            'The following rules and conventions were set by the user for this workspace. ' +
-            'They are BINDING — apply them automatically on every task without being asked:\n\n' +
-            memoryContent +
-            '\n--- END OF WORKSPACE MEMORY ---';
-          debugLog(workspacePath, `Workspace memory loaded: ${memoryContent.length} chars`);
+        const memoryStats = fs.statSync(memoryFilePath);
+        if (memoryStats.size <= MEMORY_SIZE_CAP) {
+          const memoryContent = fs.readFileSync(memoryFilePath, 'utf-8').trim();
+          if (memoryContent) {
+            workspaceMemoryBlock =
+              '\n\n<agent_memory>\n' +
+              'This is your persistent memory across past sessions. ' +
+              'Read these lessons learned to avoid repeating past mistakes. ' +
+              'Entries are written by previous instances of yourself after completing tasks or recovering from errors.\n\n' +
+              memoryContent +
+              '\n</agent_memory>';
+            debugLog(workspacePath, `Agent memory loaded: ${memoryContent.length} chars`);
+          }
+        } else {
+          debugLog(workspacePath, `Agent memory skipped: file exceeds ${MEMORY_SIZE_CAP} byte cap (${memoryStats.size} bytes)`);
         }
       }
     } catch { /* memory file unreadable — proceed without it */ }

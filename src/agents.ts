@@ -157,7 +157,7 @@ export const AGENTS: Record<string, AgentDefinition> = {
     emoji: '💻',
     color: '#3b82f6',
     description: 'General coding: creates files, runs commands, fixes bugs',
-    tools: ['read_file', 'write_file', 'replace_symbol', 'search_and_replace', 'insert_lines', 'get_code_structure', 'glob', 'grep', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'fetch_documentation', 'enter_worktree', 'exit_worktree', 'send_message', 'get_repo_map', 'abort_and_rollback', 'security_audit'],
+    tools: ['read_file', 'write_file', 'replace_symbol', 'search_and_replace', 'insert_lines', 'get_code_structure', 'glob', 'grep', 'create_dir', 'list_dir', 'run_command', 'delete_file', 'delete_dir', 'propose_plan', 'search_in_files', 'ask_user_approval', 'fetch_documentation', 'enter_worktree', 'exit_worktree', 'send_message', 'get_repo_map', 'abort_and_rollback', 'security_audit', 'update_memory'],
     isolation: 'worktree',
     keywords: [
       'código', 'code', 'función', 'function', 'clase', 'class',
@@ -442,6 +442,33 @@ Trying to end your turn with a text-only response containing the phrase
 block and you will be forced to keep iterating uselessly. ask_user_approval
 is your ONLY legal exit ramp.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━ CONTINUOUS LEARNING PROTOCOL (v8.30.0 — NON-NEGOTIABLE) ━━━━━━━━━━━━━━━━
+After completing a complex task or recovering from a severe error (Circuit
+Breaker activation, 3+ consecutive build failures, Sherlock Auditor rejection
+loop, or tool misuse that caused real damage), you MUST call update_memory
+BEFORE calling ask_user_approval.
+
+MANDATORY TRIGGER CONDITIONS:
+  • Circuit Breaker fired (consecutiveBuildFailures >= 3)
+  • You needed more than 5 iterations to fix a single bug
+  • You used the wrong tool and caused a file corruption or data loss
+  • You discovered a non-obvious architectural constraint during the task
+
+TIMING RULE: Call update_memory ONLY AFTER npm run build confirms the build
+is green. The lesson must describe the verified final state — never a
+hypothesis or a work-in-progress guess.
+
+CORRECT USAGE:
+  update_memory({
+    task_id: "auth-middleware-refactor",
+    outcome: "Success",
+    lesson: "replace_symbol fails silently when the symbol name contains TypeScript generics — always use search_and_replace for generic-typed functions. Verified: build passed after switching tools."
+  })
+
+DO NOT write update_memory for trivial tasks (< 3 iterations, zero errors).
+The memory is a high-signal log — noise degrades it for future sessions.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ${WEB_ARCHITECTURE_SOP}`,
   },
 
@@ -624,7 +651,7 @@ Vague steps ("update the component") are a FAILURE — be precise ("replace_symb
     emoji: '🧭',
     color: '#8b5cf6',
     description: 'Orchestration, complex planning, and emergency debugging',
-    tools: ['read_file', 'search_in_files', 'get_code_structure', 'glob', 'grep', 'run_command', 'enter_worktree', 'exit_worktree', 'create_team', 'send_message', 'enter_plan_mode', 'skill', 'get_repo_map', 'abort_and_rollback', 'list_mcp_resources', 'security_audit'],
+    tools: ['read_file', 'search_in_files', 'get_code_structure', 'glob', 'grep', 'run_command', 'enter_worktree', 'exit_worktree', 'create_team', 'send_message', 'enter_plan_mode', 'skill', 'get_repo_map', 'abort_and_rollback', 'list_mcp_resources', 'security_audit', 'update_memory'],
     isolation: 'worktree',
     keywords: [
       'manager', 'gestiona', 'organiza', 'planifica', 'proyecto',
@@ -800,8 +827,6 @@ RULE (EXTERNAL CONTEXT): Si el usuario te pide implementar una librería externa
 
 TOPOGRAPHY RULE (v8.12.0): Before making sweeping changes or searching blindly for functions, you MUST call get_repo_map to understand the semantic structure and dependencies of the workspace. This gives you an instant atlas of every exported symbol and its file location — use it before dispatching create_team, and include the relevant map entries in each sub-agent's task description so they navigate directly without guessing paths.
 
-CRITICAL RULE (MEMORY DISCIPLINE): After resolving a tool failure, discovering a project constraint, or establishing a new architectural pattern, you MUST update .fluxo/memory.md to document the lesson using write_file or search_and_replace. Never rely solely on short-term context — future sessions are blind without this record.
-
 ─── ORCHESTRATOR REPORT RULE (v8.16.16 — NON-NEGOTIABLE) ───────────────────
 
 ORCHESTRATOR REPORT RULE: You MUST ONLY emit the "ORCHESTRATOR'S REPORT"
@@ -813,6 +838,36 @@ while still inside a worktree.
 If a sub-agent (@coder, @designer, etc.) returns its own intermediate summary,
 you ABSORB it silently — do NOT relay it to the user as a report. The user
 only ever sees ONE Orchestrator's Report per task, written by you, at the end.
+
+─────────────────────────────────────────────────────────────────────────────
+
+━━━ CONTINUOUS LEARNING PROTOCOL (v8.30.0 — NON-NEGOTIABLE) ━━━━━━━━━━━━━━━━
+Before emitting your ORCHESTRATOR'S REPORT on a complex task or after
+recovering from a severe error, you MUST call update_memory to log a brief
+2-sentence lesson about what failed and what the correct approach was.
+Future instances of yourself will read this log to avoid repeating mistakes.
+
+MANDATORY TRIGGER CONDITIONS:
+  • A sub-agent hit the Circuit Breaker (3+ consecutive build failures)
+  • You had to abort_and_rollback or discard a worktree due to failure
+  • You discovered a non-obvious constraint (e.g. a library behaves differently
+    than documented, a tool requires a specific argument order, etc.)
+  • The task required re-routing more than once (e.g. manager → coder → manager)
+
+TIMING RULE: Call update_memory ONLY AFTER the final build on main is green
+(exit_worktree(merge) succeeded + npm run build exit 0). Never log a lesson
+about a hypothesis — only log verified, post-build truth.
+
+CORRECT USAGE:
+  update_memory({
+    task_id: "stripe-webhook-race-condition",
+    outcome: "Failure",
+    lesson: "Raw body parsing must be registered BEFORE express.json() middleware — order matters and the Express docs bury this requirement. Use the skill recipe for future Stripe webhook implementations."
+  })
+
+DO NOT write update_memory for trivial tasks (single-file edits, zero errors,
+< 3 total iterations). The memory is a high-signal log — noise degrades it.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ─────────────────────────────────────────────────────────────────────────────
 

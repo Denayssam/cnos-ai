@@ -1,44 +1,81 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { NativeTool, ToolResult } from '../shared';
+import { NativeTool, ToolResult, safePath } from '../shared';
 
-const MEMORY_PATH = '.fluxo/memory.md';
+const MEMORY_RELATIVE = '.fluxo/memory.md';
 
 export const TOOL_DEF: NativeTool = {
   type: 'function',
   function: {
     name: 'update_memory',
     description:
-      'Create or overwrite the workspace memory file (.fluxo/memory.md). ' +
-      'Use this tool when the user explicitly asks you to "remember" a rule, preference, or convention, ' +
-      'OR when you and the user agree on an important architectural decision that should persist across sessions. ' +
-      'Always include the full desired memory content — this overwrites the file completely. ' +
-      'Read the existing memory first (if any) so you can merge old rules with new ones before writing.',
+      'Append a structured Decision Log entry to .fluxo/memory.md. ' +
+      'Use this tool after completing a complex task or recovering from a severe error ' +
+      '(e.g. Circuit Breaker activation, repeated build failures, tool misuse). ' +
+      'The lesson is appended non-destructively — existing entries are never overwritten. ' +
+      'Future sessions will read these entries to avoid repeating past mistakes. ' +
+      'IMPORTANT: Only call this tool AFTER npm run build confirms the build is green — ' +
+      'the lesson must reflect the final, verified state of the repository.',
     parameters: {
       type: 'object',
       properties: {
-        content: {
+        task_id: {
           type: 'string',
           description:
-            'Full markdown content for .fluxo/memory.md. Use headings (##) to organize rules by category. ' +
-            'Example sections: ## Coding Conventions, ## Architecture Decisions, ## User Preferences.',
+            'Short identifier or description of the task context. ' +
+            'Examples: "auth-refactor", "stripe-webhook-fix", "circuit-breaker-recovery".',
+        },
+        outcome: {
+          type: 'string',
+          enum: ['Success', 'Failure'],
+          description: 'Whether the task ultimately succeeded or failed.',
+        },
+        lesson: {
+          type: 'string',
+          description:
+            '2-sentence lesson learned. First sentence: what went wrong or what was the key insight. ' +
+            'Second sentence: what the correct approach is for next time.',
         },
       },
-      required: ['content'],
+      required: ['task_id', 'outcome', 'lesson'],
     },
   },
 };
 
 export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
-  if (typeof args.content !== 'string' || args.content.trim() === '') {
-    return { success: false, output: 'CRITICAL ERROR: "content" is missing or empty.' };
+  const { task_id, outcome, lesson } = args;
+
+  if (typeof task_id !== 'string' || task_id.trim() === '') {
+    return { success: false, output: 'CRITICAL ERROR: "task_id" is required and must be a non-empty string.' };
   }
-  const memoryFilePath = path.join(workspacePath, MEMORY_PATH);
+  if (outcome !== 'Success' && outcome !== 'Failure') {
+    return { success: false, output: 'CRITICAL ERROR: "outcome" must be either "Success" or "Failure".' };
+  }
+  if (typeof lesson !== 'string' || lesson.trim() === '') {
+    return { success: false, output: 'CRITICAL ERROR: "lesson" is required and must be a non-empty string.' };
+  }
+
+  let memoryFilePath: string;
+  try {
+    memoryFilePath = safePath(workspacePath, MEMORY_RELATIVE);
+  } catch (e: any) {
+    return { success: false, output: `[SYSTEM SHIELD] ${e.message}` };
+  }
+
   fs.mkdirSync(path.dirname(memoryFilePath), { recursive: true });
-  fs.writeFileSync(memoryFilePath, args.content, 'utf-8');
-  const size = Buffer.byteLength(args.content, 'utf-8');
+
+  const now = new Date();
+  const timestamp = now.toISOString().replace('T', ' ').substring(0, 19);
+
+  const entry =
+    `\n### [${timestamp}] - Tarea: ${task_id.trim()}\n` +
+    `**Outcome:** ${outcome}\n` +
+    `**Lesson Learned:** ${lesson.trim()}\n`;
+
+  fs.appendFileSync(memoryFilePath, entry, 'utf-8');
+
   return {
     success: true,
-    output: `Workspace memory updated: ${MEMORY_PATH} (${size} bytes). Rules will be injected into all agents on the next session.`,
+    output: `Decision log entry appended to ${MEMORY_RELATIVE}. Timestamp: ${timestamp}. Outcome: ${outcome}.`,
   };
 }
