@@ -2,6 +2,14 @@
 
 ---
 
+## [v8.30.1] - Hotfix: Worktree-Aware Quality Gate
+
+**Objetivo:** Cerrar un bug financiero crítico en el Quality Gate del motor. Cuando un agente operaba dentro de un Git Worktree aislado (e.g. `@coder` con `isolation: 'worktree'`), las dos llamadas a `validateBuild(workspacePath)` en `src/agentEngine.ts` compilaban la rama `main` en vez del worktree real donde vivían los cambios del agente. El build de `main` siempre estaba verde (porque el código nuevo no estaba ahí), pero el build del worktree podía estar roto — el motor declaraba "tarea completa" sobre un worktree quebrado, o, en el peor caso, validaba `main` exitosamente y luego entraba en un bucle infinito de 25 iteraciones porque la lógica downstream detectaba la inconsistencia.
+
+- **Worktree-Aware Quality Gate (`src/agentEngine.ts` — v8.30.1):** Los dos puntos de salida del bucle (la rama del streamEnd asíncrono y la rama del fallback síncrono, ambos marcados con `// ── v8.16.0/8.16.1: Quality Gate + Escape Hatch`) ahora invocan `validateBuild(activeWorktreePath || workspacePath)`. La variable `activeWorktreePath` ya estaba en scope desde la línea 474 y se llena automáticamente cuando el agente ejecuta `enter_worktree`. El operador `||` garantiza el fallback al workspace root cuando no hay worktree activo (modo no-aislado), preservando 100% de la compatibilidad con el flujo legacy. Cero cambios en la lógica del Quality Gate, los contadores de fallos o el Circuit Breaker — solo cambia EL DIRECTORIO QUE SE COMPILA.
+
+---
+
 ## [v8.30.0] - The Decision Log Patch (Phase 5: Continuous Learning)
 
 **Objetivo:** Implementar un sistema de memoria persistente orientado al aprendizaje automático entre sesiones. Los agentes ahora escriben "Decision Log entries" estructuradas en `.fluxo/memory.md` después de tareas complejas o errores graves, y el motor inyecta ese historial en el sistema prompt de cada sesión nueva bajo `<agent_memory>`. El enjambre aprende de sus propios errores sin intervención humana.

@@ -855,7 +855,7 @@ export async function* runAgentLoop(
         // ── v8.16.0/8.16.1: Quality Gate + Escape Hatch ──────────────────────
         if (workspacePath && toolCallHistory.length > 0 && !buildFailureCtx && !bypassQualityGate) {
           yield { type: 'thinking', text: '🏗️ Quality Gate: validating build before completion…' };
-          const qgResult = await validateBuild(workspacePath);
+          const qgResult = await validateBuild(activeWorktreePath || workspacePath);
           if (!qgResult.success && !qgResult.error?.toLowerCase().includes('missing script')) {
             consecutiveBuildFailures++;
             debugLog(workspacePath, `[Quality Gate] FAILED (${consecutiveBuildFailures}/3) — blocking agent completion`);
@@ -943,7 +943,7 @@ export async function* runAgentLoop(
       // ── v8.16.0/8.16.1: Quality Gate + Escape Hatch ──────────────────────
       if (workspacePath && toolCallHistory.length > 0 && !buildFailureCtx && !bypassQualityGate) {
         yield { type: 'thinking', text: '🏗️ Quality Gate: validating build before completion…' };
-        const qgResult = await validateBuild(workspacePath);
+        const qgResult = await validateBuild(activeWorktreePath || workspacePath);
         if (!qgResult.success && !qgResult.error?.toLowerCase().includes('missing script')) {
           consecutiveBuildFailures++;
           debugLog(workspacePath, `[Quality Gate] FAILED (${consecutiveBuildFailures}/3) — blocking agent completion`);
