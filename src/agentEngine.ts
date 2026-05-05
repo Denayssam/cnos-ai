@@ -449,6 +449,7 @@ export async function* runAgentLoop(
   let consecutiveGhostCount = 0;
   let ghostRetries = 0;
   let planCheckCount = 0;
+  let nodeModulesAccessCount = 0; // v8.29.0 — Rabbit Hole soft-limit: first access gets a warning, subsequent are hard-blocked
   let consecutiveBuildFailures = 0;  // ── v8.16.1: Quality Gate circuit breaker counter
   let bypassQualityGate = false;     // ── v8.16.1: set to true when user approves bypass
   // v8.23.0 — LSP Passive Feedback bookkeeping. Tracks the recently edited
@@ -1260,12 +1261,13 @@ export async function* runAgentLoop(
       }
       // ─────────────────────────────────────────────────────────────────────────
 
-      // ── Rabbit Hole Hard Block (v8.16.23) ────────────────────────────────────
-      // When a build/runtime error appears, the @coder occasionally drifts into
-      // inspecting node_modules/ instead of rolling back its own edits. Blocks
-      // any read/search/terminal tool whose args reference node_modules as a
-      // path segment. Whole-word boundary check so filenames like
-      // "node_modules_check.ts" still pass through.
+      // ── Rabbit Hole Soft-Limit (v8.29.0, was Hard Block v8.16.23) ───────────
+      // Frontier models sometimes have a legitimate reason to peek at a package's
+      // source once (e.g. confirm an API shape, check a type export). The old
+      // blanket hard-block prevented even that. v8.29.0 converts it to a 1-strike
+      // soft-limit: the FIRST access gets a loud warning injected into the tool
+      // output but execution is allowed; subsequent accesses are hard-blocked.
+      // Whole-word boundary regex so "node_modules_check.ts" still passes through.
       const _rabbitHoleGated = toolName === 'read_file' || toolName === 'grep' ||
                                toolName === 'glob' || toolName === 'search_and_replace' ||
                                toolName === 'run_command';
@@ -1275,14 +1277,23 @@ export async function* runAgentLoop(
           v => typeof v === 'string' && _rabbitRe.test(v)
         );
         if (_rabbitHit) {
-          const _rhMsg =
-            "[SYSTEM BLOCK] RABBIT HOLE DETECTED. You are strictly forbidden from " +
-            "inspecting or debugging 'node_modules/'. The bug is in your own code, " +
-            "not in the external libraries. Look at the files you just modified.";
-          debugLog(workspacePath, `[Rabbit Hole] ${toolName} blocked — args referenced node_modules`);
-          yield { type: 'toolResult', name: toolName, success: false, output: _rhMsg };
-          messages.push({ role: 'tool', tool_call_id: tc.id, name: toolName, content: _rhMsg });
-          continue;
+          if (nodeModulesAccessCount >= 1) {
+            // Hard block on second+ access — same message as before.
+            const _rhMsg =
+              "[SYSTEM BLOCK] RABBIT HOLE DETECTED. You are strictly forbidden from " +
+              "inspecting or debugging 'node_modules/'. The bug is in your own code, " +
+              "not in the external libraries. Look at the files you just modified.";
+            debugLog(workspacePath, `[Rabbit Hole] ${toolName} hard-blocked — nodeModulesAccessCount=${nodeModulesAccessCount}`);
+            yield { type: 'toolResult', name: toolName, success: false, output: _rhMsg };
+            messages.push({ role: 'tool', tool_call_id: tc.id, name: toolName, content: _rhMsg });
+            continue;
+          }
+          // First access — allow execution but arm the counter and tag the result.
+          nodeModulesAccessCount++;
+          debugLog(workspacePath, `[Rabbit Hole] ${toolName} soft-warned — first node_modules access (counter now 1)`);
+          // _rabbitSoftWarning will be appended to the real tool result below.
+          // We mark with a sentinel so the result-augmentation section can find it.
+          (args as any).__rabbitSoftWarn = true;
         }
       }
       // ─────────────────────────────────────────────────────────────────────────
@@ -1757,6 +1768,20 @@ export async function* runAgentLoop(
       // ─────────────────────────────────────────────────────────────────────────
 
       const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+
+      // ── Rabbit Hole Soft-Warning Injection (v8.29.0) ─────────────────────────
+      // If the agent's first node_modules access was allowed through (sentinel
+      // set above), mutate the result payload to append the warning BEFORE the
+      // Financial Killswitch and the toolResult yield so the LLM reads both the
+      // real output AND the one-shot brake advisory in the same message.
+      if ((args as any).__rabbitSoftWarn) {
+        delete (args as any).__rabbitSoftWarn;
+        const _softWarning =
+          '\n\n[SOFT BLOCK] Estás entrando a node_modules. Esta es tu ÚNICA lectura ' +
+          'permitida aquí. Accesos futuros serán bloqueados físicamente.';
+        result = { ...result, output: result.output + _softWarning };
+      }
+      // ─────────────────────────────────────────────────────────────────────────
 
       // ── Financial Killswitch (v8.24.0 — NON-NEGOTIABLE) ──────────────────────
       // Hard engine abort the moment ANY tool result carries the `[YIELD TO HUMAN`

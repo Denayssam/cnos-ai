@@ -53,10 +53,30 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   const _rawPath = String(args.path ?? '');
   const _isFluxoState = _rawPath.startsWith('.fluxo/') || _rawPath.startsWith('.fluxo\\');
   if (fs.existsSync(fp) && !_isFluxoState) {
-    return {
-      success: false,
-      output: '[SYSTEM BLOCK] Prohibido usar write_file en archivos existentes. Debes usar replace_block o replace_symbol.',
-    };
+    // ── v8.29.0: Size-Aware Write Block ─────────────────────────────────────
+    // Small files (< 10 KB) are safe to overwrite in full — they are typically
+    // configs, tiny utility modules, or new files under active construction
+    // that have not grown large yet. The original Aider-style blanket block
+    // (v8.25.0) was too strict for these cases and introduced unnecessary
+    // friction when frontier models wanted to rewrite a 2 KB helper cleanly.
+    // Large files (>= 10 KB) keep the hard block: at that size the risk of
+    // silently nuking unrelated code is real and the surgical editing tools
+    // (replace_block, search_and_replace, replace_symbol) are the right path.
+    const _SIZE_THRESHOLD = 10_240; // 10 KB
+    try {
+      const _existingSize = fs.statSync(fp).size;
+      if (_existingSize >= _SIZE_THRESHOLD) {
+        return {
+          success: false,
+          output: '[SYSTEM BLOCK] El archivo es demasiado grande. Prohibido usar write_file en archivos extensos. Debes usar replace_block o search_and_replace.',
+        };
+      }
+      // File is small — allow the overwrite and fall through to the rest of execute().
+    } catch {
+      // statSync failed (race condition between existsSync and statSync on
+      // Windows, or a symlink edge case). Fall through conservatively —
+      // the write will proceed; a subsequent write error surfaces naturally.
+    }
   }
   // ─────────────────────────────────────────────────────────────────────────────
 

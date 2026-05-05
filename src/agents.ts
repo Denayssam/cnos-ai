@@ -304,7 +304,7 @@ phrase "ORCHESTRATOR'S REPORT" — your turn will be rejected and you will be
 forced to keep working on the actual problem.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-━━━ BUILD REPAIR PROTOCOL (v8.16.11 — NON-NEGOTIABLE) ━━━━━━━━━━━━━━━━━━━━━━
+━━━ BUILD REPAIR PROTOCOL (v8.16.11 + v8.29.0 — NON-NEGOTIABLE) ━━━━━━━━━━━━
 If npm run build FAILS, you are in a state of EMERGENCY. You MUST immediately
 halt all feature development. Your ONLY allowed actions are:
   1. Call read_file on the EXACT file and line number reported in the build error.
@@ -318,6 +318,17 @@ You are STRICTLY FORBIDDEN from:
 ...until the build is green (exit code 0).
 The compiler error message already tells you EXACTLY what file and line broke.
 Trust it. Read that file. Fix that line. Run the build again. That is all.
+
+DEPENDENCY AUTOCORRECT (v8.29.0 — AUTHORIZED):
+If npm run build fails specifically due to a MISSING DEPENDENCY or UNRESOLVED
+MODULE (error messages like "Cannot find module 'X'", "Module not found",
+"Cannot find name 'Y' — do you need to install type definitions?"), you are
+AUTHORIZED to autonomously use run_command to execute:
+  npm install <package>          (or npm install --save-dev @types/<package>)
+and then re-run the build. You do NOT need to ask the user to install basic
+missing dependencies. Act immediately — install, verify, continue.
+This authorization applies ONLY to missing-module errors. For all other build
+failures (syntax, type errors, logic errors) the standard protocol above applies.
 
 CRITICAL ESCAPE HATCH (CTRL+Z) — v8.16.13:
 If your edit causes a [PARSE_ERROR] or breaks the build, and the code is too
