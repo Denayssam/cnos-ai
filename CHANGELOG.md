@@ -2,6 +2,25 @@
 
 ---
 
+## [v8.31.0] - The Tolerance & Rigor Patch
+
+**Objetivo:** Cerrar dos brechas distintas que causan fallos en agentes Tier-1 (Gemini/Claude) bajo estrés. La primera es de tolerancia (aceptar nombres de argumentos comunes pero no canónicos); la segunda es de rigor (forzar a que la memoria persistente sea un post-mortem accionable, no un log de éxitos genéricos). Las dos son ortogonales y se combinan: el motor tolera más en la entrada de las herramientas, pero exige más estructura en las lecciones que se persisten.
+
+- **Tool Aliasing en `search_and_replace` (`src/tools/SearchReplaceTool/index.ts` — v8.31.0):** Bajo estrés (multi-iteración, presión de tiempo, archivos largos), los modelos Tier-1 frecuentemente se equivocan en los nombres de los argumentos: emiten `file_path` en vez de `path`, `old_code`/`new_code` en vez de `*_snippet`, etc. Antes el tool fallaba inmediatamente con `CRITICAL ERROR: search_snippet must be a non-empty string`, gastando una iteración entera en algo trivial. v8.31.0 normaliza al inicio de `execute()` con tres aliases vía nullish coalescing: `targetPath = args.path ?? args.file_path ?? args.filepath`, `searchTarget = args.search_snippet ?? args.search ?? args.old_code`, `replaceTarget = args.replace_snippet ?? args.replace ?? args.new_code ?? ''`. Los mensajes de error ahora documentan los aliases aceptados para que la próxima vez el agente sepa cuál es el nombre canónico. Cero cambios en la lógica de matching (strict/fuzzy/ambiguous), backups, o validación de empty-file.
+
+- **Blameless Post-Mortem Schema (`src/tools/UpdateMemoryTool/index.ts` — v8.31.0):** El campo `lesson` (texto libre) se eliminó. La nueva estructura obliga a separar tres dimensiones del post-mortem: `what_failed` (descripción concreta del error o bloqueo), `why_it_failed` (análisis de causa raíz) y `the_fix` (solución técnica aplicada). Los cinco campos (`task_id`, `outcome`, `what_failed`, `why_it_failed`, `the_fix`) son obligatorios y se validan individualmente con mensajes de error específicos. El formato escrito a `.fluxo/memory.md` es ahora un bloque markdown estructurado con bullets — facilita el parsing futuro y obliga al agente a pensar en términos de causa-efecto-remedio en vez de soltar un párrafo genérico tipo "todo bien, build verde". Append-only, formato exacto:
+  ```
+  ### [YYYY-MM-DD HH:MM:SS] - Task: <task_id>
+  - **Outcome:** <outcome>
+  - **What Failed:** <what_failed>
+  - **Why it Failed:** <why_it_failed>
+  - **The Fix:** <the_fix>
+  ```
+
+- **`CONTINUOUS LEARNING PROTOCOL` actualizado (`src/agents.ts` — v8.31.0):** El protocolo en el `TASK COMPLETION PROTOCOL` de `@coder` y en el `ORCHESTRATOR REPORT RULE` de `@manager` fue reescrito para reflejar el nuevo schema. Frase guía: "You MUST use 'update_memory' to document ERRORS — not generic success messages." Los triggers se ampliaron con casos comunes recientemente observados (search_and_replace MATCH ERROR repetido, olvido de get_repo_map antes de delegar, importación corrupta). Cada uno de los cinco campos requeridos viene acompañado de 1-2 ejemplos concretos in-prompt para que el LLM no caiga en abstracciones vacías.
+
+---
+
 ## [v8.30.1] - Hotfix: Worktree-Aware Quality Gate
 
 **Objetivo:** Cerrar un bug financiero crítico en el Quality Gate del motor. Cuando un agente operaba dentro de un Git Worktree aislado (e.g. `@coder` con `isolation: 'worktree'`), las dos llamadas a `validateBuild(workspacePath)` en `src/agentEngine.ts` compilaban la rama `main` en vez del worktree real donde vivían los cambios del agente. El build de `main` siempre estaba verde (porque el código nuevo no estaba ahí), pero el build del worktree podía estar roto — el motor declaraba "tarea completa" sobre un worktree quebrado, o, en el peor caso, validaba `main` exitosamente y luego entraba en un bucle infinito de 25 iteraciones porque la lógica downstream detectaba la inconsistencia.

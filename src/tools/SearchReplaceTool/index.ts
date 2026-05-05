@@ -119,19 +119,32 @@ function buildDiffBlock(search: string, replace: string): string {
 // ─── Disk-based fallback executor (used when VS Code native edit is unavailable) ─
 
 export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
-  const fp = safePath(workspacePath, args.path);
+  // ── v8.31.0: Tool Aliasing — tolerate common LLM arg-name slips under stress ──
+  // Tier-1 models (Gemini/Claude) frequently emit `file_path` instead of `path`,
+  // or `old_code`/`new_code` instead of the canonical `*_snippet`. We normalize
+  // at the boundary so the rest of the function operates on a single shape.
+  const targetPath: unknown = args.path ?? args.file_path ?? args.filepath;
+  const searchTarget: unknown = args.search_snippet ?? args.search ?? args.old_code;
+  const replaceTarget: unknown = args.replace_snippet ?? args.replace ?? args.new_code ?? '';
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  if (typeof targetPath !== 'string' || targetPath === '') {
+    return { success: false, output: 'CRITICAL ERROR: "path" is required (alias accepted: file_path, filepath).' };
+  }
+  if (typeof searchTarget !== 'string' || searchTarget === '') {
+    return { success: false, output: 'CRITICAL ERROR: search_snippet must be a non-empty string (alias accepted: search, old_code).' };
+  }
+  if (typeof replaceTarget !== 'string') {
+    return { success: false, output: 'CRITICAL ERROR: replace_snippet must be a string (alias accepted: replace, new_code). Use "" to delete.' };
+  }
+
+  const fp = safePath(workspacePath, targetPath);
   if (!fs.existsSync(fp)) {
-    return { success: false, output: `File not found: ${args.path}. Use list_dir to verify the path.` };
-  }
-  if (typeof args.search_snippet !== 'string' || args.search_snippet === '') {
-    return { success: false, output: 'CRITICAL ERROR: search_snippet must be a non-empty string.' };
-  }
-  if (typeof args.replace_snippet !== 'string') {
-    return { success: false, output: 'CRITICAL ERROR: replace_snippet must be a string. Use "" to delete.' };
+    return { success: false, output: `File not found: ${targetPath}. Use list_dir to verify the path.` };
   }
 
   const original = fs.readFileSync(fp, 'utf-8');
-  const match = findMatch(original, args.search_snippet);
+  const match = findMatch(original, searchTarget);
 
   if (match.kind === 'none') {
     return {
@@ -142,7 +155,7 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   if (match.kind === 'ambiguous') {
     return {
       success: false,
-      output: `AMBIGUOUS MATCH: search_snippet appears ${match.count} times in ${args.path}.\n` +
+      output: `AMBIGUOUS MATCH: search_snippet appears ${match.count} times in ${targetPath}.\n` +
               `Expand the snippet — add more surrounding lines to make the block unique.`,
     };
   }
@@ -153,15 +166,15 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   let startLine: number;
 
   if (match.kind === 'strict') {
-    const snip = args.search_snippet.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    updated = original.replace(/\r\n/g, '\n').replace(snip, args.replace_snippet.replace(/\n$/, ''));
+    const snip = searchTarget.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    updated = original.replace(/\r\n/g, '\n').replace(snip, replaceTarget.replace(/\n$/, ''));
     const before = original.replace(/\r\n/g, '\n').indexOf(snip);
     startLine = original.slice(0, before).split('\n').length;
     removedLines = snip.split('\n').length;
     removedPreview = snip.length > 300 ? snip.slice(0, 300) + '\n…(truncated)' : snip;
   } else {
     const fileLines = original.replace(/\r\n/g, '\n').split('\n');
-    const newLines = args.replace_snippet === '' ? [] : args.replace_snippet.replace(/\n$/, '').split('\n');
+    const newLines = replaceTarget === '' ? [] : replaceTarget.replace(/\n$/, '').split('\n');
     updated = [...fileLines.slice(0, match.start), ...newLines, ...fileLines.slice(match.end + 1)].join('\n');
     startLine = match.start + 1;
     removedLines = match.end - match.start + 1;
@@ -173,7 +186,6 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
     return { success: false, output: 'SAFETY ABORT: replacement would produce an empty file.' };
   }
 
-  // Auto-backup
   try {
     const backupDir = path.join(workspacePath, '.fluxo', 'backups');
     fs.mkdirSync(backupDir, { recursive: true });
@@ -184,9 +196,9 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   fs.writeFileSync(fp, updated, 'utf-8');
 
   const matchNote = match.kind === 'fuzzy' ? ` [fuzzy match, line ${startLine}]` : ` [exact match, line ${startLine}]`;
-  const diffBlock = buildDiffBlock(args.search_snippet, args.replace_snippet);
+  const diffBlock = buildDiffBlock(searchTarget, replaceTarget);
   return {
     success: true,
-    output: `${diffBlock}\n\n**${args.path}** — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nCambio aplicado en el editor. Revisa el Diff arriba y presiona Ctrl+S en el archivo para guardar.\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
+    output: `${diffBlock}\n\n**${targetPath}** — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nCambio aplicado en el editor. Revisa el Diff arriba y presiona Ctrl+S en el archivo para guardar.\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
   };
 }
