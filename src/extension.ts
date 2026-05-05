@@ -111,10 +111,50 @@ function logError(message: string, details?: any) {
 
 // ─── Session Cleanup ──────────────────────────────────────────────────────────
 
+// ── v8.32.0: Auto-Gitignore for *.log ────────────────────────────────────────
+// Worktree merges (exit_worktree) repeatedly conflicted because Fluxo's debug
+// logs were tracked. We append `*.log` to the workspace .gitignore (creating
+// the file if missing, idempotent if the line already exists) and then run
+// `git rm --cached *.log -q` to evict any logs already in the index. Both
+// steps wrapped in try/catch — non-fatal if the workspace isn't a git repo,
+// has no logs, or the user has a custom ignore strategy.
+function ensureGitignoreLogs(wsPath: string): void {
+  try {
+    const gitignorePath = path.join(wsPath, '.gitignore');
+    let needsAppend = true;
+    if (fs.existsSync(gitignorePath)) {
+      const contents = fs.readFileSync(gitignorePath, 'utf-8');
+      const hasLogPattern = contents
+        .split(/\r?\n/)
+        .some(line => line.trim() === '*.log');
+      if (hasLogPattern) { needsAppend = false; }
+    }
+    if (needsAppend) {
+      const prefix = fs.existsSync(gitignorePath) ? '\n' : '';
+      fs.appendFileSync(gitignorePath, `${prefix}*.log\n`, 'utf-8');
+      console.log('[Fluxo Sanitizer] Appended *.log to .gitignore');
+    }
+  } catch (err: any) {
+    console.error('[Fluxo Sanitizer] .gitignore update failed:', err?.message ?? err);
+  }
+
+  try {
+    cp.execSync('git rm --cached *.log -q', {
+      cwd: wsPath,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+  } catch { /* expected when no logs are tracked or not a git repo */ }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 function cleanupLogsOnActivation(): void {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders?.length) { return; }
   const wsPath = folders[0].uri.fsPath;
+
+  // v8.32.0 — Sanitize git environment: ensure *.log is gitignored and uncached
+  ensureGitignoreLogs(wsPath);
 
   // Prune .fluxo/backups/ — keep only the 30 most recent files, delete the rest
   const backupDir = path.join(wsPath, '.fluxo', 'backups');

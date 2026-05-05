@@ -119,23 +119,27 @@ function buildDiffBlock(search: string, replace: string): string {
 // ─── Disk-based fallback executor (used when VS Code native edit is unavailable) ─
 
 export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
-  // ── v8.31.0: Tool Aliasing — tolerate common LLM arg-name slips under stress ──
+  // ── v8.31.0/v8.32.0: Tool Aliasing — tolerate LLM arg-name slips under stress ─
   // Tier-1 models (Gemini/Claude) frequently emit `file_path` instead of `path`,
-  // or `old_code`/`new_code` instead of the canonical `*_snippet`. We normalize
-  // at the boundary so the rest of the function operates on a single shape.
+  // `old_code`/`new_code` instead of the canonical `*_snippet`, and Gemini 2.5
+  // Pro additionally hallucinates `search_pattern`/`replace_pattern` based on
+  // Python regex APIs. We normalize at the boundary so the rest of the function
+  // operates on a single shape.
   const targetPath: unknown = args.path ?? args.file_path ?? args.filepath;
-  const searchTarget: unknown = args.search_snippet ?? args.search ?? args.old_code;
-  const replaceTarget: unknown = args.replace_snippet ?? args.replace ?? args.new_code ?? '';
+  const searchTarget: unknown =
+    args.search_snippet ?? args.search ?? args.old_code ?? args.search_pattern;
+  const replaceTarget: unknown =
+    args.replace_snippet ?? args.replace ?? args.new_code ?? args.replace_pattern ?? '';
   // ─────────────────────────────────────────────────────────────────────────────
 
   if (typeof targetPath !== 'string' || targetPath === '') {
     return { success: false, output: 'CRITICAL ERROR: "path" is required (alias accepted: file_path, filepath).' };
   }
   if (typeof searchTarget !== 'string' || searchTarget === '') {
-    return { success: false, output: 'CRITICAL ERROR: search_snippet must be a non-empty string (alias accepted: search, old_code).' };
+    return { success: false, output: 'CRITICAL ERROR: search_snippet must be a non-empty string (aliases accepted: search, old_code, search_pattern).' };
   }
   if (typeof replaceTarget !== 'string') {
-    return { success: false, output: 'CRITICAL ERROR: replace_snippet must be a string (alias accepted: replace, new_code). Use "" to delete.' };
+    return { success: false, output: 'CRITICAL ERROR: replace_snippet must be a string (aliases accepted: replace, new_code, replace_pattern). Use "" to delete.' };
   }
 
   const fp = safePath(workspacePath, targetPath);

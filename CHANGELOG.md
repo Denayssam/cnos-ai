@@ -2,6 +2,16 @@
 
 ---
 
+## [v8.32.0] - The Environment Sanitizer Patch (Auto-Sanitize Git Logs & Extended Aliasing)
+
+**Objetivo:** Cerrar dos brechas operativas que sabotean al orquestador en el momento más crítico (el merge de `exit_worktree`) y bajo presión de tool-calling. La primera saneada el entorno Git de cualquier workspace al arranque (logs trackeados causan conflictos repetidos durante worktree merges); la segunda amplía el aliasing de `search_and_replace` para tolerar las hallucinations específicas de Gemini 2.5 Pro basadas en sintaxis Python regex.
+
+- **Auto-Gitignore para `*.log` (`src/extension.ts` — v8.32.0):** Nueva función `ensureGitignoreLogs(wsPath)` invocada al inicio de `cleanupLogsOnActivation()` (que ya corre en cada `activate()`). El flujo: lee `.gitignore` de la raíz del workspace, divide por líneas y verifica con `line.trim() === '*.log'` si el patrón ya existe; si no, hace `appendFileSync` agregando `*.log` (con un `\n` de prefijo cuando el archivo ya existe para no concatenar con la última línea). Inmediatamente después ejecuta `git rm --cached *.log -q` vía `cp.execSync` con `stdio: 'ignore'`, `windowsHide: true` y try/catch silencioso — el comando es ruidoso por diseño cuando no hay logs trackeados o el directorio no es un repo git, pero ese fallo es esperado y no debe interrumpir la activación. Resultado: el agente puede mergear worktrees sin conflictos repetidos por `.log` files versionados accidentalmente, y los logs nuevos nunca entran al index.
+
+- **Extended Tool Aliasing en `search_and_replace` (`src/tools/SearchReplaceTool/index.ts` — v8.32.0):** El aliasing de v8.31.0 (`file_path`/`filepath`, `search`/`old_code`, `replace`/`new_code`) se amplía con `search_pattern` y `replace_pattern` — Gemini 2.5 Pro tiende a alucinar estos nombres por contaminación con APIs de regex de Python (`re.search`, `re.sub` aceptan parámetros llamados `pattern`). El nullish-coalescing chain final queda: `searchTarget = args.search_snippet ?? args.search ?? args.old_code ?? args.search_pattern` y simétrico para `replaceTarget`. Los mensajes de error actualizados ahora documentan los tres aliases por campo para que el LLM aprenda el nombre canónico la próxima vez. Lógica de matching, backups y validación de empty-file intactas.
+
+---
+
 ## [v8.31.1] - Hotfix: Webview Panel Survives Reload Window
 
 **Objetivo:** Restaurar la persistencia del panel de Fluxo AI tras `Developer: Reload Window`. El usuario reportó que el panel del chat se cerraba después de cualquier reload, perdiendo el estado visual y obligándolo a re-abrirlo manualmente desde el sidebar.
