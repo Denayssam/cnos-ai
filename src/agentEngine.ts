@@ -294,7 +294,15 @@ export async function* runAgentLoop(
   // {success, output} envelope. Engine treats absence as "MCP service not
   // initialized" and lets the tool's placeholder execute() surface a clean
   // engine error.
-  listMcpResourcesCallback?: (serverName: string) => Promise<{ success: boolean; output: string }>
+  listMcpResourcesCallback?: (serverName: string) => Promise<{ success: boolean; output: string }>,
+  // v8.33.0 — Discovery Mode (planner-only). When wired AND the current agent
+  // is @planner, ask_user_approval is rerouted: instead of the binary modal,
+  // the host surfaces the questions via showInputBox and the user's TEXT
+  // answer becomes the tool result.output. The planner sees the answer in its
+  // conversation and writes the plan informed by it. For other agents the
+  // existing binary approvalCallback flow is preserved unchanged. Returns
+  // null/undefined when the user cancels.
+  discoveryAnswerCallback?: (questions: string) => Promise<string | null>
 ): AsyncGenerator<AgentEvent> {
 
   // 1. Intent Detection (Routing)
@@ -1355,16 +1363,42 @@ export async function* runAgentLoop(
         if (pathNormError) {
           result = { success: false, output: pathNormError };
         } else if (toolName === 'ask_user_approval') {
-          // ── ask_user_approval Hard Intercept (v8.16.20) ─────────────────────
+          // ── ask_user_approval Hard Intercept (v8.16.20 + v8.33.0) ───────────
           // ALWAYS intercept before executeTool. There is no native handler for
           // ask_user_approval — letting it fall through would crash the loop
-          // with [SYSTEM ENGINE ERROR] and trigger an infinite retry. If the
-          // approvalCallback is wired (real UI flow), pause the agent and hand
-          // control to the human. If not (headless / test mode), fail loudly
-          // with explicit guidance so the agent does NOT loop on the same call.
+          // with [SYSTEM ENGINE ERROR] and trigger an infinite retry.
+          //
+          // v8.33.0 — Discovery Mode (planner-only): when discoveryAnswerCallback
+          // is wired AND the active agent is @planner, prefer the text-answer
+          // flow: the host shows showInputBox, the user TYPES their answers, and
+          // those answers become the tool result.output. The planner sees the
+          // verbatim answers and writes the plan informed by them in the same
+          // sub-loop iteration. For all other agents (manager/coder/designer)
+          // the existing binary approvalCallback flow is preserved — Y/N modal
+          // remains the right UX for "should I delete this file?" type calls.
           const _intent = String(args.intent_summary ?? '');
           const _reason = String(args.reason_and_files ?? '');
-          if (approvalCallback) {
+          if (discoveryAnswerCallback && agentId === 'planner') {
+            const _question = `${_intent}\n\n${_reason}`.trim();
+            yield { type: 'thinking', text: '🔎 Discovery: awaiting your clarifications…' };
+            const _answer = await discoveryAnswerCallback(_question);
+            if (_answer === null || _answer === undefined || _answer.trim() === '') {
+              result = {
+                success: false,
+                output:
+                  'USER CANCELED Discovery. Proceed with the safest default plan ' +
+                  'and document any assumptions you must make in the plan markdown.',
+              };
+            } else {
+              result = {
+                success: true,
+                output:
+                  `User answered: ${_answer.trim()}\n\n` +
+                  `Now incorporate these answers and ship the implementation plan via ` +
+                  `write_file('.fluxo/IMPLEMENTATION_PLAN.md', ...). Do NOT ask further questions.`,
+              };
+            }
+          } else if (approvalCallback) {
             yield { type: 'thinking', text: '🛡️ Bodyguard aguardando tu aprobación…' };
             const approved = await approvalCallback(_intent, _reason);
             result = {
@@ -1588,19 +1622,37 @@ export async function* runAgentLoop(
           } catch { /* silenciar errores */ }
           // ─────────────────────────────────────────────────────────────────────────
 
-          // ── v8.16.5: Mandatory Output Enforcement Loop ──────────────────────────
-          // The planner has historically suffered from "premature termination" — yielding
-          // conversational text instead of calling write_file. We now wrap the sub-loop
-          // in a retry harness that physically verifies the file exists after each pass.
-          // If missing, we re-invoke the planner with an escalating SYSTEM directive.
+          // ── v8.16.5 + v8.33.0: Mandatory Output Enforcement + Discovery Mode ────
+          // The planner historically suffered from "premature termination" — yielding
+          // conversational text instead of calling write_file. The retry harness
+          // physically verifies the file exists after each pass; if missing, the
+          // planner is re-invoked with an escalating SYSTEM directive.
+          //
+          // v8.33.0 Discovery Mode adds two extensions:
+          //   1) The planner now has approvalCallback + discoveryAnswerCallback
+          //      wired so it CAN pause to collect text answers from the user
+          //      via ask_user_approval (rerouted to showInputBox in the host).
+          //   2) When the planner asks a clarifying question and the plan file
+          //      isn't written yet, the iteration is REFUNDED (plannerAttempt--)
+          //      and a separate discoveryRounds counter (capped at 2) tracks
+          //      Discovery turns. This prevents Discovery from burning the
+          //      retry budget meant for stubborn-LLM failures.
+          //   3) lastIterationWasDiscovery gates the harsh "[SYSTEM RETRY] You
+          //      forgot to use write_file" override — that message is unjust
+          //      after a valid Discovery turn and would derail the planner's
+          //      next iteration. After Discovery we inject a positive directive
+          //      asking the planner to ship the plan informed by user answers.
           const MAX_PLANNER_ATTEMPTS = 3;
+          const MAX_DISCOVERY_ROUNDS = 2;
           let plannerAttempt = 0;
+          let discoveryRounds = 0;
+          let lastIterationWasDiscovery = false;
           let plannerMission =
             `MISSION — ANALYSIS ONLY:\nAnalyze the codebase and produce .fluxo/IMPLEMENTATION_PLAN.md for this task:\n\n${taskDescription}`;
 
           while (plannerAttempt < MAX_PLANNER_ATTEMPTS && !fs.existsSync(planFile)) {
             plannerAttempt++;
-            if (plannerAttempt > 1) {
+            if (plannerAttempt > 1 && !lastIterationWasDiscovery) {
               yield {
                 type: 'thinking',
                 text: `📋 Planner: file not produced — retry ${plannerAttempt}/${MAX_PLANNER_ATTEMPTS}…`,
@@ -1613,6 +1665,7 @@ export async function* runAgentLoop(
                 `and content='<your full markdown plan>'. Even a rough plan is acceptable — write it now.\n\n` +
                 `ORIGINAL TASK:\n${taskDescription}`;
             }
+            lastIterationWasDiscovery = false;
 
             const plannerEventBuffer: AgentEvent[] = [];
             const plannerGen = runAgentLoop(
@@ -1623,26 +1676,54 @@ export async function* runAgentLoop(
               workspacePath,
               abortSignal,
               false,
-              undefined,              // no approval callback — planner never asks for approval
-              undefined,              // no native edit
+              approvalCallback,         // v8.33.0 — wired so the planner can ask via Discovery Mode
+              undefined,                // no native edit
               getCodeStructureCallback,
               mcpTools,
               callMcpToolCallback,
-              undefined,              // no worktree review
-              undefined,              // no replace symbol
-              undefined,              // no HITL — planner is read-only
-              mcpToolCategories,      // v8.19.0 — RBAC filter will deny unknown-category tools to planner
-              undefined,              // v8.23.0 — no LSP passive feedback for the planner (read-only, never edits)
-              listMcpResourcesCallback // v8.26.0 — Phase 3.4 resource discovery (planner DOES use this)
+              undefined,                // no worktree review
+              undefined,                // no replace symbol
+              undefined,                // no HITL — planner is read-only
+              mcpToolCategories,        // v8.19.0 — RBAC filter will deny unknown-category tools to planner
+              undefined,                // v8.23.0 — no LSP passive feedback for the planner (read-only, never edits)
+              listMcpResourcesCallback, // v8.26.0 — Phase 3.4 resource discovery (planner DOES use this)
+              discoveryAnswerCallback   // v8.33.0 — text-answer channel for Discovery Mode
             );
 
             for await (const event of plannerGen) {
               plannerEventBuffer.push(event);
             }
 
-            const headerLabel = plannerAttempt === 1
+            // v8.33.0 — Discovery refund: a successful clarifying question that
+            // didn't yet produce the plan is a valid turn, not a stubborn-LLM
+            // failure. Refund the attempt and prime the next iteration with a
+            // positive directive. Capped to MAX_DISCOVERY_ROUNDS so the planner
+            // cannot loop forever asking instead of writing.
+            const askedClarification = plannerEventBuffer.some(e =>
+              e.type === 'toolCall' && e.name === 'ask_user_approval'
+            );
+            if (askedClarification && !fs.existsSync(planFile) && discoveryRounds < MAX_DISCOVERY_ROUNDS) {
+              plannerAttempt--;
+              discoveryRounds++;
+              lastIterationWasDiscovery = true;
+              plannerMission =
+                `[DISCOVERY MODE — v8.33.0 round ${discoveryRounds}/${MAX_DISCOVERY_ROUNDS}] ` +
+                `You collected clarifications from the user via ask_user_approval. ` +
+                `Their verbatim answers are now in your tool result history above. ` +
+                `WRITE the implementation plan to .fluxo/IMPLEMENTATION_PLAN.md using write_file ` +
+                `now — incorporate their answers verbatim. Do NOT ask more questions.\n\n` +
+                `ORIGINAL TASK:\n${taskDescription}`;
+              yield {
+                type: 'thinking',
+                text: `🔎 Discovery round ${discoveryRounds}/${MAX_DISCOVERY_ROUNDS} captured — attempt refunded`,
+              };
+            }
+
+            const headerLabel = plannerAttempt === 1 && !lastIterationWasDiscovery
               ? '━━━ @planner — codebase analysis ━━━'
-              : `━━━ @planner — retry ${plannerAttempt}/${MAX_PLANNER_ATTEMPTS} ━━━`;
+              : lastIterationWasDiscovery
+                ? `━━━ @planner — Discovery round ${discoveryRounds}/${MAX_DISCOVERY_ROUNDS} ━━━`
+                : `━━━ @planner — retry ${plannerAttempt}/${MAX_PLANNER_ATTEMPTS} ━━━`;
             yield { type: 'thinking', text: headerLabel };
             for (const event of plannerEventBuffer) { yield event; }
           }

@@ -485,6 +485,21 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
       return answer === '✅ Approve';
     };
 
+    // v8.33.0 — Discovery Mode (planner-only). The engine reroutes the
+    // planner's ask_user_approval calls to this callback. We surface the
+    // questions in a showInputBox so the user TYPES their answers; the engine
+    // then injects those answers verbatim into the planner's tool result and
+    // the planner ships the plan informed by them in the same sub-loop.
+    const discoveryAnswerCallback = async (questions: string): Promise<string | null> => {
+      const answer = await vscode.window.showInputBox({
+        title: '🔎 Fluxo Discovery — el @planner necesita clarificación',
+        prompt: questions,
+        placeHolder: 'Escribe tus respuestas aquí (una línea por pregunta o todo junto — el planner las lee verbatim)',
+        ignoreFocusOut: true,
+      });
+      return answer ?? null;
+    };
+
     const nativeEditCallback = async (relPath: string, searchSnippet: string, replaceSnippet: string) =>
       applyNativeEdit(relPath, searchSnippet, replaceSnippet, workspacePath);
 
@@ -793,7 +808,11 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
       // v8.26.0 — Phase 3.4 MCP resource discovery. The McpSwarmClient owns
       // the live stdio transports, so the engine routes list_mcp_resources
       // calls back here to reach them.
-      async (serverName: string) => await _mcpClient.listResources(serverName)
+      async (serverName: string) => await _mcpClient.listResources(serverName),
+      // v8.33.0 — Discovery Mode (planner-only). Forwarded by the engine to
+      // the planner sub-loop so the @planner can collect text answers from
+      // the user via showInputBox during clarifying questions.
+      discoveryAnswerCallback
     )) {
       _postToPanel({ ...event });
       if (event.type === 'streamChunk') { fullAssistantText += event.text; }
