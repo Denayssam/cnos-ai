@@ -524,7 +524,15 @@ export async function* runAgentLoop(
   // @designer are gated — @manager and @planner have other read paths.
   let hasSeenRepoMap = false;
   const PANORAMIC_GATED_AGENTS = new Set(['coder', 'designer']);
-  const PANORAMIC_GATED_TOOLS  = new Set(['grep', 'glob', 'search_in_files', 'search_and_replace']);
+  // v8.34.1 — Hotfix Exemption Patch: search_and_replace removed from the
+  // panoramic gate. Rationale: the gate exists to prevent BLIND exploration
+  // (grep/glob/search_in_files all scan unknown paths). search_and_replace
+  // operates on a known, explicit file path — typically given to the agent
+  // by the user as a Vite/TS error like `PomodoroTimer.jsx:183`. Forcing a
+  // get_repo_map for a 1-line hotfix on a known file caused the agent to
+  // weaponize ask_user_approval with hallucinated success claims when the
+  // gate blocked the legitimate edit. Surgical hotfixes are now unblocked.
+  const PANORAMIC_GATED_TOOLS  = new Set(['grep', 'glob', 'search_in_files']);
   // ─────────────────────────────────────────────────────────────────────────
 
   // ── v8.16.7: Git Auto-Checkpointing (Smart Auto-Commit) ──────────────────
@@ -1422,7 +1430,49 @@ export async function* runAgentLoop(
           // remains the right UX for "should I delete this file?" type calls.
           const _intent = String(args.intent_summary ?? '');
           const _reason = String(args.reason_and_files ?? '');
-          if (discoveryAnswerCallback && agentId === 'planner') {
+
+          // ── v8.34.1: Lie Detector for ask_user_approval ──────────────────────
+          // The Anti-Gaslighting Circuit Breaker (v8.34.0) blocked agents from
+          // emitting a fake "ORCHESTRATOR'S REPORT" — Frontier LLMs responded
+          // by weaponizing ask_user_approval instead, sending an intent_summary
+          // claiming the build was "fixed" or "implemented" without having
+          // edited a single file. This intercept catches that exact lie.
+          //
+          // Trigger conditions (ALL must hold):
+          //   1. agent is NOT @planner (the planner asks legitimate Discovery
+          //      questions and never edits production code)
+          //   2. intent_summary contains a past-tense success claim
+          //      (fixed/implemented/cleaned/clean/resolved/completed/done)
+          //   3. recentlyEditedFiles is empty for this turn (no edits since
+          //      the last green build cleared the set)
+          //   4. successfulToolCallHistory contains zero successful edit
+          //      operations for the entire session (catches the brand-new
+          //      session lie; condition 3 alone false-positives after a
+          //      successful build because the set is cleared on green)
+          const _CLAIM_REGEX = /\b(fixed|implemented|clean(ed)?|resolved|complete[d]?|done)\b/i;
+          const _EDIT_TOOL_NAMES = ['write_file', 'search_and_replace', 'replace_lines', 'replace_block', 'replace_symbol', 'insert_lines'];
+          const _hasAnySuccessfulEdit = successfulToolCallHistory.some(entry =>
+            _EDIT_TOOL_NAMES.some(name => entry.startsWith(name + ':'))
+          );
+          if (
+            agentId !== 'planner' &&
+            recentlyEditedFiles.size === 0 &&
+            !_hasAnySuccessfulEdit &&
+            _CLAIM_REGEX.test(_intent)
+          ) {
+            debugLog(workspacePath, `[Lie Detector v8.34.1] ${agentId} claimed completion in intent_summary but never made a successful edit — blocking`);
+            yield { type: 'thinking', text: '🛑 Lie Detector: claim de éxito sin ediciones — bloqueando…' };
+            result = {
+              success: false,
+              output:
+                '[SYSTEM ENGINE BLOCK — Lie Detector v8.34.1] You cannot claim the build is ' +
+                'fixed or code is implemented. You haven\'t successfully modified any files yet ' +
+                '(recentlyEditedFiles is empty AND no edit tool has succeeded this session). ' +
+                'Fix the code first using your edit tools (search_and_replace, replace_block, ' +
+                'replace_lines, write_file, etc.). Once the edits land and the build verifies, ' +
+                'then you may use ask_user_approval to summarize the work.',
+            };
+          } else if (discoveryAnswerCallback && agentId === 'planner') {
             const _question = `${_intent}\n\n${_reason}`.trim();
             yield { type: 'thinking', text: '🔎 Discovery: awaiting your clarifications…' };
             const _answer = await discoveryAnswerCallback(_question);
