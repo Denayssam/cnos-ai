@@ -63,6 +63,45 @@ type MatchResult =
   | { kind: 'none' }
   | { kind: 'ambiguous'; count: number };
 
+// v8.34.0 — When MATCH ERROR fires, locate the file region whose first lines
+// best match the LLM's hallucinated snippet (longest contiguous run of
+// normalized-equal lines). Returns the 0-based start line of that region or
+// null when no line of the snippet matches anything in the file. Used purely
+// for guidance — never to mutate the file.
+function findBestFuzzyCandidate(fileContent: string, snippet: string): number | null {
+  const fileLines = fileContent.replace(/\r\n/g, '\n').split('\n');
+  const snipLines = snippet
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map(normalizeLine)
+    .filter(l => l !== '');
+  if (snipLines.length === 0 || fileLines.length === 0) { return null; }
+
+  let bestStart = -1;
+  let bestRun = 0;
+  for (let i = 0; i < fileLines.length; i++) {
+    let run = 0;
+    for (let j = 0; j < snipLines.length && i + j < fileLines.length; j++) {
+      if (normalizeLine(fileLines[i + j]) === snipLines[j]) {
+        run++;
+      } else {
+        break;
+      }
+    }
+    if (run > bestRun) {
+      bestRun = run;
+      bestStart = i;
+    }
+  }
+  return bestRun >= 1 ? bestStart : null;
+}
+
+function formatNumberedLines(lines: string[], startIndex: number): string {
+  return lines
+    .map((l, i) => `${(startIndex + i + 1).toString().padStart(4)}: ${l}`)
+    .join('\n');
+}
+
 function findMatch(fileContent: string, snippet: string): MatchResult {
   const content = fileContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const snip    = snippet.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -151,10 +190,49 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
   const match = findMatch(original, searchTarget);
 
   if (match.kind === 'none') {
+    // ── v8.34.0: Auto-Read on MATCH ERROR (Panic Recovery rampa #1) ───────────
+    // Instead of telling the agent "call read_file and try again" (which burns
+    // an iteration and frequently fails again because the LLM re-hallucinates
+    // from training memory), the engine itself injects the relevant file
+    // content into the error output. Sized to fit a 200-line head + a ±10
+    // line window around the best fuzzy candidate, so even large files keep
+    // the payload compact while giving the LLM verbatim text to copy from.
+    const HEAD_LINES = 200;
+    const FUZZY_RADIUS = 10;
+    const fileLines = original.replace(/\r\n/g, '\n').split('\n');
+    const snipLineCount = searchTarget.replace(/\r\n/g, '\n').split('\n').length;
+
+    let context: string;
+    if (fileLines.length <= HEAD_LINES + 50) {
+      context = formatNumberedLines(fileLines, 0);
+    } else {
+      const headChunk = formatNumberedLines(fileLines.slice(0, HEAD_LINES), 0);
+      const fuzzyStart = findBestFuzzyCandidate(original, searchTarget);
+
+      let fuzzyChunk = '';
+      if (fuzzyStart !== null && fuzzyStart >= HEAD_LINES) {
+        const start = Math.max(0, fuzzyStart - FUZZY_RADIUS);
+        const end = Math.min(fileLines.length, fuzzyStart + snipLineCount + FUZZY_RADIUS);
+        fuzzyChunk =
+          `\n\n--- Best fuzzy candidate near line ${fuzzyStart + 1} ` +
+          `(rejected — too dissimilar from your snippet) ---\n` +
+          formatNumberedLines(fileLines.slice(start, end), start);
+      }
+      context = headChunk + fuzzyChunk;
+    }
+
     return {
       success: false,
-      output: `ERROR: El bloque exacto no se encontró (posible problema de indentación o archivo corrupto). Tienes PROHIBIDO volver a intentar search_and_replace en esta zona con un snippet adivinado. DEBES llamar read_file primero para copiar el texto VERBATIM, o usar insert_lines si vas a inyectar un bloque nuevo masivo.`,
+      output:
+        `MATCH ERROR — search_snippet not found in ${targetPath}.\n\n` +
+        `[v8.34.0 Auto-Read] Current file content (use this to copy the verbatim snippet — ` +
+        `your memory of this file is stale):\n\n` +
+        context +
+        `\n\nRe-call search_and_replace with a snippet copied character-for-character from ` +
+        `the lines above. Do NOT guess. If you need to inject a wholly new block of code ` +
+        `that does not yet exist in this file, use insert_lines instead.`,
     };
+    // ─────────────────────────────────────────────────────────────────────────
   }
   if (match.kind === 'ambiguous') {
     return {

@@ -468,6 +468,15 @@ export async function* runAgentLoop(
   let nodeModulesAccessCount = 0; // v8.29.0 — Rabbit Hole soft-limit: first access gets a warning, subsequent are hard-blocked
   let consecutiveBuildFailures = 0;  // ── v8.16.1: Quality Gate circuit breaker counter
   let bypassQualityGate = false;     // ── v8.16.1: set to true when user approves bypass
+  // v8.34.0 — Anti-Gaslighting Circuit Breaker. Tallies how many times the
+  // agent tried to escape the loop via fake "ORCHESTRATOR'S REPORT" emissions
+  // (intercepted by either the Anti-Gaslighting block at line ~722 or the
+  // Merge Enforcer block at line ~741). Shared between both intercepts so a
+  // panicked agent burning attempts via either vector is caught uniformly.
+  // At 3 strikes the loop yields to human via the Financial Killswitch path
+  // rather than burning the remaining iteration budget on a bot in panic.
+  let gaslightingAttempts = 0;
+  const MAX_GASLIGHTING_ATTEMPTS = 3;
   // v8.23.0 — LSP Passive Feedback bookkeeping. Tracks the recently edited
   // files so the diagnostics callback knows which files to poll, and a per-
   // turn cap so we never block the same completion attempt more than once
@@ -720,8 +729,26 @@ export async function* runAgentLoop(
     // valid history, and inject a corrective directive so the next iteration
     // resumes real work.
     if (agentId === 'coder' && textContent && /ORCHESTRATOR['']S\s+REPORT/i.test(textContent)) {
-      debugLog(workspacePath, '[Anti-Gaslighting] @coder attempted to emit Orchestrator\'s Report — intercepting');
-      yield { type: 'thinking', text: '🛑 Anti-Gaslighting: @coder no puede emitir el reporte final…' };
+      gaslightingAttempts++;
+      debugLog(workspacePath, `[Anti-Gaslighting] @coder attempted to emit Orchestrator's Report — intercepting (strike ${gaslightingAttempts}/${MAX_GASLIGHTING_ATTEMPTS})`);
+      // v8.34.0 — Circuit Breaker: yield to human after 3 strikes rather than
+      // burn remaining iterations on a panicked agent rebounding off the shield.
+      if (gaslightingAttempts >= MAX_GASLIGHTING_ATTEMPTS) {
+        yield { type: 'thinking', text: `🛑 Anti-Gaslighting Circuit Breaker tripped (${gaslightingAttempts}/${MAX_GASLIGHTING_ATTEMPTS})` };
+        yield {
+          type: 'streamChunk',
+          text:
+            '\n\n🛑 **[YIELD TO HUMAN — Anti-Gaslighting Circuit Breaker (v8.34.0)]** ' +
+            `The @coder attempted to fake task completion via "ORCHESTRATOR'S REPORT" ${gaslightingAttempts} times. ` +
+            'The agent is in a panic loop it cannot escape on its own — the engine has halted ' +
+            'further LLM calls to prevent burning API credits. Review the partial work above, ' +
+            'inspect the code state, and either give the agent more specific instructions or ' +
+            'roll back via the Restore button if the workspace was corrupted.',
+        };
+        yield { type: 'streamEnd' };
+        return;
+      }
+      yield { type: 'thinking', text: `🛑 Anti-Gaslighting: @coder no puede emitir el reporte final (strike ${gaslightingAttempts}/${MAX_GASLIGHTING_ATTEMPTS})…` };
       messages.push({
         role: 'user',
         content:
@@ -739,8 +766,25 @@ export async function* runAgentLoop(
     // do NOT stream it to chat, drop it from the valid history, and force
     // another iteration demanding exit_worktree(merge) first.
     if (textContent && /ORCHESTRATOR['']S\s+REPORT/i.test(textContent) && activeWorktreePath) {
-      debugLog(workspacePath, `[Merge Enforcer] @${agentId} attempted to emit Orchestrator's Report while worktree active (${activeWorktreePath}) — intercepting`);
-      yield { type: 'thinking', text: '🛑 Merge Enforcer: el worktree sigue activo, exige exit_worktree(merge)…' };
+      gaslightingAttempts++;
+      debugLog(workspacePath, `[Merge Enforcer] @${agentId} attempted to emit Orchestrator's Report while worktree active (${activeWorktreePath}) — intercepting (strike ${gaslightingAttempts}/${MAX_GASLIGHTING_ATTEMPTS})`);
+      // v8.34.0 — Circuit Breaker shared with Anti-Gaslighting; yields to human
+      // after 3 strikes via either vector to prevent panic-loop credit burn.
+      if (gaslightingAttempts >= MAX_GASLIGHTING_ATTEMPTS) {
+        yield { type: 'thinking', text: `🛑 Anti-Gaslighting Circuit Breaker tripped (${gaslightingAttempts}/${MAX_GASLIGHTING_ATTEMPTS})` };
+        yield {
+          type: 'streamChunk',
+          text:
+            '\n\n🛑 **[YIELD TO HUMAN — Anti-Gaslighting Circuit Breaker (v8.34.0)]** ' +
+            `@${agentId} attempted to fake task completion via "ORCHESTRATOR'S REPORT" while a worktree was still active ${gaslightingAttempts} times. ` +
+            'The agent is in a panic loop it cannot escape on its own — the engine has halted ' +
+            'further LLM calls to prevent burning API credits. Review the worktree state, decide ' +
+            `whether to merge or discard via the worktree review UI, and re-prompt with explicit guidance.`,
+        };
+        yield { type: 'streamEnd' };
+        return;
+      }
+      yield { type: 'thinking', text: `🛑 Merge Enforcer: el worktree sigue activo (strike ${gaslightingAttempts}/${MAX_GASLIGHTING_ATTEMPTS})…` };
       messages.push({
         role: 'user',
         content:
