@@ -464,6 +464,7 @@ export async function* runAgentLoop(
   let lastEditedFile: string | null = null;
   let consecutiveGhostCount = 0;
   let ghostRetries = 0;
+  const MAX_ACTION_REFUSALS = 4; // v8.34.2 — was implicit 2; raised to 4 for Frontier LLMs in narration loops
   let planCheckCount = 0;
   let nodeModulesAccessCount = 0; // v8.29.0 — Rabbit Hole soft-limit: first access gets a warning, subsequent are hard-blocked
   let consecutiveBuildFailures = 0;  // ── v8.16.1: Quality Gate circuit breaker counter
@@ -954,6 +955,54 @@ export async function* runAgentLoop(
         const planFilePath = path.join(workspacePath, '.fluxo', 'IMPLEMENTATION_PLAN.md');
         if (fs.existsSync(planFilePath)) {
           planCheckCount++;
+
+          // ── v8.34.2: Stale Plan Auto-Cleanup for debug requests ──────────────
+          // A stale IMPLEMENTATION_PLAN.md from a prior planning session contaminates
+          // a fresh debug task: the agent reads the plan, can't reconcile it with a
+          // runtime-error fix request, and falls into Action Refusal narrating both
+          // contexts without executing either. When the userMessage shows clear debug
+          // markers (error keywords, stack-trace patterns, HTTP failure codes), delete
+          // the stale plan and re-prompt with a clean directive instead of injecting
+          // Manager Override. The @manager will regenerate a fresh plan via
+          // enter_plan_mode if the bug fix grows beyond a quick patch.
+          const _DEBUG_INDICATORS = [
+            /\berror[s]?\b/i,
+            /\bbug[s]?\b/i,
+            /\bfailed\b/i,
+            /\bcrash(ed)?\b/i,
+            /\bbroken\b/i,
+            /\bexception\b/i,
+            /\buncaught\b/i,
+            /:\d+:\d+/,                    // "App.jsx:6" line:col patterns
+            /net::err_/i,                  // browser fetch errors
+            /internal\s+server\s+error/i,
+            /\bno\s+funciona\b/i,          // Spanish: "doesn't work"
+            /\btengo\s+(un\s+)?error\b/i,  // Spanish: "I have an error"
+          ];
+          const _isDebugRequest = _DEBUG_INDICATORS.some(re => re.test(userMessage));
+
+          if (_isDebugRequest) {
+            try {
+              fs.unlinkSync(planFilePath);
+              debugLog(workspacePath, '[Stale Plan Cleanup v8.34.2] Debug-style userMessage detected — deleted stale IMPLEMENTATION_PLAN.md instead of injecting Manager Override');
+              yield { type: 'thinking', text: '🗑️ Stale plan removed — debug request detected' };
+              messages.push({
+                role: 'user',
+                content:
+                  '[ENGINE NOTICE — Stale Plan Cleanup v8.34.2] A stale IMPLEMENTATION_PLAN.md from ' +
+                  'a prior session was just removed from disk. Your previous response was contaminated ' +
+                  'by it — you tried to reconcile a stale plan with the user\'s fresh debug request. ' +
+                  'Restart your reasoning fresh on the user\'s ORIGINAL message: investigate the runtime ' +
+                  'error directly with read_file, search_and_replace, etc. Do NOT reference any prior plan.',
+              });
+              continue;
+            } catch (e: any) {
+              debugLog(workspacePath, `[Stale Plan Cleanup v8.34.2] Failed to delete plan: ${e?.message ?? e} — falling back to Manager Override`);
+              // Fall through to the Manager Override path below
+            }
+          }
+          // ─────────────────────────────────────────────────────────────────────
+
           debugLog(workspacePath, 'Plan Verification: IMPLEMENTATION_PLAN.md found — injecting Manager Override');
           yield { type: 'thinking', text: '📋 Manager: verifying plan completion…' };
           messages.push({
@@ -989,14 +1038,26 @@ export async function* runAgentLoop(
         continue;
       }
 
-      // Action Enforcement — agent returned text but no tools (passive give-up pattern)
-      // Silent: engine retries internally — user never sees the "fight" with the LLM.
-      if (ghostRetries < 2) {
+      // Action Enforcement (v8.34.2 hardened) — Frontier LLMs (notably Gemini 2.5 Pro)
+      // sometimes enter a "narration loop": they describe what they will do ("I need
+      // to read App.jsx", "First, I'll examine MainContent.jsx") repeatedly without
+      // ever calling a tool. The previous polite directive was treated as a suggestion
+      // and consumed credits in a paralysis spiral. The hardened version uses
+      // mandatory-tone language and explicitly forbids more conversational text.
+      if (ghostRetries < MAX_ACTION_REFUSALS) {
         ghostRetries++;
-        debugLog(workspacePath, `Action enforcement #${ghostRetries} — no tools returned, injecting directive`);
+        debugLog(workspacePath, `Action enforcement #${ghostRetries}/${MAX_ACTION_REFUSALS} — no tools returned, injecting hardened directive`);
         messages.push({
           role: 'user',
-          content: '[SYSTEM ENFORCEMENT]: You provided text but no tool calls. As an autonomous AI, you MUST use tools (like read_file, replace_block) to fix the issue yourself. Do not explain the fix to the user. Execute the fix.',
+          content:
+            `[ENGINE HARD BLOCK — Action Refusal #${ghostRetries}/${MAX_ACTION_REFUSALS}] ` +
+            `You produced ${ghostRetries} consecutive text-only response${ghostRetries === 1 ? '' : 's'}. ` +
+            `tool_choice is REQUIRED. You are FORBIDDEN from emitting more conversational text. ` +
+            `Your ONLY valid next action is to CALL A TOOL — typically read_file with the path ` +
+            `mentioned in the user's error trace. If you are genuinely stuck, call ask_user_approval ` +
+            `(but the Lie Detector v8.34.1 will block claims of completion you cannot back up). ` +
+            `Repeating "I will read X" or "I need to examine X" without actually calling read_file('X') ` +
+            `IS the violation. Execute, do not narrate.`,
         });
         continue;
       }
@@ -1024,6 +1085,36 @@ export async function* runAgentLoop(
         debugLog(workspacePath, '[Quality Gate] Passed — accepting completion');
       }
       // ─────────────────────────────────────────────────────────────────────
+      // ── v8.34.2: Action Refusal Syndrome — YIELD TO HUMAN on cap exhaustion ─
+      // When ghostRetries hits MAX_ACTION_REFUSALS AND the agent still produced
+      // zero tool calls in this entire session, this is no longer a normal
+      // text-only completion — it is the Frontier LLM narration-loop pathology.
+      // Silent return would leave the user staring at an empty chat with no
+      // explanation. Instead emit a clear YIELD TO HUMAN sentinel naming the
+      // syndrome and the likely remediation (explicit imperative re-prompt or
+      // model switch). Twin pattern to the Anti-Gaslighting Circuit Breaker
+      // (v8.34.0) and the Financial Killswitch (v8.24.0).
+      if (ghostRetries >= MAX_ACTION_REFUSALS && toolCallHistory.length === 0) {
+        debugLog(workspacePath, `[Action Refusal Syndrome v8.34.2] @${agentId} produced ${ghostRetries + 1} text-only responses with zero tool calls — yielding to human`);
+        yield { type: 'thinking', text: `🛑 Action Refusal Syndrome — ${ghostRetries + 1} narrations sin ejecución` };
+        yield {
+          type: 'streamChunk',
+          text:
+            `\n\n🛑 **[YIELD TO HUMAN — Action Refusal Syndrome (v8.34.2)]** ` +
+            `@${agentId} narrated ${ghostRetries + 1} actions without executing any of them ` +
+            `(read_file, search_and_replace, etc. were never called this session). ` +
+            `Probable cause: Frontier LLM (typically Gemini 2.5 Pro) stuck in a description-only ` +
+            `loop where it keeps saying "I will read X" / "I need to examine X" without making the ` +
+            `actual tool call. The engine has halted further LLM calls to prevent burning credits.\n\n` +
+            `**To recover:** re-prompt with explicit imperative guidance ` +
+            `(e.g. "execute read_file('src/components/MainContent.jsx') RIGHT NOW, then patch the ` +
+            `JSX syntax error on line 149") or switch to a different model via the model selector.`,
+        };
+        yield { type: 'streamEnd' };
+        return;
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
       debugLog(workspacePath, 'Ending: no tool calls → final response (ghostRetries exhausted)');
       // v8.27.0 — Same background memory extraction as the Orchestrator's
       // Report path above. This branch fires when the agent ends with text
