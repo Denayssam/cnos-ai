@@ -1712,23 +1712,76 @@ export async function* runAgentLoop(
           yield { type: 'thinking', text: '🌐 Fetching external documentation…' };
           result = await fetchDocumentation(String(args.url ?? ''));
 
-        // ── Worktree Human Review (v8.3.0) ───────────────────────────────────────
+        // ── Worktree Human Review (v8.3.0 + v8.35.1 Pre-Merge Quality Gate) ─────
         // Intercept exit_worktree merge calls before execution so the user can
         // inspect the diff in VS Code's native diff editor and approve/discard.
+        //
+        // v8.35.1 — Pre-Merge Quality Gate: validate the WORKTREE's build BEFORE
+        // showing the human review modal. Closes the lazy-merge path observed in
+        // Test 8 where @coder hit a TS2591 build error inside the worktree, then
+        // skipped Build Repair Protocol and called exit_worktree(merge) anyway,
+        // pushing broken code through the user's approval click. The post-merge
+        // Quality Gate then blocked task completion on main, trapping the agent
+        // in a 25-iteration death spiral on hallucinated edits.
+        //
+        // Three invariants honored:
+        //   (a) Validates the WORKTREE path (matches v8.30.1 worktree-aware Quality
+        //       Gate — never compile main when the changes live in the worktree).
+        //   (b) Missing-script exemption (mirror of Quality Gate behavior at
+        //       line ~1007): projects without npm run build are not gated.
+        //   (c) Honors session bypassQualityGate flag — if the user already
+        //       chose to bypass the post-completion Quality Gate this session,
+        //       they can also merge broken code (consistent escape-hatch behavior).
         } else if (toolName === 'exit_worktree' && args.action === 'merge' && worktreeReviewCallback) {
           const wStateFile = path.join(workspacePath, '.fluxo', 'active_worktree.json');
-          let reviewedAction: 'merge' | 'discard' = 'merge';
+          let wState: { branchName: string; worktreePath: string } | null = null;
           if (fs.existsSync(wStateFile)) {
-            try {
-              const wState = JSON.parse(fs.readFileSync(wStateFile, 'utf-8'));
-              yield { type: 'thinking', text: '🔍 Requesting human review before worktree merge…' };
-              reviewedAction = await worktreeReviewCallback(wState.branchName, wState.worktreePath);
-              debugLog(workspacePath, `[Worktree Review] User decision: ${reviewedAction}`);
-            } catch {
-              // State unreadable — fall through to direct merge
+            try { wState = JSON.parse(fs.readFileSync(wStateFile, 'utf-8')); }
+            catch { /* state unreadable — fall through to direct merge */ }
+          }
+
+          // v8.35.1 — Pre-Merge Quality Gate: build a discriminated block-result
+          // FIRST, then assign result in a single if/else so TypeScript can prove
+          // result is always definitely-assigned downstream.
+          let preMergeBlock: { success: false; output: string } | null = null;
+          if (wState && !bypassQualityGate) {
+            yield { type: 'thinking', text: '🏗️ Pre-Merge Quality Gate: validating worktree build…' };
+            const preMergeResult = await validateBuild(wState.worktreePath);
+            if (!preMergeResult.success && !preMergeResult.error?.toLowerCase().includes('missing script')) {
+              debugLog(workspacePath, `[Pre-Merge Quality Gate v8.35.1] MERGE BLOCKED — worktree build failed: ${preMergeResult.error?.slice(0, 200)}`);
+              yield { type: 'thinking', text: '🛑 Pre-Merge Quality Gate: worktree build broken — blocking merge' };
+              preMergeBlock = {
+                success: false,
+                output:
+                  `[SYSTEM ENGINE BLOCK — Pre-Merge Quality Gate v8.35.1] MERGE REJECTED.\n` +
+                  `El código en este worktree no compila. NO puedes fusionar código roto a la rama principal — ` +
+                  `el merge habría introducido errores de compilación en main y atrapado al loop en una death spiral.\n\n` +
+                  `ERRORES DEL COMPILADOR:\n${preMergeResult.error}\n\n` +
+                  `DIRECTIVA OBLIGATORIA: Usa tus tools de edición (replace_symbol, search_and_replace, replace_block, ` +
+                  `replace_lines) para corregir cada error arriba. Luego ejecuta run_command con 'npm run build' ` +
+                  `dentro del worktree hasta que pase verde. Solo entonces reintenta exit_worktree(merge). ` +
+                  `Si el build genuinamente no se puede arreglar, llama exit_worktree(discard) para abandonar los cambios.`,
+              };
+            } else {
+              debugLog(workspacePath, '[Pre-Merge Quality Gate v8.35.1] Worktree build OK — proceeding to human review');
             }
           }
-          result = executeTool('exit_worktree', { ...args, action: reviewedAction }, workspacePath);
+
+          if (preMergeBlock) {
+            result = preMergeBlock;
+          } else {
+            let reviewedAction: 'merge' | 'discard' = 'merge';
+            if (wState) {
+              try {
+                yield { type: 'thinking', text: '🔍 Requesting human review before worktree merge…' };
+                reviewedAction = await worktreeReviewCallback(wState.branchName, wState.worktreePath);
+                debugLog(workspacePath, `[Worktree Review] User decision: ${reviewedAction}`);
+              } catch {
+                // Callback failed — fall through to direct merge
+              }
+            }
+            result = executeTool('exit_worktree', { ...args, action: reviewedAction }, workspacePath);
+          }
         // ─────────────────────────────────────────────────────────────────────────
 
         // ── Worktree Auto-Cleanup (v8.11.0) ──────────────────────────────────────
