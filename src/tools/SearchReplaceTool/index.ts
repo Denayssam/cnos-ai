@@ -45,6 +45,7 @@ RULES:
         path:            { type: 'string', description: 'File path relative to workspace root.' },
         search_snippet:  { type: 'string', description: 'The EXACT code currently in the file that you want to replace. Include 2–3 surrounding lines of context to guarantee uniqueness.' },
         replace_snippet: { type: 'string', description: 'The NEW code that will replace search_snippet. Use empty string "" to delete the block.' },
+        healing_mode:    { type: 'boolean', description: 'Set to true ONLY when the user explicitly authorized you to bypass the Sherlock Auditor (e.g. "fix the duplicate anyway", "I know about it, force the change"). Combined with the engine\'s user-override marker check, this lets the edit through even if Sherlock would otherwise flag REDUNDANT_DECLARATION. Quote the user\'s override phrase in your reasoning so the engine can verify.' },
       },
       required: ['path', 'search_snippet', 'replace_snippet'],
     },

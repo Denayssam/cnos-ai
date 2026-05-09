@@ -1215,6 +1215,34 @@ export async function* runAgentLoop(
       const revisorResult = await callOpenRouterBlocking(revisorMessages, { ...config, model: auditorModel, maxTokens: 512 }, abortSignal);
 
       if (revisorResult.content && revisorResult.content.toUpperCase().includes('ERROR:')) {
+        // ── v8.35.0 — Override Patch: Double-Key Bypass ──────────────────────────
+        // Sherlock blocks REDUNDANT_DECLARATION when the agent tries to re-inject
+        // an identifier that already exists. In Test 7 we observed Claude 3.7
+        // Sonnet trapped between user orders ("fix it now") and Sherlock's veto,
+        // burning the iteration budget. The Override Patch grants a bypass when
+        // BOTH keys are present:
+        //   Key 1 — agent intent: at least one tool call carries healing_mode: true
+        //   Key 2 — user authorization: userMessage contains an override marker
+        //           ("fix it anyway", "force", "i know", "yo sé", etc.)
+        // Both must align — neither key alone unlocks the bypass. Scope is
+        // narrow: only REDUNDANT_DECLARATION is bypassable; ROGUE DESIGNER,
+        // SILOED CHANGES, TECH STACK DRIFT, MODAL COLLISION etc. remain blocked
+        // because those flag genuinely dangerous patterns the user cannot safely
+        // override blindly. The bypass logs explicitly so the audit trail
+        // captures every override event.
+        const _isRedundancyBlock = /REDUNDANT_DECLARATION/i.test(revisorResult.content);
+        const _hasHealingFlag = tcToExecute.some(tc => {
+          try { return JSON.parse(tc.function.arguments).healing_mode === true; }
+          catch { return false; }
+        });
+        const _USER_OVERRIDE_REGEX = /\b(fix\s+it\s+(anyway|even\s+if|now)|force\s+(it|the\s+change)|override|do\s+it\s+anyway|hazlo\s+(igual|de\s+todas\s+formas)|arr[ée]glalo\s+(igual|aunque|ahora)|i\s+know\s+(about|we\s+have)|yo\s+s[eé]\s+que|s[eé]\s+que\s+(est[áa]|hay))\b/i;
+        const _hasUserOverride = _USER_OVERRIDE_REGEX.test(userMessage);
+        if (_isRedundancyBlock && _hasHealingFlag && _hasUserOverride) {
+          debugLog(workspacePath, '[Override Bypass v8.35.0] REDUNDANT_DECLARATION bypassed: healing_mode flag present AND userMessage matches override marker');
+          yield { type: 'thinking', text: '🔓 Sherlock REDUNDANT_DECLARATION bypassed — user override + healing_mode' };
+          // Fall through to tool execution (do NOT push audit failure or continue)
+        } else {
+        // ─────────────────────────────────────────────────────────────────────
         const errorMsg = revisorResult.content.split('ERROR:')[1]?.trim() || 'Rogue behavior detected.';
         yield { type: 'error', message: `🛡️ Sherlock Auditor: ${errorMsg}` };
         const syntaxTargets = tcToExecute
@@ -1250,6 +1278,7 @@ export async function* runAgentLoop(
         // ─────────────────────────────────────────────────────────────────────
         messages.push({ role: 'user', content: `CRITICAL AUDIT FAILURE: ${revisorResult.content}\n\nRECUPERACIÓN OBLIGATORIA: (1) Relee el error arriba con cuidado. (2) Ejecuta read_file en el archivo afectado para ver su estado actual antes de cualquier nuevo replace_lines. (3) Solo corrige el problema específico señalado; no toques nada más.${readFileDirective}` });
         continue;
+        } // close v8.35.0 Override Patch else
       }
     }
 
