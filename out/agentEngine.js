@@ -260,7 +260,15 @@ getDiagnosticsCallback,
 // {success, output} envelope. Engine treats absence as "MCP service not
 // initialized" and lets the tool's placeholder execute() surface a clean
 // engine error.
-listMcpResourcesCallback) {
+listMcpResourcesCallback, 
+// v8.33.0 — Discovery Mode (planner-only). When wired AND the current agent
+// is @planner, ask_user_approval is rerouted: instead of the binary modal,
+// the host surfaces the questions via showInputBox and the user's TEXT
+// answer becomes the tool result.output. The planner sees the answer in its
+// conversation and writes the plan informed by it. For other agents the
+// existing binary approvalCallback flow is preserved unchanged. Returns
+// null/undefined when the user cancels.
+discoveryAnswerCallback) {
     // 1. Intent Detection (Routing)
     // ── v8.16.6: Skip routing for sub-agent invocations ──────────────────────
     // The @planner is invoked from enter_plan_mode with a FIXED role. Re-routing
@@ -328,21 +336,30 @@ listMcpResourcesCallback) {
     const prunedHistory = conversationHistory
         .slice(-12)
         .filter(m => m.role === 'user' || m.role === 'assistant');
-    // Workspace Memory injection — read .fluxo/memory.md once per session
+    // Agent Memory injection (v8.30.0) — read .fluxo/memory.md once per session.
+    // Cap at 15KB to avoid token exhaustion. Framed as persistent lessons, not rules.
+    const MEMORY_SIZE_CAP = 15360; // 15KB
     let workspaceMemoryBlock = '';
     if (workspacePath) {
         const memoryFilePath = path.join(workspacePath, '.fluxo', 'memory.md');
         try {
             if (fs.existsSync(memoryFilePath)) {
-                const memoryContent = fs.readFileSync(memoryFilePath, 'utf-8').trim();
-                if (memoryContent) {
-                    workspaceMemoryBlock =
-                        '\n\n--- WORKSPACE MEMORY & RULES ---\n' +
-                            'The following rules and conventions were set by the user for this workspace. ' +
-                            'They are BINDING — apply them automatically on every task without being asked:\n\n' +
-                            memoryContent +
-                            '\n--- END OF WORKSPACE MEMORY ---';
-                    debugLog(workspacePath, `Workspace memory loaded: ${memoryContent.length} chars`);
+                const memoryStats = fs.statSync(memoryFilePath);
+                if (memoryStats.size <= MEMORY_SIZE_CAP) {
+                    const memoryContent = fs.readFileSync(memoryFilePath, 'utf-8').trim();
+                    if (memoryContent) {
+                        workspaceMemoryBlock =
+                            '\n\n<agent_memory>\n' +
+                                'This is your persistent memory across past sessions. ' +
+                                'Read these lessons learned to avoid repeating past mistakes. ' +
+                                'Entries are written by previous instances of yourself after completing tasks or recovering from errors.\n\n' +
+                                memoryContent +
+                                '\n</agent_memory>';
+                        debugLog(workspacePath, `Agent memory loaded: ${memoryContent.length} chars`);
+                    }
+                }
+                else {
+                    debugLog(workspacePath, `Agent memory skipped: file exceeds ${MEMORY_SIZE_CAP} byte cap (${memoryStats.size} bytes)`);
                 }
             }
         }
@@ -403,10 +420,20 @@ listMcpResourcesCallback) {
     let lastEditedFile = null;
     let consecutiveGhostCount = 0;
     let ghostRetries = 0;
+    const MAX_ACTION_REFUSALS = 4; // v8.34.2 — was implicit 2; raised to 4 for Frontier LLMs in narration loops
     let planCheckCount = 0;
     let nodeModulesAccessCount = 0; // v8.29.0 — Rabbit Hole soft-limit: first access gets a warning, subsequent are hard-blocked
     let consecutiveBuildFailures = 0; // ── v8.16.1: Quality Gate circuit breaker counter
     let bypassQualityGate = false; // ── v8.16.1: set to true when user approves bypass
+    // v8.34.0 — Anti-Gaslighting Circuit Breaker. Tallies how many times the
+    // agent tried to escape the loop via fake "ORCHESTRATOR'S REPORT" emissions
+    // (intercepted by either the Anti-Gaslighting block at line ~722 or the
+    // Merge Enforcer block at line ~741). Shared between both intercepts so a
+    // panicked agent burning attempts via either vector is caught uniformly.
+    // At 3 strikes the loop yields to human via the Financial Killswitch path
+    // rather than burning the remaining iteration budget on a bot in panic.
+    let gaslightingAttempts = 0;
+    const MAX_GASLIGHTING_ATTEMPTS = 3;
     // v8.23.0 — LSP Passive Feedback bookkeeping. Tracks the recently edited
     // files so the diagnostics callback knows which files to poll, and a per-
     // turn cap so we never block the same completion attempt more than once
@@ -451,7 +478,15 @@ listMcpResourcesCallback) {
     // @designer are gated — @manager and @planner have other read paths.
     let hasSeenRepoMap = false;
     const PANORAMIC_GATED_AGENTS = new Set(['coder', 'designer']);
-    const PANORAMIC_GATED_TOOLS = new Set(['grep', 'glob', 'search_in_files', 'search_and_replace']);
+    // v8.34.1 — Hotfix Exemption Patch: search_and_replace removed from the
+    // panoramic gate. Rationale: the gate exists to prevent BLIND exploration
+    // (grep/glob/search_in_files all scan unknown paths). search_and_replace
+    // operates on a known, explicit file path — typically given to the agent
+    // by the user as a Vite/TS error like `PomodoroTimer.jsx:183`. Forcing a
+    // get_repo_map for a 1-line hotfix on a known file caused the agent to
+    // weaponize ask_user_approval with hallucinated success claims when the
+    // gate blocked the legitimate edit. Surgical hotfixes are now unblocked.
+    const PANORAMIC_GATED_TOOLS = new Set(['grep', 'glob', 'search_in_files']);
     // ─────────────────────────────────────────────────────────────────────────
     // ── v8.16.7: Git Auto-Checkpointing (Smart Auto-Commit) ──────────────────
     // If the human has uncommitted changes, createSilentCheckpoint now auto-saves
@@ -619,8 +654,25 @@ listMcpResourcesCallback) {
         // valid history, and inject a corrective directive so the next iteration
         // resumes real work.
         if (agentId === 'coder' && textContent && /ORCHESTRATOR['']S\s+REPORT/i.test(textContent)) {
-            debugLog(workspacePath, '[Anti-Gaslighting] @coder attempted to emit Orchestrator\'s Report — intercepting');
-            yield { type: 'thinking', text: '🛑 Anti-Gaslighting: @coder no puede emitir el reporte final…' };
+            gaslightingAttempts++;
+            debugLog(workspacePath, `[Anti-Gaslighting] @coder attempted to emit Orchestrator's Report — intercepting (strike ${gaslightingAttempts}/${MAX_GASLIGHTING_ATTEMPTS})`);
+            // v8.34.0 — Circuit Breaker: yield to human after 3 strikes rather than
+            // burn remaining iterations on a panicked agent rebounding off the shield.
+            if (gaslightingAttempts >= MAX_GASLIGHTING_ATTEMPTS) {
+                yield { type: 'thinking', text: `🛑 Anti-Gaslighting Circuit Breaker tripped (${gaslightingAttempts}/${MAX_GASLIGHTING_ATTEMPTS})` };
+                yield {
+                    type: 'streamChunk',
+                    text: '\n\n🛑 **[YIELD TO HUMAN — Anti-Gaslighting Circuit Breaker (v8.34.0)]** ' +
+                        `The @coder attempted to fake task completion via "ORCHESTRATOR'S REPORT" ${gaslightingAttempts} times. ` +
+                        'The agent is in a panic loop it cannot escape on its own — the engine has halted ' +
+                        'further LLM calls to prevent burning API credits. Review the partial work above, ' +
+                        'inspect the code state, and either give the agent more specific instructions or ' +
+                        'roll back via the Restore button if the workspace was corrupted.',
+                };
+                yield { type: 'streamEnd' };
+                return;
+            }
+            yield { type: 'thinking', text: `🛑 Anti-Gaslighting: @coder no puede emitir el reporte final (strike ${gaslightingAttempts}/${MAX_GASLIGHTING_ATTEMPTS})…` };
             messages.push({
                 role: 'user',
                 content: "[SYSTEM ENGINE BLOCK] You are the Coder. Do not generate the Orchestrator's Report. " +
@@ -636,8 +688,24 @@ listMcpResourcesCallback) {
         // do NOT stream it to chat, drop it from the valid history, and force
         // another iteration demanding exit_worktree(merge) first.
         if (textContent && /ORCHESTRATOR['']S\s+REPORT/i.test(textContent) && activeWorktreePath) {
-            debugLog(workspacePath, `[Merge Enforcer] @${agentId} attempted to emit Orchestrator's Report while worktree active (${activeWorktreePath}) — intercepting`);
-            yield { type: 'thinking', text: '🛑 Merge Enforcer: el worktree sigue activo, exige exit_worktree(merge)…' };
+            gaslightingAttempts++;
+            debugLog(workspacePath, `[Merge Enforcer] @${agentId} attempted to emit Orchestrator's Report while worktree active (${activeWorktreePath}) — intercepting (strike ${gaslightingAttempts}/${MAX_GASLIGHTING_ATTEMPTS})`);
+            // v8.34.0 — Circuit Breaker shared with Anti-Gaslighting; yields to human
+            // after 3 strikes via either vector to prevent panic-loop credit burn.
+            if (gaslightingAttempts >= MAX_GASLIGHTING_ATTEMPTS) {
+                yield { type: 'thinking', text: `🛑 Anti-Gaslighting Circuit Breaker tripped (${gaslightingAttempts}/${MAX_GASLIGHTING_ATTEMPTS})` };
+                yield {
+                    type: 'streamChunk',
+                    text: '\n\n🛑 **[YIELD TO HUMAN — Anti-Gaslighting Circuit Breaker (v8.34.0)]** ' +
+                        `@${agentId} attempted to fake task completion via "ORCHESTRATOR'S REPORT" while a worktree was still active ${gaslightingAttempts} times. ` +
+                        'The agent is in a panic loop it cannot escape on its own — the engine has halted ' +
+                        'further LLM calls to prevent burning API credits. Review the worktree state, decide ' +
+                        `whether to merge or discard via the worktree review UI, and re-prompt with explicit guidance.`,
+                };
+                yield { type: 'streamEnd' };
+                return;
+            }
+            yield { type: 'thinking', text: `🛑 Merge Enforcer: el worktree sigue activo (strike ${gaslightingAttempts}/${MAX_GASLIGHTING_ATTEMPTS})…` };
             messages.push({
                 role: 'user',
                 content: "[SYSTEM ENGINE BLOCK] You cannot emit the Orchestrator's Report while a worktree is still active. " +
@@ -751,7 +819,7 @@ listMcpResourcesCallback) {
                 // ── v8.16.0/8.16.1: Quality Gate + Escape Hatch ──────────────────────
                 if (workspacePath && toolCallHistory.length > 0 && !buildFailureCtx && !bypassQualityGate) {
                     yield { type: 'thinking', text: '🏗️ Quality Gate: validating build before completion…' };
-                    const qgResult = await (0, buildValidator_1.validateBuild)(workspacePath);
+                    const qgResult = await (0, buildValidator_1.validateBuild)(activeWorktreePath || workspacePath);
                     if (!qgResult.success && !qgResult.error?.toLowerCase().includes('missing script')) {
                         consecutiveBuildFailures++;
                         debugLog(workspacePath, `[Quality Gate] FAILED (${consecutiveBuildFailures}/3) — blocking agent completion`);
@@ -791,6 +859,51 @@ listMcpResourcesCallback) {
                 const planFilePath = path.join(workspacePath, '.fluxo', 'IMPLEMENTATION_PLAN.md');
                 if (fs.existsSync(planFilePath)) {
                     planCheckCount++;
+                    // ── v8.34.2: Stale Plan Auto-Cleanup for debug requests ──────────────
+                    // A stale IMPLEMENTATION_PLAN.md from a prior planning session contaminates
+                    // a fresh debug task: the agent reads the plan, can't reconcile it with a
+                    // runtime-error fix request, and falls into Action Refusal narrating both
+                    // contexts without executing either. When the userMessage shows clear debug
+                    // markers (error keywords, stack-trace patterns, HTTP failure codes), delete
+                    // the stale plan and re-prompt with a clean directive instead of injecting
+                    // Manager Override. The @manager will regenerate a fresh plan via
+                    // enter_plan_mode if the bug fix grows beyond a quick patch.
+                    const _DEBUG_INDICATORS = [
+                        /\berror[s]?\b/i,
+                        /\bbug[s]?\b/i,
+                        /\bfailed\b/i,
+                        /\bcrash(ed)?\b/i,
+                        /\bbroken\b/i,
+                        /\bexception\b/i,
+                        /\buncaught\b/i,
+                        /:\d+:\d+/, // "App.jsx:6" line:col patterns
+                        /net::err_/i, // browser fetch errors
+                        /internal\s+server\s+error/i,
+                        /\bno\s+funciona\b/i, // Spanish: "doesn't work"
+                        /\btengo\s+(un\s+)?error\b/i, // Spanish: "I have an error"
+                    ];
+                    const _isDebugRequest = _DEBUG_INDICATORS.some(re => re.test(userMessage));
+                    if (_isDebugRequest) {
+                        try {
+                            fs.unlinkSync(planFilePath);
+                            debugLog(workspacePath, '[Stale Plan Cleanup v8.34.2] Debug-style userMessage detected — deleted stale IMPLEMENTATION_PLAN.md instead of injecting Manager Override');
+                            yield { type: 'thinking', text: '🗑️ Stale plan removed — debug request detected' };
+                            messages.push({
+                                role: 'user',
+                                content: '[ENGINE NOTICE — Stale Plan Cleanup v8.34.2] A stale IMPLEMENTATION_PLAN.md from ' +
+                                    'a prior session was just removed from disk. Your previous response was contaminated ' +
+                                    'by it — you tried to reconcile a stale plan with the user\'s fresh debug request. ' +
+                                    'Restart your reasoning fresh on the user\'s ORIGINAL message: investigate the runtime ' +
+                                    'error directly with read_file, search_and_replace, etc. Do NOT reference any prior plan.',
+                            });
+                            continue;
+                        }
+                        catch (e) {
+                            debugLog(workspacePath, `[Stale Plan Cleanup v8.34.2] Failed to delete plan: ${e?.message ?? e} — falling back to Manager Override`);
+                            // Fall through to the Manager Override path below
+                        }
+                    }
+                    // ─────────────────────────────────────────────────────────────────────
                     debugLog(workspacePath, 'Plan Verification: IMPLEMENTATION_PLAN.md found — injecting Manager Override');
                     yield { type: 'thinking', text: '📋 Manager: verifying plan completion…' };
                     messages.push({
@@ -823,21 +936,32 @@ listMcpResourcesCallback) {
                 messages.push({ role: 'user', content: nudge });
                 continue;
             }
-            // Action Enforcement — agent returned text but no tools (passive give-up pattern)
-            // Silent: engine retries internally — user never sees the "fight" with the LLM.
-            if (ghostRetries < 2) {
+            // Action Enforcement (v8.34.2 hardened) — Frontier LLMs (notably Gemini 2.5 Pro)
+            // sometimes enter a "narration loop": they describe what they will do ("I need
+            // to read App.jsx", "First, I'll examine MainContent.jsx") repeatedly without
+            // ever calling a tool. The previous polite directive was treated as a suggestion
+            // and consumed credits in a paralysis spiral. The hardened version uses
+            // mandatory-tone language and explicitly forbids more conversational text.
+            if (ghostRetries < MAX_ACTION_REFUSALS) {
                 ghostRetries++;
-                debugLog(workspacePath, `Action enforcement #${ghostRetries} — no tools returned, injecting directive`);
+                debugLog(workspacePath, `Action enforcement #${ghostRetries}/${MAX_ACTION_REFUSALS} — no tools returned, injecting hardened directive`);
                 messages.push({
                     role: 'user',
-                    content: '[SYSTEM ENFORCEMENT]: You provided text but no tool calls. As an autonomous AI, you MUST use tools (like read_file, replace_block) to fix the issue yourself. Do not explain the fix to the user. Execute the fix.',
+                    content: `[ENGINE HARD BLOCK — Action Refusal #${ghostRetries}/${MAX_ACTION_REFUSALS}] ` +
+                        `You produced ${ghostRetries} consecutive text-only response${ghostRetries === 1 ? '' : 's'}. ` +
+                        `tool_choice is REQUIRED. You are FORBIDDEN from emitting more conversational text. ` +
+                        `Your ONLY valid next action is to CALL A TOOL — typically read_file with the path ` +
+                        `mentioned in the user's error trace. If you are genuinely stuck, call ask_user_approval ` +
+                        `(but the Lie Detector v8.34.1 will block claims of completion you cannot back up). ` +
+                        `Repeating "I will read X" or "I need to examine X" without actually calling read_file('X') ` +
+                        `IS the violation. Execute, do not narrate.`,
                 });
                 continue;
             }
             // ── v8.16.0/8.16.1: Quality Gate + Escape Hatch ──────────────────────
             if (workspacePath && toolCallHistory.length > 0 && !buildFailureCtx && !bypassQualityGate) {
                 yield { type: 'thinking', text: '🏗️ Quality Gate: validating build before completion…' };
-                const qgResult = await (0, buildValidator_1.validateBuild)(workspacePath);
+                const qgResult = await (0, buildValidator_1.validateBuild)(activeWorktreePath || workspacePath);
                 if (!qgResult.success && !qgResult.error?.toLowerCase().includes('missing script')) {
                     consecutiveBuildFailures++;
                     debugLog(workspacePath, `[Quality Gate] FAILED (${consecutiveBuildFailures}/3) — blocking agent completion`);
@@ -859,6 +983,34 @@ listMcpResourcesCallback) {
                 debugLog(workspacePath, '[Quality Gate] Passed — accepting completion');
             }
             // ─────────────────────────────────────────────────────────────────────
+            // ── v8.34.2: Action Refusal Syndrome — YIELD TO HUMAN on cap exhaustion ─
+            // When ghostRetries hits MAX_ACTION_REFUSALS AND the agent still produced
+            // zero tool calls in this entire session, this is no longer a normal
+            // text-only completion — it is the Frontier LLM narration-loop pathology.
+            // Silent return would leave the user staring at an empty chat with no
+            // explanation. Instead emit a clear YIELD TO HUMAN sentinel naming the
+            // syndrome and the likely remediation (explicit imperative re-prompt or
+            // model switch). Twin pattern to the Anti-Gaslighting Circuit Breaker
+            // (v8.34.0) and the Financial Killswitch (v8.24.0).
+            if (ghostRetries >= MAX_ACTION_REFUSALS && toolCallHistory.length === 0) {
+                debugLog(workspacePath, `[Action Refusal Syndrome v8.34.2] @${agentId} produced ${ghostRetries + 1} text-only responses with zero tool calls — yielding to human`);
+                yield { type: 'thinking', text: `🛑 Action Refusal Syndrome — ${ghostRetries + 1} narrations sin ejecución` };
+                yield {
+                    type: 'streamChunk',
+                    text: `\n\n🛑 **[YIELD TO HUMAN — Action Refusal Syndrome (v8.34.2)]** ` +
+                        `@${agentId} narrated ${ghostRetries + 1} actions without executing any of them ` +
+                        `(read_file, search_and_replace, etc. were never called this session). ` +
+                        `Probable cause: Frontier LLM (typically Gemini 2.5 Pro) stuck in a description-only ` +
+                        `loop where it keeps saying "I will read X" / "I need to examine X" without making the ` +
+                        `actual tool call. The engine has halted further LLM calls to prevent burning credits.\n\n` +
+                        `**To recover:** re-prompt with explicit imperative guidance ` +
+                        `(e.g. "execute read_file('src/components/MainContent.jsx') RIGHT NOW, then patch the ` +
+                        `JSX syntax error on line 149") or switch to a different model via the model selector.`,
+                };
+                yield { type: 'streamEnd' };
+                return;
+            }
+            // ─────────────────────────────────────────────────────────────────────────
             debugLog(workspacePath, 'Ending: no tool calls → final response (ghostRetries exhausted)');
             // v8.27.0 — Same background memory extraction as the Orchestrator's
             // Report path above. This branch fires when the agent ends with text
@@ -973,46 +1125,80 @@ listMcpResourcesCallback) {
             }
             const revisorResult = await callOpenRouterBlocking(revisorMessages, { ...config, model: auditorModel, maxTokens: 512 }, abortSignal);
             if (revisorResult.content && revisorResult.content.toUpperCase().includes('ERROR:')) {
-                const errorMsg = revisorResult.content.split('ERROR:')[1]?.trim() || 'Rogue behavior detected.';
-                yield { type: 'error', message: `🛡️ Sherlock Auditor: ${errorMsg}` };
-                const syntaxTargets = tcToExecute
-                    .filter(tc => tc.function.name === 'replace_lines' || tc.function.name === 'write_file')
-                    .map(tc => { try {
-                    return JSON.parse(tc.function.arguments).path || '';
+                // ── v8.35.0 — Override Patch: Double-Key Bypass ──────────────────────────
+                // Sherlock blocks REDUNDANT_DECLARATION when the agent tries to re-inject
+                // an identifier that already exists. In Test 7 we observed Claude 3.7
+                // Sonnet trapped between user orders ("fix it now") and Sherlock's veto,
+                // burning the iteration budget. The Override Patch grants a bypass when
+                // BOTH keys are present:
+                //   Key 1 — agent intent: at least one tool call carries healing_mode: true
+                //   Key 2 — user authorization: userMessage contains an override marker
+                //           ("fix it anyway", "force", "i know", "yo sé", etc.)
+                // Both must align — neither key alone unlocks the bypass. Scope is
+                // narrow: only REDUNDANT_DECLARATION is bypassable; ROGUE DESIGNER,
+                // SILOED CHANGES, TECH STACK DRIFT, MODAL COLLISION etc. remain blocked
+                // because those flag genuinely dangerous patterns the user cannot safely
+                // override blindly. The bypass logs explicitly so the audit trail
+                // captures every override event.
+                const _isRedundancyBlock = /REDUNDANT_DECLARATION/i.test(revisorResult.content);
+                const _hasHealingFlag = tcToExecute.some(tc => {
+                    try {
+                        return JSON.parse(tc.function.arguments).healing_mode === true;
+                    }
+                    catch {
+                        return false;
+                    }
+                });
+                const _USER_OVERRIDE_REGEX = /\b(fix\s+it\s+(anyway|even\s+if|now)|force\s+(it|the\s+change)|override|do\s+it\s+anyway|hazlo\s+(igual|de\s+todas\s+formas)|arr[ée]glalo\s+(igual|aunque|ahora)|i\s+know\s+(about|we\s+have)|yo\s+s[eé]\s+que|s[eé]\s+que\s+(est[áa]|hay))\b/i;
+                const _hasUserOverride = _USER_OVERRIDE_REGEX.test(userMessage);
+                if (_isRedundancyBlock && _hasHealingFlag && _hasUserOverride) {
+                    debugLog(workspacePath, '[Override Bypass v8.35.0] REDUNDANT_DECLARATION bypassed: healing_mode flag present AND userMessage matches override marker');
+                    yield { type: 'thinking', text: '🔓 Sherlock REDUNDANT_DECLARATION bypassed — user override + healing_mode' };
+                    // Fall through to tool execution (do NOT push audit failure or continue)
                 }
-                catch {
-                    return '';
-                } })
-                    .filter(Boolean);
-                const readFileDirective = syntaxTargets.length > 0
-                    ? `\n\nSYNTAX_RECOVERY_DIRECTIVE: ANTES de enviar cualquier replace_lines, ejecuta read_file en ${syntaxTargets.map((p) => `"${p}"`).join(', ')}. Ver el estado actual del archivo es OBLIGATORIO — está prohibido adivinar líneas sin leer primero.`
-                    : '';
-                // ── v8.26.1 — Sherlock 400 Hotfix (Schema Closure) ──────────────────────
-                // The OpenAI / OpenRouter Chat Completions schema requires that EVERY
-                // tool_call emitted by an assistant message be answered by a tool
-                // message carrying the matching tool_call_id BEFORE the next request.
-                // The previous Sherlock-rejection path violated this: it pushed a
-                // user-role recovery directive and `continue`d without ever emitting
-                // the role:'tool' answers for the calls in tcToExecute. Result: the
-                // next callOpenRouterBlocking request crashed with HTTP 400
-                // "An assistant message with 'tool_calls' must be followed by tool
-                // messages responding to each 'tool_call_id'". The fix mirrors the
-                // v8.23.1 Safe Compaction discipline: never break the assistant→tool
-                // pairing — emit a stub answer for every blocked call so the schema
-                // closes cleanly. Push BEFORE the user message so the turn ordering
-                // is exactly: assistant(tool_calls) → tool×N (blocked stubs) → user
-                // (recovery directive) → next assistant.
-                for (const tc of tcToExecute) {
-                    messages.push({
-                        role: 'tool',
-                        tool_call_id: tc.id,
-                        name: tc.function.name,
-                        content: '[AUDIT BLOCKED] The Sherlock Auditor rejected this tool call. See the critical audit failure message below.',
-                    });
-                }
-                // ─────────────────────────────────────────────────────────────────────
-                messages.push({ role: 'user', content: `CRITICAL AUDIT FAILURE: ${revisorResult.content}\n\nRECUPERACIÓN OBLIGATORIA: (1) Relee el error arriba con cuidado. (2) Ejecuta read_file en el archivo afectado para ver su estado actual antes de cualquier nuevo replace_lines. (3) Solo corrige el problema específico señalado; no toques nada más.${readFileDirective}` });
-                continue;
+                else {
+                    // ─────────────────────────────────────────────────────────────────────
+                    const errorMsg = revisorResult.content.split('ERROR:')[1]?.trim() || 'Rogue behavior detected.';
+                    yield { type: 'error', message: `🛡️ Sherlock Auditor: ${errorMsg}` };
+                    const syntaxTargets = tcToExecute
+                        .filter(tc => tc.function.name === 'replace_lines' || tc.function.name === 'write_file')
+                        .map(tc => { try {
+                        return JSON.parse(tc.function.arguments).path || '';
+                    }
+                    catch {
+                        return '';
+                    } })
+                        .filter(Boolean);
+                    const readFileDirective = syntaxTargets.length > 0
+                        ? `\n\nSYNTAX_RECOVERY_DIRECTIVE: ANTES de enviar cualquier replace_lines, ejecuta read_file en ${syntaxTargets.map((p) => `"${p}"`).join(', ')}. Ver el estado actual del archivo es OBLIGATORIO — está prohibido adivinar líneas sin leer primero.`
+                        : '';
+                    // ── v8.26.1 — Sherlock 400 Hotfix (Schema Closure) ──────────────────────
+                    // The OpenAI / OpenRouter Chat Completions schema requires that EVERY
+                    // tool_call emitted by an assistant message be answered by a tool
+                    // message carrying the matching tool_call_id BEFORE the next request.
+                    // The previous Sherlock-rejection path violated this: it pushed a
+                    // user-role recovery directive and `continue`d without ever emitting
+                    // the role:'tool' answers for the calls in tcToExecute. Result: the
+                    // next callOpenRouterBlocking request crashed with HTTP 400
+                    // "An assistant message with 'tool_calls' must be followed by tool
+                    // messages responding to each 'tool_call_id'". The fix mirrors the
+                    // v8.23.1 Safe Compaction discipline: never break the assistant→tool
+                    // pairing — emit a stub answer for every blocked call so the schema
+                    // closes cleanly. Push BEFORE the user message so the turn ordering
+                    // is exactly: assistant(tool_calls) → tool×N (blocked stubs) → user
+                    // (recovery directive) → next assistant.
+                    for (const tc of tcToExecute) {
+                        messages.push({
+                            role: 'tool',
+                            tool_call_id: tc.id,
+                            name: tc.function.name,
+                            content: '[AUDIT BLOCKED] The Sherlock Auditor rejected this tool call. See the critical audit failure message below.',
+                        });
+                    }
+                    // ─────────────────────────────────────────────────────────────────────
+                    messages.push({ role: 'user', content: `CRITICAL AUDIT FAILURE: ${revisorResult.content}\n\nRECUPERACIÓN OBLIGATORIA: (1) Relee el error arriba con cuidado. (2) Ejecuta read_file en el archivo afectado para ver su estado actual antes de cualquier nuevo replace_lines. (3) Solo corrige el problema específico señalado; no toques nada más.${readFileDirective}` });
+                    continue;
+                } // close v8.35.0 Override Patch else
             }
         }
         buildFailureCtx = ''; // reset — will be set again if build fails this iteration
@@ -1251,16 +1437,79 @@ listMcpResourcesCallback) {
                     result = { success: false, output: pathNormError };
                 }
                 else if (toolName === 'ask_user_approval') {
-                    // ── ask_user_approval Hard Intercept (v8.16.20) ─────────────────────
+                    // ── ask_user_approval Hard Intercept (v8.16.20 + v8.33.0) ───────────
                     // ALWAYS intercept before executeTool. There is no native handler for
                     // ask_user_approval — letting it fall through would crash the loop
-                    // with [SYSTEM ENGINE ERROR] and trigger an infinite retry. If the
-                    // approvalCallback is wired (real UI flow), pause the agent and hand
-                    // control to the human. If not (headless / test mode), fail loudly
-                    // with explicit guidance so the agent does NOT loop on the same call.
+                    // with [SYSTEM ENGINE ERROR] and trigger an infinite retry.
+                    //
+                    // v8.33.0 — Discovery Mode (planner-only): when discoveryAnswerCallback
+                    // is wired AND the active agent is @planner, prefer the text-answer
+                    // flow: the host shows showInputBox, the user TYPES their answers, and
+                    // those answers become the tool result.output. The planner sees the
+                    // verbatim answers and writes the plan informed by them in the same
+                    // sub-loop iteration. For all other agents (manager/coder/designer)
+                    // the existing binary approvalCallback flow is preserved — Y/N modal
+                    // remains the right UX for "should I delete this file?" type calls.
                     const _intent = String(args.intent_summary ?? '');
                     const _reason = String(args.reason_and_files ?? '');
-                    if (approvalCallback) {
+                    // ── v8.34.1: Lie Detector for ask_user_approval ──────────────────────
+                    // The Anti-Gaslighting Circuit Breaker (v8.34.0) blocked agents from
+                    // emitting a fake "ORCHESTRATOR'S REPORT" — Frontier LLMs responded
+                    // by weaponizing ask_user_approval instead, sending an intent_summary
+                    // claiming the build was "fixed" or "implemented" without having
+                    // edited a single file. This intercept catches that exact lie.
+                    //
+                    // Trigger conditions (ALL must hold):
+                    //   1. agent is NOT @planner (the planner asks legitimate Discovery
+                    //      questions and never edits production code)
+                    //   2. intent_summary contains a past-tense success claim
+                    //      (fixed/implemented/cleaned/clean/resolved/completed/done)
+                    //   3. recentlyEditedFiles is empty for this turn (no edits since
+                    //      the last green build cleared the set)
+                    //   4. successfulToolCallHistory contains zero successful edit
+                    //      operations for the entire session (catches the brand-new
+                    //      session lie; condition 3 alone false-positives after a
+                    //      successful build because the set is cleared on green)
+                    const _CLAIM_REGEX = /\b(fixed|implemented|clean(ed)?|resolved|complete[d]?|done)\b/i;
+                    const _EDIT_TOOL_NAMES = ['write_file', 'search_and_replace', 'replace_lines', 'replace_block', 'replace_symbol', 'insert_lines'];
+                    const _hasAnySuccessfulEdit = successfulToolCallHistory.some(entry => _EDIT_TOOL_NAMES.some(name => entry.startsWith(name + ':')));
+                    if (agentId !== 'planner' &&
+                        recentlyEditedFiles.size === 0 &&
+                        !_hasAnySuccessfulEdit &&
+                        _CLAIM_REGEX.test(_intent)) {
+                        debugLog(workspacePath, `[Lie Detector v8.34.1] ${agentId} claimed completion in intent_summary but never made a successful edit — blocking`);
+                        yield { type: 'thinking', text: '🛑 Lie Detector: claim de éxito sin ediciones — bloqueando…' };
+                        result = {
+                            success: false,
+                            output: '[SYSTEM ENGINE BLOCK — Lie Detector v8.34.1] You cannot claim the build is ' +
+                                'fixed or code is implemented. You haven\'t successfully modified any files yet ' +
+                                '(recentlyEditedFiles is empty AND no edit tool has succeeded this session). ' +
+                                'Fix the code first using your edit tools (search_and_replace, replace_block, ' +
+                                'replace_lines, write_file, etc.). Once the edits land and the build verifies, ' +
+                                'then you may use ask_user_approval to summarize the work.',
+                        };
+                    }
+                    else if (discoveryAnswerCallback && agentId === 'planner') {
+                        const _question = `${_intent}\n\n${_reason}`.trim();
+                        yield { type: 'thinking', text: '🔎 Discovery: awaiting your clarifications…' };
+                        const _answer = await discoveryAnswerCallback(_question);
+                        if (_answer === null || _answer === undefined || _answer.trim() === '') {
+                            result = {
+                                success: false,
+                                output: 'USER CANCELED Discovery. Proceed with the safest default plan ' +
+                                    'and document any assumptions you must make in the plan markdown.',
+                            };
+                        }
+                        else {
+                            result = {
+                                success: true,
+                                output: `User answered: ${_answer.trim()}\n\n` +
+                                    `Now incorporate these answers and ship the implementation plan via ` +
+                                    `write_file('.fluxo/IMPLEMENTATION_PLAN.md', ...). Do NOT ask further questions.`,
+                            };
+                        }
+                    }
+                    else if (approvalCallback) {
                         yield { type: 'thinking', text: '🛡️ Bodyguard aguardando tu aprobación…' };
                         const approved = await approvalCallback(_intent, _reason);
                         result = {
@@ -1357,25 +1606,79 @@ listMcpResourcesCallback) {
                 else if (toolName === 'fetch_documentation') {
                     yield { type: 'thinking', text: '🌐 Fetching external documentation…' };
                     result = await fetchDocumentation(String(args.url ?? ''));
-                    // ── Worktree Human Review (v8.3.0) ───────────────────────────────────────
+                    // ── Worktree Human Review (v8.3.0 + v8.35.1 Pre-Merge Quality Gate) ─────
                     // Intercept exit_worktree merge calls before execution so the user can
                     // inspect the diff in VS Code's native diff editor and approve/discard.
+                    //
+                    // v8.35.1 — Pre-Merge Quality Gate: validate the WORKTREE's build BEFORE
+                    // showing the human review modal. Closes the lazy-merge path observed in
+                    // Test 8 where @coder hit a TS2591 build error inside the worktree, then
+                    // skipped Build Repair Protocol and called exit_worktree(merge) anyway,
+                    // pushing broken code through the user's approval click. The post-merge
+                    // Quality Gate then blocked task completion on main, trapping the agent
+                    // in a 25-iteration death spiral on hallucinated edits.
+                    //
+                    // Three invariants honored:
+                    //   (a) Validates the WORKTREE path (matches v8.30.1 worktree-aware Quality
+                    //       Gate — never compile main when the changes live in the worktree).
+                    //   (b) Missing-script exemption (mirror of Quality Gate behavior at
+                    //       line ~1007): projects without npm run build are not gated.
+                    //   (c) Honors session bypassQualityGate flag — if the user already
+                    //       chose to bypass the post-completion Quality Gate this session,
+                    //       they can also merge broken code (consistent escape-hatch behavior).
                 }
                 else if (toolName === 'exit_worktree' && args.action === 'merge' && worktreeReviewCallback) {
                     const wStateFile = path.join(workspacePath, '.fluxo', 'active_worktree.json');
-                    let reviewedAction = 'merge';
+                    let wState = null;
                     if (fs.existsSync(wStateFile)) {
                         try {
-                            const wState = JSON.parse(fs.readFileSync(wStateFile, 'utf-8'));
-                            yield { type: 'thinking', text: '🔍 Requesting human review before worktree merge…' };
-                            reviewedAction = await worktreeReviewCallback(wState.branchName, wState.worktreePath);
-                            debugLog(workspacePath, `[Worktree Review] User decision: ${reviewedAction}`);
+                            wState = JSON.parse(fs.readFileSync(wStateFile, 'utf-8'));
                         }
-                        catch {
-                            // State unreadable — fall through to direct merge
+                        catch { /* state unreadable — fall through to direct merge */ }
+                    }
+                    // v8.35.1 — Pre-Merge Quality Gate: build a discriminated block-result
+                    // FIRST, then assign result in a single if/else so TypeScript can prove
+                    // result is always definitely-assigned downstream.
+                    let preMergeBlock = null;
+                    if (wState && !bypassQualityGate) {
+                        yield { type: 'thinking', text: '🏗️ Pre-Merge Quality Gate: validating worktree build…' };
+                        const preMergeResult = await (0, buildValidator_1.validateBuild)(wState.worktreePath);
+                        if (!preMergeResult.success && !preMergeResult.error?.toLowerCase().includes('missing script')) {
+                            debugLog(workspacePath, `[Pre-Merge Quality Gate v8.35.1] MERGE BLOCKED — worktree build failed: ${preMergeResult.error?.slice(0, 200)}`);
+                            yield { type: 'thinking', text: '🛑 Pre-Merge Quality Gate: worktree build broken — blocking merge' };
+                            preMergeBlock = {
+                                success: false,
+                                output: `[SYSTEM ENGINE BLOCK — Pre-Merge Quality Gate v8.35.1] MERGE REJECTED.\n` +
+                                    `El código en este worktree no compila. NO puedes fusionar código roto a la rama principal — ` +
+                                    `el merge habría introducido errores de compilación en main y atrapado al loop en una death spiral.\n\n` +
+                                    `ERRORES DEL COMPILADOR:\n${preMergeResult.error}\n\n` +
+                                    `DIRECTIVA OBLIGATORIA: Usa tus tools de edición (replace_symbol, search_and_replace, replace_block, ` +
+                                    `replace_lines) para corregir cada error arriba. Luego ejecuta run_command con 'npm run build' ` +
+                                    `dentro del worktree hasta que pase verde. Solo entonces reintenta exit_worktree(merge). ` +
+                                    `Si el build genuinamente no se puede arreglar, llama exit_worktree(discard) para abandonar los cambios.`,
+                            };
+                        }
+                        else {
+                            debugLog(workspacePath, '[Pre-Merge Quality Gate v8.35.1] Worktree build OK — proceeding to human review');
                         }
                     }
-                    result = (0, tools_1.executeTool)('exit_worktree', { ...args, action: reviewedAction }, workspacePath);
+                    if (preMergeBlock) {
+                        result = preMergeBlock;
+                    }
+                    else {
+                        let reviewedAction = 'merge';
+                        if (wState) {
+                            try {
+                                yield { type: 'thinking', text: '🔍 Requesting human review before worktree merge…' };
+                                reviewedAction = await worktreeReviewCallback(wState.branchName, wState.worktreePath);
+                                debugLog(workspacePath, `[Worktree Review] User decision: ${reviewedAction}`);
+                            }
+                            catch {
+                                // Callback failed — fall through to direct merge
+                            }
+                        }
+                        result = (0, tools_1.executeTool)('exit_worktree', { ...args, action: reviewedAction }, workspacePath);
+                    }
                     // ─────────────────────────────────────────────────────────────────────────
                     // ── Worktree Auto-Cleanup (v8.11.0) ──────────────────────────────────────
                     // If a worktree is already active when enter_worktree is called, silently
@@ -1483,17 +1786,35 @@ listMcpResourcesCallback) {
                     }
                     catch { /* silenciar errores */ }
                     // ─────────────────────────────────────────────────────────────────────────
-                    // ── v8.16.5: Mandatory Output Enforcement Loop ──────────────────────────
-                    // The planner has historically suffered from "premature termination" — yielding
-                    // conversational text instead of calling write_file. We now wrap the sub-loop
-                    // in a retry harness that physically verifies the file exists after each pass.
-                    // If missing, we re-invoke the planner with an escalating SYSTEM directive.
+                    // ── v8.16.5 + v8.33.0: Mandatory Output Enforcement + Discovery Mode ────
+                    // The planner historically suffered from "premature termination" — yielding
+                    // conversational text instead of calling write_file. The retry harness
+                    // physically verifies the file exists after each pass; if missing, the
+                    // planner is re-invoked with an escalating SYSTEM directive.
+                    //
+                    // v8.33.0 Discovery Mode adds two extensions:
+                    //   1) The planner now has approvalCallback + discoveryAnswerCallback
+                    //      wired so it CAN pause to collect text answers from the user
+                    //      via ask_user_approval (rerouted to showInputBox in the host).
+                    //   2) When the planner asks a clarifying question and the plan file
+                    //      isn't written yet, the iteration is REFUNDED (plannerAttempt--)
+                    //      and a separate discoveryRounds counter (capped at 2) tracks
+                    //      Discovery turns. This prevents Discovery from burning the
+                    //      retry budget meant for stubborn-LLM failures.
+                    //   3) lastIterationWasDiscovery gates the harsh "[SYSTEM RETRY] You
+                    //      forgot to use write_file" override — that message is unjust
+                    //      after a valid Discovery turn and would derail the planner's
+                    //      next iteration. After Discovery we inject a positive directive
+                    //      asking the planner to ship the plan informed by user answers.
                     const MAX_PLANNER_ATTEMPTS = 3;
+                    const MAX_DISCOVERY_ROUNDS = 2;
                     let plannerAttempt = 0;
+                    let discoveryRounds = 0;
+                    let lastIterationWasDiscovery = false;
                     let plannerMission = `MISSION — ANALYSIS ONLY:\nAnalyze the codebase and produce .fluxo/IMPLEMENTATION_PLAN.md for this task:\n\n${taskDescription}`;
                     while (plannerAttempt < MAX_PLANNER_ATTEMPTS && !fs.existsSync(planFile)) {
                         plannerAttempt++;
-                        if (plannerAttempt > 1) {
+                        if (plannerAttempt > 1 && !lastIterationWasDiscovery) {
                             yield {
                                 type: 'thinking',
                                 text: `📋 Planner: file not produced — retry ${plannerAttempt}/${MAX_PLANNER_ATTEMPTS}…`,
@@ -1506,22 +1827,48 @@ listMcpResourcesCallback) {
                                     `and content='<your full markdown plan>'. Even a rough plan is acceptable — write it now.\n\n` +
                                     `ORIGINAL TASK:\n${taskDescription}`;
                         }
+                        lastIterationWasDiscovery = false;
                         const plannerEventBuffer = [];
-                        const plannerGen = runAgentLoop(plannerMission, 'planner', [], { ...effectiveConfig, model: config.model }, workspacePath, abortSignal, false, undefined, // no approval callback — planner never asks for approval
+                        const plannerGen = runAgentLoop(plannerMission, 'planner', [], { ...effectiveConfig, model: config.model }, workspacePath, abortSignal, false, approvalCallback, // v8.33.0 — wired so the planner can ask via Discovery Mode
                         undefined, // no native edit
                         getCodeStructureCallback, mcpTools, callMcpToolCallback, undefined, // no worktree review
                         undefined, // no replace symbol
                         undefined, // no HITL — planner is read-only
                         mcpToolCategories, // v8.19.0 — RBAC filter will deny unknown-category tools to planner
                         undefined, // v8.23.0 — no LSP passive feedback for the planner (read-only, never edits)
-                        listMcpResourcesCallback // v8.26.0 — Phase 3.4 resource discovery (planner DOES use this)
+                        listMcpResourcesCallback, // v8.26.0 — Phase 3.4 resource discovery (planner DOES use this)
+                        discoveryAnswerCallback // v8.33.0 — text-answer channel for Discovery Mode
                         );
                         for await (const event of plannerGen) {
                             plannerEventBuffer.push(event);
                         }
-                        const headerLabel = plannerAttempt === 1
+                        // v8.33.0 — Discovery refund: a successful clarifying question that
+                        // didn't yet produce the plan is a valid turn, not a stubborn-LLM
+                        // failure. Refund the attempt and prime the next iteration with a
+                        // positive directive. Capped to MAX_DISCOVERY_ROUNDS so the planner
+                        // cannot loop forever asking instead of writing.
+                        const askedClarification = plannerEventBuffer.some(e => e.type === 'toolCall' && e.name === 'ask_user_approval');
+                        if (askedClarification && !fs.existsSync(planFile) && discoveryRounds < MAX_DISCOVERY_ROUNDS) {
+                            plannerAttempt--;
+                            discoveryRounds++;
+                            lastIterationWasDiscovery = true;
+                            plannerMission =
+                                `[DISCOVERY MODE — v8.33.0 round ${discoveryRounds}/${MAX_DISCOVERY_ROUNDS}] ` +
+                                    `You collected clarifications from the user via ask_user_approval. ` +
+                                    `Their verbatim answers are now in your tool result history above. ` +
+                                    `WRITE the implementation plan to .fluxo/IMPLEMENTATION_PLAN.md using write_file ` +
+                                    `now — incorporate their answers verbatim. Do NOT ask more questions.\n\n` +
+                                    `ORIGINAL TASK:\n${taskDescription}`;
+                            yield {
+                                type: 'thinking',
+                                text: `🔎 Discovery round ${discoveryRounds}/${MAX_DISCOVERY_ROUNDS} captured — attempt refunded`,
+                            };
+                        }
+                        const headerLabel = plannerAttempt === 1 && !lastIterationWasDiscovery
                             ? '━━━ @planner — codebase analysis ━━━'
-                            : `━━━ @planner — retry ${plannerAttempt}/${MAX_PLANNER_ATTEMPTS} ━━━`;
+                            : lastIterationWasDiscovery
+                                ? `━━━ @planner — Discovery round ${discoveryRounds}/${MAX_DISCOVERY_ROUNDS} ━━━`
+                                : `━━━ @planner — retry ${plannerAttempt}/${MAX_PLANNER_ATTEMPTS} ━━━`;
                         yield { type: 'thinking', text: headerLabel };
                         for (const event of plannerEventBuffer) {
                             yield event;

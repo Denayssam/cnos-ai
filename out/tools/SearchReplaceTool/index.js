@@ -81,6 +81,7 @@ RULES:
                 path: { type: 'string', description: 'File path relative to workspace root.' },
                 search_snippet: { type: 'string', description: 'The EXACT code currently in the file that you want to replace. Include 2–3 surrounding lines of context to guarantee uniqueness.' },
                 replace_snippet: { type: 'string', description: 'The NEW code that will replace search_snippet. Use empty string "" to delete the block.' },
+                healing_mode: { type: 'boolean', description: 'Set to true ONLY when the user explicitly authorized you to bypass the Sherlock Auditor (e.g. "fix the duplicate anyway", "I know about it, force the change"). Combined with the engine\'s user-override marker check, this lets the edit through even if Sherlock would otherwise flag REDUNDANT_DECLARATION. Quote the user\'s override phrase in your reasoning so the engine can verify.' },
             },
             required: ['path', 'search_snippet', 'replace_snippet'],
         },
@@ -89,6 +90,45 @@ RULES:
 // ─── Fuzzy Matching (mirrors ReplaceBlockTool logic) ─────────────────────────
 function normalizeLine(line) {
     return line.trim().replace(/\s+/g, ' ');
+}
+// v8.34.0 — When MATCH ERROR fires, locate the file region whose first lines
+// best match the LLM's hallucinated snippet (longest contiguous run of
+// normalized-equal lines). Returns the 0-based start line of that region or
+// null when no line of the snippet matches anything in the file. Used purely
+// for guidance — never to mutate the file.
+function findBestFuzzyCandidate(fileContent, snippet) {
+    const fileLines = fileContent.replace(/\r\n/g, '\n').split('\n');
+    const snipLines = snippet
+        .replace(/\r\n/g, '\n')
+        .split('\n')
+        .map(normalizeLine)
+        .filter(l => l !== '');
+    if (snipLines.length === 0 || fileLines.length === 0) {
+        return null;
+    }
+    let bestStart = -1;
+    let bestRun = 0;
+    for (let i = 0; i < fileLines.length; i++) {
+        let run = 0;
+        for (let j = 0; j < snipLines.length && i + j < fileLines.length; j++) {
+            if (normalizeLine(fileLines[i + j]) === snipLines[j]) {
+                run++;
+            }
+            else {
+                break;
+            }
+        }
+        if (run > bestRun) {
+            bestRun = run;
+            bestStart = i;
+        }
+    }
+    return bestRun >= 1 ? bestStart : null;
+}
+function formatNumberedLines(lines, startIndex) {
+    return lines
+        .map((l, i) => `${(startIndex + i + 1).toString().padStart(4)}: ${l}`)
+        .join('\n');
 }
 function findMatch(fileContent, snippet) {
     const content = fileContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -149,28 +189,77 @@ function buildDiffBlock(search, replace) {
 }
 // ─── Disk-based fallback executor (used when VS Code native edit is unavailable) ─
 function execute(args, workspacePath) {
-    const fp = (0, shared_1.safePath)(workspacePath, args.path);
+    // ── v8.31.0/v8.32.0: Tool Aliasing — tolerate LLM arg-name slips under stress ─
+    // Tier-1 models (Gemini/Claude) frequently emit `file_path` instead of `path`,
+    // `old_code`/`new_code` instead of the canonical `*_snippet`, and Gemini 2.5
+    // Pro additionally hallucinates `search_pattern`/`replace_pattern` based on
+    // Python regex APIs. We normalize at the boundary so the rest of the function
+    // operates on a single shape.
+    const targetPath = args.path ?? args.file_path ?? args.filepath;
+    const searchTarget = args.search_snippet ?? args.search ?? args.old_code ?? args.search_pattern;
+    const replaceTarget = args.replace_snippet ?? args.replace ?? args.new_code ?? args.replace_pattern ?? '';
+    // ─────────────────────────────────────────────────────────────────────────────
+    if (typeof targetPath !== 'string' || targetPath === '') {
+        return { success: false, output: 'CRITICAL ERROR: "path" is required (alias accepted: file_path, filepath).' };
+    }
+    if (typeof searchTarget !== 'string' || searchTarget === '') {
+        return { success: false, output: 'CRITICAL ERROR: search_snippet must be a non-empty string (aliases accepted: search, old_code, search_pattern).' };
+    }
+    if (typeof replaceTarget !== 'string') {
+        return { success: false, output: 'CRITICAL ERROR: replace_snippet must be a string (aliases accepted: replace, new_code, replace_pattern). Use "" to delete.' };
+    }
+    const fp = (0, shared_1.safePath)(workspacePath, targetPath);
     if (!fs.existsSync(fp)) {
-        return { success: false, output: `File not found: ${args.path}. Use list_dir to verify the path.` };
-    }
-    if (typeof args.search_snippet !== 'string' || args.search_snippet === '') {
-        return { success: false, output: 'CRITICAL ERROR: search_snippet must be a non-empty string.' };
-    }
-    if (typeof args.replace_snippet !== 'string') {
-        return { success: false, output: 'CRITICAL ERROR: replace_snippet must be a string. Use "" to delete.' };
+        return { success: false, output: `File not found: ${targetPath}. Use list_dir to verify the path.` };
     }
     const original = fs.readFileSync(fp, 'utf-8');
-    const match = findMatch(original, args.search_snippet);
+    const match = findMatch(original, searchTarget);
     if (match.kind === 'none') {
+        // ── v8.34.0: Auto-Read on MATCH ERROR (Panic Recovery rampa #1) ───────────
+        // Instead of telling the agent "call read_file and try again" (which burns
+        // an iteration and frequently fails again because the LLM re-hallucinates
+        // from training memory), the engine itself injects the relevant file
+        // content into the error output. Sized to fit a 200-line head + a ±10
+        // line window around the best fuzzy candidate, so even large files keep
+        // the payload compact while giving the LLM verbatim text to copy from.
+        const HEAD_LINES = 200;
+        const FUZZY_RADIUS = 10;
+        const fileLines = original.replace(/\r\n/g, '\n').split('\n');
+        const snipLineCount = searchTarget.replace(/\r\n/g, '\n').split('\n').length;
+        let context;
+        if (fileLines.length <= HEAD_LINES + 50) {
+            context = formatNumberedLines(fileLines, 0);
+        }
+        else {
+            const headChunk = formatNumberedLines(fileLines.slice(0, HEAD_LINES), 0);
+            const fuzzyStart = findBestFuzzyCandidate(original, searchTarget);
+            let fuzzyChunk = '';
+            if (fuzzyStart !== null && fuzzyStart >= HEAD_LINES) {
+                const start = Math.max(0, fuzzyStart - FUZZY_RADIUS);
+                const end = Math.min(fileLines.length, fuzzyStart + snipLineCount + FUZZY_RADIUS);
+                fuzzyChunk =
+                    `\n\n--- Best fuzzy candidate near line ${fuzzyStart + 1} ` +
+                        `(rejected — too dissimilar from your snippet) ---\n` +
+                        formatNumberedLines(fileLines.slice(start, end), start);
+            }
+            context = headChunk + fuzzyChunk;
+        }
         return {
             success: false,
-            output: `ERROR: El bloque exacto no se encontró (posible problema de indentación o archivo corrupto). Tienes PROHIBIDO volver a intentar search_and_replace en esta zona con un snippet adivinado. DEBES llamar read_file primero para copiar el texto VERBATIM, o usar insert_lines si vas a inyectar un bloque nuevo masivo.`,
+            output: `MATCH ERROR — search_snippet not found in ${targetPath}.\n\n` +
+                `[v8.34.0 Auto-Read] Current file content (use this to copy the verbatim snippet — ` +
+                `your memory of this file is stale):\n\n` +
+                context +
+                `\n\nRe-call search_and_replace with a snippet copied character-for-character from ` +
+                `the lines above. Do NOT guess. If you need to inject a wholly new block of code ` +
+                `that does not yet exist in this file, use insert_lines instead.`,
         };
+        // ─────────────────────────────────────────────────────────────────────────
     }
     if (match.kind === 'ambiguous') {
         return {
             success: false,
-            output: `AMBIGUOUS MATCH: search_snippet appears ${match.count} times in ${args.path}.\n` +
+            output: `AMBIGUOUS MATCH: search_snippet appears ${match.count} times in ${targetPath}.\n` +
                 `Expand the snippet — add more surrounding lines to make the block unique.`,
         };
     }
@@ -179,8 +268,8 @@ function execute(args, workspacePath) {
     let removedLines;
     let startLine;
     if (match.kind === 'strict') {
-        const snip = args.search_snippet.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-        updated = original.replace(/\r\n/g, '\n').replace(snip, args.replace_snippet.replace(/\n$/, ''));
+        const snip = searchTarget.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        updated = original.replace(/\r\n/g, '\n').replace(snip, replaceTarget.replace(/\n$/, ''));
         const before = original.replace(/\r\n/g, '\n').indexOf(snip);
         startLine = original.slice(0, before).split('\n').length;
         removedLines = snip.split('\n').length;
@@ -188,7 +277,7 @@ function execute(args, workspacePath) {
     }
     else {
         const fileLines = original.replace(/\r\n/g, '\n').split('\n');
-        const newLines = args.replace_snippet === '' ? [] : args.replace_snippet.replace(/\n$/, '').split('\n');
+        const newLines = replaceTarget === '' ? [] : replaceTarget.replace(/\n$/, '').split('\n');
         updated = [...fileLines.slice(0, match.start), ...newLines, ...fileLines.slice(match.end + 1)].join('\n');
         startLine = match.start + 1;
         removedLines = match.end - match.start + 1;
@@ -198,7 +287,6 @@ function execute(args, workspacePath) {
     if (updated.trim() === '' && original.trim() !== '') {
         return { success: false, output: 'SAFETY ABORT: replacement would produce an empty file.' };
     }
-    // Auto-backup
     try {
         const backupDir = path.join(workspacePath, '.fluxo', 'backups');
         fs.mkdirSync(backupDir, { recursive: true });
@@ -208,10 +296,10 @@ function execute(args, workspacePath) {
     catch { /* non-fatal */ }
     fs.writeFileSync(fp, updated, 'utf-8');
     const matchNote = match.kind === 'fuzzy' ? ` [fuzzy match, line ${startLine}]` : ` [exact match, line ${startLine}]`;
-    const diffBlock = buildDiffBlock(args.search_snippet, args.replace_snippet);
+    const diffBlock = buildDiffBlock(searchTarget, replaceTarget);
     return {
         success: true,
-        output: `${diffBlock}\n\n**${args.path}** — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nCambio aplicado en el editor. Revisa el Diff arriba y presiona Ctrl+S en el archivo para guardar.\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
+        output: `${diffBlock}\n\n**${targetPath}** — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nCambio aplicado en el editor. Revisa el Diff arriba y presiona Ctrl+S en el archivo para guardar.\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
     };
 }
 //# sourceMappingURL=index.js.map

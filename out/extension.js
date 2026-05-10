@@ -135,12 +135,53 @@ function logError(message, details) {
     }
 }
 // ─── Session Cleanup ──────────────────────────────────────────────────────────
+// ── v8.32.0: Auto-Gitignore for *.log ────────────────────────────────────────
+// Worktree merges (exit_worktree) repeatedly conflicted because Fluxo's debug
+// logs were tracked. We append `*.log` to the workspace .gitignore (creating
+// the file if missing, idempotent if the line already exists) and then run
+// `git rm --cached *.log -q` to evict any logs already in the index. Both
+// steps wrapped in try/catch — non-fatal if the workspace isn't a git repo,
+// has no logs, or the user has a custom ignore strategy.
+function ensureGitignoreLogs(wsPath) {
+    try {
+        const gitignorePath = path.join(wsPath, '.gitignore');
+        let needsAppend = true;
+        if (fs.existsSync(gitignorePath)) {
+            const contents = fs.readFileSync(gitignorePath, 'utf-8');
+            const hasLogPattern = contents
+                .split(/\r?\n/)
+                .some(line => line.trim() === '*.log');
+            if (hasLogPattern) {
+                needsAppend = false;
+            }
+        }
+        if (needsAppend) {
+            const prefix = fs.existsSync(gitignorePath) ? '\n' : '';
+            fs.appendFileSync(gitignorePath, `${prefix}*.log\n`, 'utf-8');
+            console.log('[Fluxo Sanitizer] Appended *.log to .gitignore');
+        }
+    }
+    catch (err) {
+        console.error('[Fluxo Sanitizer] .gitignore update failed:', err?.message ?? err);
+    }
+    try {
+        cp.execSync('git rm --cached *.log -q', {
+            cwd: wsPath,
+            stdio: 'ignore',
+            windowsHide: true,
+        });
+    }
+    catch { /* expected when no logs are tracked or not a git repo */ }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 function cleanupLogsOnActivation() {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders?.length) {
         return;
     }
     const wsPath = folders[0].uri.fsPath;
+    // v8.32.0 — Sanitize git environment: ensure *.log is gitignored and uncached
+    ensureGitignoreLogs(wsPath);
     // Prune .fluxo/backups/ — keep only the 30 most recent files, delete the rest
     const backupDir = path.join(wsPath, '.fluxo', 'backups');
     try {
@@ -430,6 +471,20 @@ async function _handleSendMessage(userText, model, workerModel, context) {
             const answer = await vscode.window.showInformationMessage(`🛡️ Fluxo Bodyguard — Permiso Requerido\n\nIntención: ${summary}\n\nDetalles: ${details}`, { modal: true }, '✅ Approve', '❌ Reject');
             return answer === '✅ Approve';
         };
+        // v8.33.0 — Discovery Mode (planner-only). The engine reroutes the
+        // planner's ask_user_approval calls to this callback. We surface the
+        // questions in a showInputBox so the user TYPES their answers; the engine
+        // then injects those answers verbatim into the planner's tool result and
+        // the planner ships the plan informed by them in the same sub-loop.
+        const discoveryAnswerCallback = async (questions) => {
+            const answer = await vscode.window.showInputBox({
+                title: '🔎 Fluxo Discovery — el @planner necesita clarificación',
+                prompt: questions,
+                placeHolder: 'Escribe tus respuestas aquí (una línea por pregunta o todo junto — el planner las lee verbatim)',
+                ignoreFocusOut: true,
+            });
+            return answer ?? null;
+        };
         const nativeEditCallback = async (relPath, searchSnippet, replaceSnippet) => applyNativeEdit(relPath, searchSnippet, replaceSnippet, workspacePath);
         const getCodeStructureCallback = async (absolutePath) => {
             try {
@@ -717,7 +772,11 @@ async function _handleSendMessage(userText, model, workerModel, context) {
         // v8.26.0 — Phase 3.4 MCP resource discovery. The McpSwarmClient owns
         // the live stdio transports, so the engine routes list_mcp_resources
         // calls back here to reach them.
-        async (serverName) => await _mcpClient.listResources(serverName))) {
+        async (serverName) => await _mcpClient.listResources(serverName), 
+        // v8.33.0 — Discovery Mode (planner-only). Forwarded by the engine to
+        // the planner sub-loop so the @planner can collect text answers from
+        // the user via showInputBox during clarifying questions.
+        discoveryAnswerCallback)) {
             _postToPanel({ ...event });
             if (event.type === 'streamChunk') {
                 fullAssistantText += event.text;

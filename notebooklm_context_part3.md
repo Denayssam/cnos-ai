@@ -1,1074 +1,2256 @@
-[SYSTEM_MANIFEST]
-APP_NAME: fluxo-ai
-APP_VERSION: 8.33.0
-PART: 2
-GENERATED_AT: 2026-05-06T00:32:33.509Z
-[/SYSTEM_MANIFEST]
+# 📦 APP MANIFEST
+* **App Name:** fluxo-ai
+* **Version:** 8.33.0
+* **Stack:** Vanilla JS
+* **Part:** 3
+* **Generated At:** 2026-05-06T00:32:33.626Z
 
-[CODEBASE_START]
+---
 
-================================================================================
-FILE PATH: FluxoAI_context_part2.md
-================================================================================
+### 📁 FILE: `FluxoAI_context_part3.md`
+```text
 # 📦 APP MANIFEST
 * **App Name:** fluxo-ai
 * **Version:** 8.24.0
 * **Stack:** Vanilla JS
-* **Part:** 2
-* **Generated At:** 2026-05-03T16:33:58.832Z
+* **Part:** 3
+* **Generated At:** 2026-05-03T16:33:58.854Z
 
 ---
 
-### 📁 FILE: `FluxoAIcontext_part1.md`
+### 📁 FILE: `FluxoAIcontext_part2.md`
 ```text
 # 📦 APP MANIFEST
 * **App Name:** fluxo-ai
 * **Version:** 8.16.22
 * **Stack:** Vanilla JS
-* **Part:** 1
-* **Generated At:** 2026-05-02T02:55:45.303Z
+* **Part:** 2
+* **Generated At:** 2026-05-02T02:55:45.325Z
 
 ---
 
-### 📁 FILE: `.claude\settings.local.json`
-```json
-{
-  "permissions": {
-    "allow": [
-      "Bash(npm run *)",
-      "Bash(npx vsce *)"
-    ]
+### 📁 FILE: `src\tools\GlobTool\index.ts`
+```typescript
+import * as fs from 'fs';
+import * as path from 'path';
+import { NativeTool, ToolResult } from '../shared';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'glob',
+    description: `Find files in the workspace matching a glob pattern. Use this INSTEAD OF 'ls', 'find', or 'dir' in run_command.
+Patterns: ** = any depth, * = any chars (no slash), ? = single char.
+Examples:
+  "src/**/*.tsx"     → all TSX files under src/
+  "**/*.test.ts"     → all test files
+  "components/*.jsx" → JSX files in one folder
+  "**/*.{ts,tsx}"    → TS and TSX files anywhere`,
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Glob pattern relative to workspace root. Use forward slashes.' },
+        cwd:     { type: 'string', description: 'Optional subdirectory to search within (relative to workspace root). Defaults to workspace root.' },
+      },
+      required: ['pattern'],
+    },
+  },
+};
+
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'out', 'build', '.next', '__pycache__', '.fluxo']);
+
+function globToRegex(pattern: string): RegExp {
+  let r = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === '*' && pattern[i + 1] === '*') {
+      r += '.*';
+      i++;
+      if (pattern[i + 1] === '/') { i++; } // consume the slash after **
+    } else if (c === '*') {
+      r += '[^/]*';
+    } else if (c === '?') {
+      r += '[^/]';
+    } else if ('.+^${}()|[]\\'.includes(c)) {
+      r += '\\' + c;
+    } else {
+      r += c;
+    }
+  }
+  return new RegExp(`^${r}$`, 'i'); // case-insensitive for Windows compat
+}
+
+function walkAndMatch(dir: string, root: string, regex: RegExp, results: string[], depth: number): void {
+  if (depth > 12 || results.length >= 300) { return; }
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    if (SKIP_DIRS.has(entry.name)) { continue; }
+    const full = path.join(dir, entry.name);
+    const rel  = path.relative(root, full).replace(/\\/g, '/');
+    if (entry.isDirectory()) {
+      walkAndMatch(full, root, regex, results, depth + 1);
+    } else if (regex.test(rel)) {
+      results.push(rel);
+    }
+  }
+}
+
+export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  const pattern = String(args.pattern || '').trim();
+  if (!pattern) {
+    return { success: false, output: 'CRITICAL ERROR: "pattern" is required. Example: "src/**/*.tsx".' };
+  }
+
+  let searchRoot = workspacePath;
+  if (typeof args.cwd === 'string' && args.cwd.trim()) {
+    searchRoot = path.join(workspacePath, args.cwd.trim());
+    if (!fs.existsSync(searchRoot)) {
+      return { success: false, output: `Directory not found: "${args.cwd}". Use list_dir('.') to verify the workspace structure.` };
+    }
+  }
+
+  let regex: RegExp;
+  try { regex = globToRegex(pattern); }
+  catch { return { success: false, output: `Invalid glob pattern: "${pattern}".` }; }
+
+  const results: string[] = [];
+  walkAndMatch(searchRoot, workspacePath, regex, results, 0);
+
+  if (results.length === 0) {
+    return {
+      success: false,
+      output: `No files matched "${pattern}". Try a broader pattern (e.g. "**/*.tsx") or verify the directory with list_dir('.').`,
+    };
+  }
+
+  const truncated = results.length >= 300;
+  return {
+    success: true,
+    output: `glob("${pattern}"): ${results.length} file(s) found${truncated ? ' — first 300 shown' : ''}:\n\n${(truncated ? results.slice(0, 300) : results).join('\n')}`,
+  };
+}
+
+```
+
+### 📁 FILE: `src\tools\GrepTool\index.ts`
+```typescript
+import * as fs from 'fs';
+import * as path from 'path';
+import { NativeTool, ToolResult } from '../shared';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'grep',
+    description: `Search for a string or regex pattern across project files. Use this INSTEAD OF 'grep', 'findstr', or 'rg' in run_command.
+Returns: file_path:line_number: matching_line for every match.
+WHEN TO USE: Finding where a function is called, locating imports, tracking variable usage across the project.
+RESTRICTION: Do NOT use grep to parse entire HTML/React structures or look for complex multi-line blocks. Use it only for simple string/variable searches. For structural analysis of components, use read_file or get_code_structure instead.
+Examples:
+  pattern: "handleSubmit"         → finds all usages of handleSubmit
+  pattern: "import.*useAuth"      → finds all useAuth import lines
+  pattern: "useState\\("          → finds all useState hooks`,
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: {
+          type: 'string',
+          description: 'Search string or JavaScript regex pattern. Strings are matched literally; regex metacharacters are supported (e.g. "import.*from", "const.*=.*useState").',
+        },
+        path_filter: {
+          type: 'string',
+          description: 'Optional glob pattern to limit which files to search (e.g. "src/**/*.ts", "**/*.jsx"). Omit to search all files.',
+        },
+        case_sensitive: {
+          type: 'boolean',
+          description: 'Whether the match is case-sensitive. Defaults to false.',
+        },
+      },
+      required: ['pattern'],
+    },
+  },
+};
+
+const SKIP_DIRS  = new Set(['node_modules', '.git', 'dist', 'out', 'build', '.next', '__pycache__', '.fluxo']);
+const BINARY_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.eot', '.pdf', '.zip', '.gz', '.tar', '.bak', '.vsix']);
+
+// Inline glob-to-regex so GrepTool has no shared dependency on GlobTool
+function globToRegex(pattern: string): RegExp {
+  let r = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === '*' && pattern[i + 1] === '*') {
+      r += '.*'; i++;
+      if (pattern[i + 1] === '/') { i++; }
+    } else if (c === '*') {
+      r += '[^/]*';
+    } else if (c === '?') {
+      r += '[^/]';
+    } else if ('.+^${}()|[]\\'.includes(c)) {
+      r += '\\' + c;
+    } else {
+      r += c;
+    }
+  }
+  return new RegExp(`^${r}$`, 'i');
+}
+
+interface GrepMatch { file: string; line: number; content: string; }
+
+function searchFile(filePath: string, relPath: string, rx: RegExp, results: GrepMatch[]): void {
+  if (BINARY_EXT.has(path.extname(filePath).toLowerCase())) { return; }
+  let text: string;
+  try { text = fs.readFileSync(filePath, 'utf-8'); } catch { return; }
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length && results.length < 500; i++) {
+    if (rx.test(lines[i])) {
+      results.push({ file: relPath, line: i + 1, content: lines[i].trim().slice(0, 200) });
+    }
+  }
+}
+
+function walkAndGrep(
+  dir: string, root: string,
+  fileFilter: RegExp | null, searchRx: RegExp,
+  results: GrepMatch[], depth: number
+): void {
+  if (depth > 12 || results.length >= 500) { return; }
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    if (SKIP_DIRS.has(entry.name)) { continue; }
+    const full = path.join(dir, entry.name);
+    const rel  = path.relative(root, full).replace(/\\/g, '/');
+    if (entry.isDirectory()) {
+      walkAndGrep(full, root, fileFilter, searchRx, results, depth + 1);
+    } else if (!fileFilter || fileFilter.test(rel)) {
+      searchFile(full, rel, searchRx, results);
+    }
+  }
+}
+
+export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  const patternStr = String(args.pattern || '').trim();
+  if (!patternStr) {
+    return { success: false, output: 'CRITICAL ERROR: "pattern" is required.' };
+  }
+
+  const flags = args.case_sensitive === true ? '' : 'i';
+  let searchRx: RegExp;
+  try {
+    searchRx = new RegExp(patternStr, flags);
+  } catch {
+    // Not valid regex — escape and treat as literal string
+    const escaped = patternStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    searchRx = new RegExp(escaped, flags);
+  }
+
+  let fileFilter: RegExp | null = null;
+  if (typeof args.path_filter === 'string' && args.path_filter.trim()) {
+    try { fileFilter = globToRegex(args.path_filter.trim()); } catch { /* ignore bad filter */ }
+  }
+
+  const results: GrepMatch[] = [];
+  walkAndGrep(workspacePath, workspacePath, fileFilter, searchRx, results, 0);
+
+  if (results.length === 0) {
+    return {
+      success: false,
+      output: `No matches for "${patternStr}"${args.path_filter ? ` in "${args.path_filter}"` : ''}. Try a broader pattern or remove the path_filter.`,
+    };
+  }
+
+  const truncated = results.length >= 500;
+  const lines = (truncated ? results.slice(0, 500) : results)
+    .map(r => `${r.file}:${r.line}: ${r.content}`)
+    .join('\n');
+
+  return {
+    success: true,
+    output: `grep("${patternStr}"): ${results.length} match(es)${truncated ? ' — first 500 shown' : ''}:\n\n${lines}`,
+  };
+}
+
+```
+
+### 📁 FILE: `src\tools\index.ts`
+```typescript
+import * as FileReadTool      from './FileReadTool';
+import * as FileWriteTool     from './FileWriteTool';
+import * as ReplaceLinesTool  from './ReplaceLinesTool';
+import * as ReplaceBlockTool  from './ReplaceBlockTool';
+import * as InsertLinesTool   from './InsertLinesTool';
+import * as CreateDirTool     from './CreateDirTool';
+import * as ListDirTool       from './ListDirTool';
+import * as RunCommandTool    from './RunCommandTool';
+import * as DeleteFileTool    from './DeleteFileTool';
+import * as DeleteDirTool     from './DeleteDirTool';
+import * as ProposePlanTool   from './ProposePlanTool';
+import * as SearchInFilesTool from './SearchInFilesTool';
+import * as SearchImagesTool  from './SearchImagesTool';
+import * as AskApprovalTool    from './AskApprovalTool';
+import * as SearchReplaceTool  from './SearchReplaceTool';
+import * as UpdateMemoryTool      from './UpdateMemoryTool';
+import * as GetCodeStructureTool       from './GetCodeStructureTool';
+import * as FetchDocumentationTool from './FetchDocumentationTool';
+import * as EnterWorktreeTool     from './EnterWorktreeTool';
+import * as ExitWorktreeTool      from './ExitWorktreeTool';
+import * as TeamCreateTool        from './TeamCreateTool';
+import * as SendMessageTool       from './SendMessageTool';
+import * as ReplaceSymbolTool     from './ReplaceSymbolTool';
+import * as GlobTool              from './GlobTool';
+import * as GrepTool              from './GrepTool';
+import * as EnterPlanModeTool     from './EnterPlanModeTool';
+import * as SkillTool             from './SkillTool';
+import * as GetRepoMapTool        from './GetRepoMapTool';
+import * as AbortAndRollbackTool  from './AbortAndRollbackTool';
+import { ToolResult, NativeTool } from './shared';
+
+export { ToolResult, NativeTool };
+
+// ─── Tool Registry ────────────────────────────────────────────────────────────
+
+const ALL_TOOLS = [
+  FileReadTool,
+  FileWriteTool,
+  SearchReplaceTool,
+  ReplaceLinesTool,
+  ReplaceBlockTool,
+  InsertLinesTool,
+  CreateDirTool,
+  ListDirTool,
+  RunCommandTool,
+  DeleteFileTool,
+  DeleteDirTool,
+  ProposePlanTool,
+  SearchInFilesTool,
+  SearchImagesTool,
+  AskApprovalTool,
+  UpdateMemoryTool,
+  GetCodeStructureTool,
+  FetchDocumentationTool,
+  EnterWorktreeTool,
+  ExitWorktreeTool,
+  TeamCreateTool,
+  SendMessageTool,
+  ReplaceSymbolTool,
+  GlobTool,
+  GrepTool,
+  EnterPlanModeTool,
+  SkillTool,
+  GetRepoMapTool,
+  AbortAndRollbackTool,
+];
+
+export const TOOL_DEFINITIONS: NativeTool[] = ALL_TOOLS.map(t => t.TOOL_DEF);
+
+type ToolExecutor = (args: Record<string, any>, workspacePath: string) => ToolResult;
+
+const TOOL_MAP: Record<string, ToolExecutor> = Object.fromEntries(
+  ALL_TOOLS.map(t => [t.TOOL_DEF.function.name, t.execute])
+);
+
+export function executeTool(
+  name: string,
+  args: Record<string, any>,
+  workspacePath: string
+): ToolResult {
+  const fn = TOOL_MAP[name];
+  if (!fn) { return { success: false, output: `[SYSTEM ENGINE ERROR]: Unknown tool: ${name}` }; }
+  try {
+    return fn(args, workspacePath);
+  } catch (err: any) {
+    return { success: false, output: `[SYSTEM ENGINE ERROR]: ${err.message ?? String(err)}` };
+  }
+}
+
+export function getNativeTools(toolNames: string[]): NativeTool[] {
+  return TOOL_DEFINITIONS.filter(t => toolNames.includes(t.function.name));
+}
+
+```
+
+### 📁 FILE: `src\tools\InsertLinesTool\index.ts`
+```typescript
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { NativeTool, ToolResult, safePath } from '../shared';
+import { FileLockManager } from '../../utils/lockfile';
+import { checkSyntax } from '../../utils/syntaxValidator';
+
+// ─── insert_lines (v8.16.8 — The Precision Scalpel) ──────────────────────────
+// Pure insertion tool: drops new content BEFORE a target line without removing
+// or rewriting any existing code. Designed for "drop a fresh component into the
+// file" workflows where replace_block / replace_lines fail because the LLM
+// miscounts brackets in 50+ line JSX payloads.
+//
+// Use `at_line: <N+1>` (where N is the file's last line) to append at EOF, or
+// `at_line: 1` to prepend. The tool still runs through the AST Syntax Shield
+// so it cannot smuggle broken code into the file.
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'insert_lines',
+    description: `Insert new lines into a file at a specific 1-based line number WITHOUT removing or rewriting any existing content. The new content is placed BEFORE the target line — every original line stays intact.
+PRIMARY USE CASE: dropping a fresh component, function, or import block into a file when replace_block / replace_lines would force you to count brackets across a huge JSX payload. Pure insertion never miscounts because nothing is being deleted.
+WORKFLOW: (1) Call read_file to get the current line count. (2) Pick at_line — use 1 to prepend, or (last_line + 1) to append at EOF, or any specific anchor line. (3) Call insert_lines with content.
+The tool runs through the AST Syntax Shield, so the resulting file must still parse — but because nothing is removed, balanced inserts almost always pass on the first try.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path:    { type: 'string', description: 'File path relative to workspace root.' },
+        at_line: { type: 'number', description: '1-based line number BEFORE which the content is inserted. Use 1 to prepend, or (totalLines + 1) to append at EOF. Must come from a preceding read_file call — line numbers shift after every edit.' },
+        content: { type: ['string', 'array'], description: 'The code to insert. May be a string or an Array of strings (one element per line) — the engine joins arrays with \\n. Do NOT add a trailing newline; the engine handles line endings. Empty content is rejected.' },
+        healing_mode: { type: 'boolean', description: 'Set to true ONLY if you are inserting into an already-broken file as part of a syntax repair. Disables the AST Syntax Shield for this call.' },
+        agent_id: { type: 'string', description: 'Unique identifier of the calling agent (e.g. "coder-1"). Used by the File Lock Manager.' },
+      },
+      required: ['path', 'at_line', 'content'],
+    },
+  },
+};
+
+export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  const fp = safePath(workspacePath, args.path);
+  if (!fs.existsSync(fp)) {
+    return { success: false, output: `File not found: ${args.path}. Use list_dir or glob to verify the path.` };
+  }
+
+  const atLine = Number(args.at_line);
+  if (!Number.isInteger(atLine) || atLine < 1) {
+    return { success: false, output: `CRITICAL ERROR: at_line must be a positive integer >= 1 (received: ${args.at_line}). Call read_file first to get the current line count.` };
+  }
+
+  // ── Payload Normalizer (mirrors ReplaceLinesTool) ───────────────────────────
+  if (Array.isArray(args.content)) {
+    args.content = (args.content as unknown[]).join('\n');
+  } else if (args.content === null || args.content === undefined) {
+    args.content = '';
+  } else if (typeof args.content === 'object') {
+    const vals = Object.values(args.content as Record<string, unknown>);
+    args.content = vals.length > 0 ? vals.map(String).join('\n') : JSON.stringify(args.content);
+  }
+
+  if (typeof args.content !== 'string' || args.content === '') {
+    return { success: false, output: 'CRITICAL ERROR: content must be a non-empty string or Array of strings. To delete lines instead of inserting, use replace_lines with new_content="".' };
+  }
+
+  const original   = fs.readFileSync(fp, 'utf-8');
+  const lines      = original.split('\n');
+  const totalLines = lines.length;
+
+  if (atLine > totalLines + 1) {
+    return { success: false, output: `CRITICAL ERROR: at_line (${atLine}) is past EOF + 1 (file has ${totalLines} lines, max valid at_line is ${totalLines + 1}). Call read_file to get the current line count.` };
+  }
+
+  // Backup to temp dir — never touches workspace or git tree
+  try {
+    const backupDir  = path.join(os.tmpdir(), 'fluxo-backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const timestamp  = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupName = `${path.basename(fp)}_${timestamp}.bak`;
+    fs.writeFileSync(path.join(backupDir, backupName), original, 'utf-8');
+  } catch {
+    // Non-fatal
+  }
+
+  const insertLines = (args.content as string).replace(/\n$/, '').split('\n');
+  const resultLines = [
+    ...lines.slice(0, atLine - 1),
+    ...insertLines,
+    ...lines.slice(atLine - 1),
+  ];
+  const updated = resultLines.join('\n');
+
+  // ── AST Syntax Validation — prevents inserting unparseable code ─────────────
+  if (!args.healing_mode) {
+    const _syntaxCheck = checkSyntax(fp, updated);
+    if (!_syntaxCheck.ok) {
+      return {
+        success: false,
+        output:
+          `[SYNTAX ERROR DETECTED] The proposed insertion breaks the file syntax. Insert aborted.\n` +
+          `Error details:\n${_syntaxCheck.errors}\n\n` +
+          `Your inserted block is unbalanced (missing brace, broken JSX tag, unterminated string, etc.). ` +
+          `Review your content and retry. If the file was already broken before your insert, pass healing_mode: true.`,
+      };
+    }
+  }
+
+  const agentId = typeof args.agent_id === 'string' ? args.agent_id : 'agent';
+  if (!FileLockManager.acquireLock(fp, agentId)) {
+    return {
+      success: false,
+      output: `SYSTEM LOCK: El archivo ${args.path} está siendo editado actualmente por otro agente de tu equipo. Espera o trabaja en otro archivo mientras se libera el cerrojo.`,
+    };
+  }
+  try {
+    fs.writeFileSync(fp, updated, 'utf-8');
+  } finally {
+    FileLockManager.releaseLock(fp, agentId);
+  }
+
+  return {
+    success: true,
+    output: `insert_lines: ${args.path} — inserted ${insertLines.length} line${insertLines.length !== 1 ? 's' : ''} before line ${atLine} (file grew from ${totalLines} → ${resultLines.length} lines). No existing lines were modified or removed. If the task is not complete, call the NEXT tool now.`,
+  };
+}
+
+```
+
+### 📁 FILE: `src\tools\ListDirTool\index.ts`
+```typescript
+import * as fs from 'fs';
+import { NativeTool, ToolResult, safePath } from '../shared';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'list_dir',
+    description: 'List files and folders in a directory.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Directory to list. Use "." for workspace root.' },
+      },
+      required: ['path'],
+    },
+  },
+};
+
+export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  const dp = safePath(workspacePath, args.path || '.');
+  if (!fs.existsSync(dp)) {
+    return { success: false, output: `Directory not found: ${args.path}` };
+  }
+  const stat = fs.statSync(dp);
+  if (stat.isFile()) {
+    const parentDir = (args.path as string || '.').split(/[\\/]/).slice(0, -1).join('/') || '.';
+    return {
+      success: false,
+      output: `ERROR: Has intentado listar un archivo ("${args.path}"). ` +
+        `list_dir solo opera sobre carpetas.\n` +
+        `• Para ver el contenido del archivo → usa read_file("${args.path}")\n` +
+        `• Para listar la carpeta que lo contiene → usa list_dir("${parentDir}")`,
+    };
+  }
+  const entries = fs.readdirSync(dp, { withFileTypes: true });
+  const lines = entries.map(e => `${e.isDirectory() ? '[DIR]' : '[FILE]'} ${e.name}`);
+  return { success: true, output: lines.join('\n') || '(empty)' };
+}
+
+```
+
+### 📁 FILE: `src\tools\ProposePlanTool\index.ts`
+```typescript
+import * as fs from 'fs';
+import { NativeTool, ToolResult, safePath } from '../shared';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'propose_plan',
+    description: 'Create an IMPLEMENTATION_PLAN.md for complex tasks. Use this before making major changes to align on approach.',
+    parameters: {
+      type: 'object',
+      properties: {
+        plan: { type: 'string', description: 'Full markdown content of the implementation plan.' },
+      },
+      required: ['plan'],
+    },
+  },
+};
+
+export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  const plan = args.plan as string;
+  if (!plan) { return { success: false, output: 'Plan content is required.' }; }
+  const fp = safePath(workspacePath, 'IMPLEMENTATION_PLAN.md');
+  fs.writeFileSync(fp, plan, 'utf-8');
+  return { success: true, output: 'IMPLEMENTATION_PLAN.md created. Please review it and confirm if I should proceed.' };
+}
+
+```
+
+### 📁 FILE: `src\tools\ReplaceBlockTool\index.ts`
+```typescript
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { NativeTool, ToolResult, safePath } from '../shared';
+import { FileLockManager } from '../../utils/lockfile';
+import { checkSyntax } from '../../utils/syntaxValidator';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'replace_block',
+    description: `Replace a text block in a file using semantic string-based targeting — no line numbers required.
+MANDATORY WORKFLOW: (1) Call read_file to get the current content. (2) Copy the exact block you want to replace as search_snippet — include 2-3 lines of surrounding context to guarantee uniqueness. (3) Call replace_block with your new replace_snippet.
+MATCHING: Tries exact match first; if whitespace/indentation differs, automatically falls back to fuzzy line-by-line matching that ignores leading/trailing spaces.
+FAIL-SAFE: If search_snippet is not found (hallucinated character, wrong indentation), the tool does NOTHING and returns an error — the file is never corrupted. Call read_file again and re-copy the block verbatim.
+STRICT RULES:
+  • search_snippet must be unique in the file — fails if it matches more than once (add more surrounding lines).
+  • Use replace_snippet = "" to delete the block without inserting anything.
+  • Does NOT bypass guards unless healing_mode: true is set.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path:           { type: 'string',  description: 'File path relative to workspace root.' },
+        search_snippet: { type: 'string',  description: 'The exact current code block to find and replace. Copy verbatim from read_file output. Include 2-3 lines of context above and below the change to ensure uniqueness. Whitespace differences are tolerated via fuzzy matching.' },
+        replace_snippet: { type: 'string', description: 'Your new version of the block. Use empty string "" to delete without inserting anything.' },
+        agent_id:       { type: 'string',  description: 'Your agent ID (e.g. "coder", "designer"). Used by the FileLockManager to prevent race conditions in parallel execution.' },
+        healing_mode:   { type: 'boolean', description: 'Set to true ONLY when fixing an already-broken file (syntax error, unbalanced braces, AST corruption). Disables brace-balance and AST guards.' },
+      },
+      required: ['path', 'search_snippet', 'replace_snippet'],
+    },
+  },
+};
+
+// ─── Fuzzy Matching ───────────────────────────────────────────────────────────
+
+function normalizeLine(line: string): string {
+  return line.trim().replace(/\s+/g, ' ');
+}
+
+type BlockMatch =
+  | { kind: 'strict' }
+  | { kind: 'fuzzy'; start: number; end: number }
+  | { kind: 'none' }
+  | { kind: 'ambiguous'; count: number };
+
+/**
+ * Locate target_snippet inside fileContent.
+ * Fast path: exact string match (1 occurrence).
+ * Fuzzy path: line-by-line comparison after whitespace normalization.
+ * Returns 'ambiguous' if > 1 strict matches are found (don't fall through to fuzzy).
+ */
+function findBlock(fileContent: string, snippet: string): BlockMatch {
+  // Normalize CRLF in both so mixed line-endings don't break matching
+  const content = fileContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const snip    = snippet.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  // Fast path — exact string match
+  const strictOccurrences = content.split(snip).length - 1;
+  if (strictOccurrences === 1) { return { kind: 'strict' }; }
+  if (strictOccurrences > 1)  { return { kind: 'ambiguous', count: strictOccurrences }; }
+
+  // Fuzzy path — line-by-line normalized comparison
+  const fileLines = content.split('\n');
+  const rawSnipLines = snip.split('\n');
+
+  // Strip leading/trailing blank-only lines from snippet (LLM multiline string artifacts)
+  let si = 0, ei = rawSnipLines.length - 1;
+  while (si <= ei && rawSnipLines[si].trim() === '') { si++; }
+  while (ei >= si && rawSnipLines[ei].trim() === '') { ei--; }
+  const snippetLines = rawSnipLines.slice(si, ei + 1);
+
+  if (snippetLines.length === 0) { return { kind: 'none' }; }
+
+  const snipNorm = snippetLines.map(normalizeLine);
+  const n = snippetLines.length;
+  const matches: number[] = [];
+
+  outer: for (let i = 0; i <= fileLines.length - n; i++) {
+    for (let j = 0; j < n; j++) {
+      if (normalizeLine(fileLines[i + j]) !== snipNorm[j]) {
+        continue outer;
+      }
+    }
+    matches.push(i);
+  }
+
+  if (matches.length === 0) { return { kind: 'none' }; }
+  if (matches.length > 1)  { return { kind: 'ambiguous', count: matches.length }; }
+
+  return { kind: 'fuzzy', start: matches[0], end: matches[0] + n - 1 };
+}
+
+// ─── Tool Executor ────────────────────────────────────────────────────────────
+
+export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  const fp = safePath(workspacePath, args.path);
+  if (!fs.existsSync(fp)) {
+    return { success: false, output: `File not found: ${args.path}. Use list_dir to verify the path.` };
+  }
+
+  // Accept both new param names (search_snippet/replace_snippet) and legacy names (target_snippet/new_content)
+  const searchSnippet  = typeof args.search_snippet  === 'string' ? args.search_snippet  : (args.target_snippet  ?? '');
+  const replaceSnippet = typeof args.replace_snippet === 'string' ? args.replace_snippet : (args.new_content     ?? '');
+
+  if (typeof searchSnippet !== 'string' || searchSnippet === '') {
+    return { success: false, output: 'Snippet exacto no encontrado. Usa read_file para copiar el bloque literal antes de reemplazar.' };
+  }
+  if (typeof replaceSnippet !== 'string') {
+    return { success: false, output: 'CRITICAL ERROR: replace_snippet must be a string. Use empty string "" to delete the block.' };
+  }
+
+  const original = fs.readFileSync(fp, 'utf-8');
+  const match = findBlock(original, searchSnippet);
+
+  if (match.kind === 'none') {
+    return {
+      success: false,
+      output: `Snippet exacto no encontrado. Usa read_file para copiar el bloque literal antes de reemplazar.\n` +
+              `(${args.path}: exact match failed and fuzzy whitespace-normalization also found no match.\n` +
+              `The snippet content differs from the file — not just whitespace. Re-copy verbatim from read_file.)`,
+    };
+  }
+
+  if (match.kind === 'ambiguous') {
+    return {
+      success: false,
+      output: `AMBIGUOUS MATCH: search_snippet appears ${match.count} times in ${args.path}.\n` +
+              `Your snippet is too generic. Expand it — add the function signature above or the closing brace below to make the block unique.`,
+    };
+  }
+
+  // Build updated file content
+  let updated: string;
+  let removedPreviewText: string;
+  let removedLineCount: number;
+  let matchStartLine: number;
+  let matchEndLine: number;
+
+  if (match.kind === 'strict') {
+    // Exact replacement — preserve all original formatting outside the matched block
+    const snipNormalized = searchSnippet.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    updated = original.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+                      .replace(snipNormalized, replaceSnippet.replace(/\n$/, ''));
+
+    const before = original.replace(/\r\n/g, '\n').indexOf(snipNormalized);
+    matchStartLine = original.slice(0, before).split('\n').length;
+    removedLineCount = snipNormalized.split('\n').length;
+    matchEndLine = matchStartLine + removedLineCount - 1;
+    removedPreviewText = snipNormalized.length > 300 ? snipNormalized.slice(0, 300) + '\n…(truncated)' : snipNormalized;
+  } else {
+    // Fuzzy replacement — line-based reconstruction
+    const fileLines = original.replace(/\r\n/g, '\n').split('\n');
+    const newLines = replaceSnippet === '' ? [] : replaceSnippet.replace(/\n$/, '').split('\n');
+    const resultLines = [
+      ...fileLines.slice(0, match.start),
+      ...newLines,
+      ...fileLines.slice(match.end + 1),
+    ];
+    updated = resultLines.join('\n');
+
+    matchStartLine = match.start + 1;
+    matchEndLine = match.end + 1;
+    removedLineCount = match.end - match.start + 1;
+    const removedText = fileLines.slice(match.start, match.end + 1).join('\n');
+    removedPreviewText = removedText.length > 300 ? removedText.slice(0, 300) + '\n…(truncated)' : removedText;
+  }
+
+  if (updated.trim() === '' && original.trim() !== '') {
+    return { success: false, output: 'SAFETY ABORT: replacement would produce an empty file. Verify your search_snippet and replace_snippet.' };
+  }
+
+  // ── Guards (skipped in healing_mode) ─────────────────────────────────────
+  if (!args.healing_mode) {
+    const JS_EXTENSIONS  = ['.ts', '.tsx', '.js', '.jsx'];
+    const JSX_EXTENSIONS = ['.tsx', '.jsx'];
+    const fileExt        = path.extname(fp).toLowerCase();
+
+    if (JS_EXTENSIONS.includes(fileExt)) {
+      const openCount  = (updated.match(/\{/g) || []).length;
+      const closeCount = (updated.match(/\}/g) || []).length;
+      if (openCount !== closeCount) {
+        return {
+          success: false,
+          output: `CRITICAL SYNTAX ERROR: Llaves desequilibradas (${openCount} "{" vs ${closeCount} "}"). El archivo NO fue modificado. ANTI-PANIC DIRECTIVE: STOP USING REPLACE_LINES/REPLACE_BLOCK FOR MASSIVE INJECTIONS. You MUST use the 'insert_lines' tool to inject this code cleanly.`,
+        };
+      }
+    }
+
+    if (JSX_EXTENSIONS.includes(fileExt)) {
+      const jsxBalance = (code: string): number => {
+        const opens     = (code.match(/<[A-Za-z]/g) || []).length;
+        const closes    = (code.match(/<\/[A-Za-z]/g) || []).length;
+        const selfClose = (code.match(/\/>/g) || []).length;
+        return opens - closes - selfClose;
+      };
+      if (jsxBalance(original) !== jsxBalance(updated)) {
+        return {
+          success: false,
+          output: `CRITICAL SYNTAX ERROR: AST/JSX Corruption detected. Etiquetas HTML/JSX desbalanceadas. El archivo NO fue modificado. ANTI-PANIC DIRECTIVE: STOP USING REPLACE_LINES/REPLACE_BLOCK FOR MASSIVE INJECTIONS. You MUST use the 'insert_lines' tool to inject this code cleanly.`,
+        };
+      }
+    }
+
+    // ── AST Syntax Validation (v8.14.0 — Syntax Shield) ─────────────────────
+    // Full TypeScript compiler parse — catches broken strings, unexpected tokens,
+    // unclosed brackets, and other errors the regex guards above cannot detect.
+    const _syntaxCheck = checkSyntax(fp, updated);
+    if (!_syntaxCheck.ok) {
+      return {
+        success: false,
+        output:
+          `[SYNTAX ERROR DETECTED] The proposed change breaks the file syntax. Write aborted.\n` +
+          `Error details:\n${_syntaxCheck.errors}\n\n` +
+          `You MUST review your code block and fix the syntax before retrying.`,
+      };
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+  }
+
+  // Zero-footprint auto-backup — written to OS temp dir, never to the workspace or git tree
+  try {
+    const backupDir = path.join(os.tmpdir(), 'fluxo-backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    fs.writeFileSync(path.join(backupDir, `${path.basename(fp)}_${timestamp}.bak`), original, 'utf-8');
+  } catch { /* non-fatal */ }
+
+  // ── FileLockManager Mutex (v8.3.2) ───────────────────────────────────────────
+  const agentId = typeof args.agent_id === 'string' ? args.agent_id : 'agent';
+  if (!FileLockManager.acquireLock(fp, agentId)) {
+    return {
+      success: false,
+      output: `SYSTEM LOCK: El archivo ${args.path} está siendo editado actualmente por otro agente de tu equipo. Tienes prohibido forzar la edición. Por favor, usa la herramienta sleep por 5 segundos o trabaja en otro archivo mientras se libera el cerrojo.`,
+    };
+  }
+  try {
+    fs.writeFileSync(fp, updated, 'utf-8');
+  } finally {
+    FileLockManager.releaseLock(fp, agentId);
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  const matchNote = match.kind === 'fuzzy'
+    ? ` [fuzzy match: whitespace-normalized, lines ${matchStartLine}–${matchEndLine}]`
+    : ` [exact match, lines ${matchStartLine}–${matchEndLine}]`;
+
+  return {
+    success: true,
+    output: `replace_block: ${args.path} — 1 block replaced (${removedLineCount} line${removedLineCount !== 1 ? 's' : ''}).${matchNote}\n\nBLOCK REMOVED:\n${removedPreviewText}\n\nEDICIÓN EXITOSA — Verifica que el bloque eliminado es el correcto. Si la tarea no está completa, llama la SIGUIENTE herramienta ahora.`,
+
+  };
+}
+
+```
+
+### 📁 FILE: `src\tools\ReplaceLinesTool\index.ts`
+```typescript
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { NativeTool, ToolResult, safePath } from '../shared';
+import { FileLockManager } from '../../utils/lockfile';
+import { checkSyntax } from '../../utils/syntaxValidator';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'replace_lines',
+    description: `Replace an exact range of lines in a file using coordinate-based targeting.
+MANDATORY WORKFLOW: (1) Call read_file to get current line numbers. (2) Identify start_line and end_line for the block to replace. (3) Call replace_lines with new_content.
+CRITICAL: Line numbers shift after every edit — always call read_file again before a subsequent replace_lines on the same file.
+Use new_content = "" to delete the line range without inserting anything.
+NEVER skip read_file — guessing line numbers without reading first is PROHIBITED.
+TO INSERT NEW LINES WITHOUT DELETING: Set start_line and end_line to the exact same number (the line you want to target). In new_content, write the original text of that line, add a newline character (\\n), and then write your new code.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path:        { type: 'string', description: 'File path relative to workspace root.' },
+        start_line:  { type: 'number', description: '1-based line number where the replacement begins (inclusive). Must come from a preceding read_file call.' },
+        end_line:    { type: 'number', description: '1-based line number where the replacement ends (inclusive). Must be >= start_line.' },
+        new_content: { type: ['string', 'array'], description: 'El código a insertar en lugar de las líneas eliminadas. IMPORTANTE: Para evitar errores de escape JSON en bloques grandes de JSX/TSX, tienes PERMITIDO enviar este parámetro como un Array de strings (una línea de código por elemento). El motor lo unirá automáticamente con \\n. Pasa "" o [] para eliminar el rango sin insertar nada. Do NOT add a trailing newline — the engine handles line endings.' },
+        healing_mode: { type: 'boolean', description: 'Set to true ONLY if you are fixing a syntax error, unbalanced brace, or AST corruption. This temporarily disables the syntax and AST guards to allow surgical fixes on already broken files.' },
+        agent_id: { type: 'string', description: 'Unique identifier of the calling agent (e.g. "coder-1", "designer-2"). Used by the File Lock Manager to track ownership. Required when running in parallel orchestration mode.' },
+      },
+      required: ['path', 'start_line', 'end_line', 'new_content'],
+    },
+  },
+};
+
+export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  const fp = safePath(workspacePath, args.path);
+  if (!fs.existsSync(fp)) {
+    return { success: false, output: `File not found: ${args.path}. Use list_dir to verify the path.` };
+  }
+
+  const startLine = Number(args.start_line);
+  const endLine   = Number(args.end_line);
+
+  if (!Number.isInteger(startLine) || startLine < 1) {
+    return { success: false, output: `CRITICAL ERROR: start_line must be a positive integer >= 1 (received: ${args.start_line}). Call read_file first to get correct line numbers.` };
+  }
+  if (!Number.isInteger(endLine) || endLine < startLine) {
+    return { success: false, output: `CRITICAL ERROR: end_line (${endLine}) must be an integer >= start_line (${startLine}). Call read_file to verify current line numbers.` };
+  }
+  // ── Payload Normalizer (v7.21.0) ─────────────────────────────────────────────
+  // The LLM sometimes sends new_content as an Array (one element per line) when
+  // JSON-escaping large JSX blocks, or as null/undefined when the payload breaks.
+  // Coerce silently before the strict check so those payloads still succeed.
+  if (Array.isArray(args.new_content)) {
+    args.new_content = (args.new_content as unknown[]).join('\n');
+  } else if (args.new_content === null || args.new_content === undefined) {
+    args.new_content = '';
+  } else if (typeof args.new_content === 'object') {
+    // Object from a malformed parse — best-effort: join values or full JSON fallback
+    const vals = Object.values(args.new_content as Record<string, unknown>);
+    args.new_content = vals.length > 0 ? vals.map(String).join('\n') : JSON.stringify(args.new_content);
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  if (typeof args.new_content !== 'string') {
+    return { success: false, output: 'CRITICAL ERROR: new_content must be a string or Array of strings. Use an empty string "" to delete lines without inserting anything.' };
+  }
+
+  const original   = fs.readFileSync(fp, 'utf-8');
+
+  // Zero-footprint auto-backup — written to OS temp dir, never to the workspace or git tree
+  try {
+    const backupDir  = path.join(os.tmpdir(), 'fluxo-backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const timestamp  = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupName = `${path.basename(fp)}_${timestamp}.bak`;
+    fs.writeFileSync(path.join(backupDir, backupName), original, 'utf-8');
+  } catch {
+    // Backup failure is non-fatal — edit proceeds regardless
+  }
+
+  const lines      = original.split('\n');
+  const totalLines = lines.length;
+
+  if (startLine > totalLines) {
+    return { success: false, output: `CRITICAL ERROR: start_line (${startLine}) exceeds file length (${totalLines} lines). Call read_file to get updated line numbers.` };
+  }
+
+  const clampedEnd  = Math.min(endLine, totalLines);
+  const clampNote   = endLine > totalLines ? ` (end_line ${endLine} clamped to file length ${totalLines})` : '';
+
+  // Split new_content into lines. Strip trailing \n to avoid phantom blank line.
+  const newLines = args.new_content === '' ? [] : args.new_content.replace(/\n$/, '').split('\n');
+
+  const resultLines = [
+    ...lines.slice(0, startLine - 1),
+    ...newLines,
+    ...lines.slice(clampedEnd),
+  ];
+
+  const updated = resultLines.join('\n');
+
+  if (updated.trim() === '' && original.trim() !== '') {
+    return { success: false, output: 'SAFETY ABORT: replacement would produce an empty file. Verify your line range and new_content.' };
+  }
+
+  const JS_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx'];
+  const fileExt = path.extname(fp).toLowerCase();
+
+  if (!args.healing_mode) {
+    // Deterministic brace-balance guard — runs before writing to disk
+    if (JS_EXTENSIONS.includes(fileExt)) {
+      const openCount  = (updated.match(/\{/g) || []).length;
+      const closeCount = (updated.match(/\}/g) || []).length;
+      if (openCount !== closeCount) {
+        return {
+          success: false,
+          output: `CRITICAL SYNTAX ERROR: Tu 'new_content' tiene llaves desequilibradas (${openCount} "{" vs ${closeCount} "}"). El archivo NO fue modificado. ANTI-PANIC DIRECTIVE: STOP USING REPLACE_LINES/REPLACE_BLOCK FOR MASSIVE INJECTIONS. You MUST use the 'insert_lines' tool to inject this code cleanly.`,
+        };
+      }
+    }
+
+    // JSX/AST integrity guard — prevents orphaned or crossed tags in React files
+    const JSX_EXTENSIONS_AST = ['.tsx', '.jsx'];
+    if (JSX_EXTENSIONS_AST.includes(fileExt)) {
+      const jsxBalance = (code: string): number => {
+        const opens     = (code.match(/<[A-Za-z]/g) || []).length;
+        const closes    = (code.match(/<\/[A-Za-z]/g) || []).length;
+        const selfClose = (code.match(/\/>/g) || []).length;
+        return opens - closes - selfClose;
+      };
+      const origBalance    = jsxBalance(original);
+      const updatedBalance = jsxBalance(updated);
+      if (origBalance !== updatedBalance) {
+        return {
+          success: false,
+          output: `CRITICAL SYNTAX ERROR: AST/JSX Corruption detected. Etiquetas HTML/JSX desbalanceadas. El archivo NO fue modificado. ANTI-PANIC DIRECTIVE: STOP USING REPLACE_LINES/REPLACE_BLOCK FOR MASSIVE INJECTIONS. You MUST use the 'insert_lines' tool to inject this code cleanly.`,
+        };
+      }
+    }
+
+    // ── AST Syntax Validation (v8.14.0 — Syntax Shield) ─────────────────────
+    // Full TypeScript compiler parse — catches broken strings, unexpected tokens,
+    // unclosed brackets, and other errors the regex guards above cannot detect.
+    const _syntaxCheck = checkSyntax(fp, updated);
+    if (!_syntaxCheck.ok) {
+      return {
+        success: false,
+        output:
+          `[SYNTAX ERROR DETECTED] The proposed change breaks the file syntax. Write aborted.\n` +
+          `Error details:\n${_syntaxCheck.errors}\n\n` +
+          `You MUST review your code block and fix the syntax before retrying.`,
+      };
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+  }
+
+  const removedLines = lines.slice(startLine - 1, clampedEnd);
+  const linesRemoved = clampedEnd - startLine + 1;
+  const linesAdded   = newLines.length;
+
+  // Anti-Mass-Deletion guard — blocks accidental truncation before the file is written
+  if (linesRemoved > 50 && linesAdded < linesRemoved * 0.2) {
+    return {
+      success: false,
+      output: `CRITICAL WARNING: ANTI-MASS-DELETION GUARD. Estás intentando eliminar ${linesRemoved} líneas pero solo insertando ${linesAdded}. ` +
+              `Esto suele ser un error de truncamiento del modelo. Si realmente deseas hacer este borrado masivo, ` +
+              `el motor requiere que lo dividas en bloques más pequeños o confirmes la acción. ` +
+              `(Nota: la herramienta falla, no escribe el archivo, y obliga al agente a reconsiderar).`,
+    };
+  }
+
+  const agentId = typeof args.agent_id === 'string' ? args.agent_id : 'agent';
+  if (!FileLockManager.acquireLock(fp, agentId)) {
+    return {
+      success: false,
+      output: `SYSTEM LOCK: El archivo ${args.path} está siendo editado actualmente por otro agente de tu equipo. Tienes prohibido forzar la edición. Por favor, usa la herramienta sleep por 5 segundos o trabaja en otro archivo mientras se libera el cerrojo.`,
+    };
+  }
+  try {
+    fs.writeFileSync(fp, updated, 'utf-8');
+  } finally {
+    FileLockManager.releaseLock(fp, agentId);
+  }
+
+  // Build a compact preview of removed content for auto-verification
+  const removedText  = removedLines.join('\n');
+  const removedPreview = removedText.length > 300
+    ? removedText.slice(0, 300) + '\n…(truncated)'
+    : removedText;
+
+  return {
+    success: true,
+    output: `replace_lines: ${args.path} — replaced lines ${startLine}–${clampedEnd} (${linesRemoved} line${linesRemoved !== 1 ? 's' : ''} → ${linesAdded} line${linesAdded !== 1 ? 's' : ''})${clampNote}.\n\nLINES REMOVED:\n${removedPreview}\n\nEDICIÓN EXITOSA — Verifica que las líneas eliminadas son las correctas. Si la tarea no está completa, llama la SIGUIENTE herramienta ahora.`,
+  };
+}
+
+```
+
+### 📁 FILE: `src\tools\ReplaceSymbolTool\index.ts`
+```typescript
+import { NativeTool, ToolResult } from '../shared';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'replace_symbol',
+    description: `Replace a complete logical block (function, class, variable, React component) by looking up its exact name in the Abstract Syntax Tree (AST) via the VS Code Language Server.
+
+WHEN TO USE: Any time you need to rewrite an entire function, class, or named component. The LSP finds the exact code boundaries — you never count lines or copy snippets.
+
+MANDATORY WORKFLOW:
+1. Call get_code_structure or read_file to confirm the exact symbol name (case-sensitive).
+2. Call replace_symbol with: file_path, symbol_name, and new_code (your complete replacement).
+3. The Language Server locates the AST node, extracts its precise Range, and replaces it atomically.
+
+FAIL-SAFE: If symbol_name is not found, the tool returns an error and the file is NEVER modified.
+  → Use get_code_structure to list available symbol names before retrying.
+
+FALLBACK: For files without LSP support (plain text, config files, unsupported languages),
+  use replace_block with search_snippet + replace_snippet instead.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        file_path:   { type: 'string', description: 'File path relative to workspace root (e.g. "src/components/Dashboard.tsx").' },
+        symbol_name: { type: 'string', description: 'Exact name of the function, class, or variable to replace (case-sensitive, e.g. "handleDelete" or "AdminDashboard"). Must match the AST node name exactly.' },
+        new_code:    { type: 'string', description: 'Complete replacement code for the symbol. Include the full function/class signature and body. The engine will replace the old node boundaries with this text exactly.' },
+      },
+      required: ['file_path', 'symbol_name', 'new_code'],
+    },
+  },
+};
+
+// Real execution is intercepted by agentEngine.ts (replaceSymbolCallback from extension.ts).
+// This path is a safety fallback only — in production the engine never reaches it.
+export function execute(_args: Record<string, any>, _workspacePath: string): ToolResult {
+  return {
+    success: false,
+    output: '[SYSTEM ENGINE ERROR]: replace_symbol must be intercepted by the LSP callback in extension.ts. Ensure the extension host is active.',
+  };
+}
+
+```
+
+### 📁 FILE: `src\tools\RunCommandTool\index.ts`
+```typescript
+import { execSync } from 'child_process';
+import { NativeTool, ToolResult } from '../shared';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'run_command',
+    description:
+      'Execute a shell command in the workspace directory. ' +
+      'CRITICAL: DO NOT use this tool to read files (e.g., cat, type, Get-Content). You MUST use read_file instead. Bypassing this will result in instant failure. ' +
+      'On Windows use Windows commands (dir, del, move, copy) — never Linux commands (ls, rm -rf, mv, cp). ' +
+      'Always quote paths that contain spaces. ' +
+      'WORKTREE NOTE: If a Git Worktree is active, do NOT use "cd" to navigate into it. ' +
+      'All native tools (read_file, run_command, replace_block) already operate on the correct ' +
+      'workspace context automatically — attempting "cd <worktree-path>" will break the working directory. ' +
+      'WINDOWS ENOENT RULE (v8.16.8): If npm run build (or any command) fails with ENOENT related to cmd.exe ' +
+      'or spawnSync, do NOT try to use PowerShell, node -e, or any hacking script as a workaround. ' +
+      'It is a Node environment error — the OS shell is unreachable. Yield to human and stop the task. ' +
+      'MICRO-ROLLBACK ALLOWED (v8.16.13): "git restore <path>" is explicitly permitted and is your CTRL+Z ' +
+      'when an edit catastrophically breaks a single file. Use it before attempting any further fixes.',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'The shell command to execute.' },
+      },
+      required: ['command'],
+    },
+  },
+};
+
+export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  const cmd = args.command as string;
+  const timeout = (args.timeout as number) || 30_000;
+
+  // ── Explicit Allowlist: Micro-Rollback (v8.16.13) ────────────────────────────
+  // `git restore <path>` is the agent's CTRL+Z when an edit catastrophically
+  // breaks a single file. It must NEVER be intercepted by any blocker downstream
+  // (Vite panic, evasion shield, persistent server, etc.) since the patterns
+  // below could otherwise false-positive on filenames or flags. We short-circuit
+  // here and route directly to execution.
+  const GIT_RESTORE_ALLOW = /^\s*git\s+restore\s+\S+/i;
+  if (GIT_RESTORE_ALLOW.test(cmd)) {
+    const isWindowsRestore = process.platform === 'win32';
+    const restoreShell: string | undefined = isWindowsRestore
+      ? (process.env.ComSpec || process.env.COMSPEC || 'cmd.exe')
+      : undefined;
+    try {
+      const output = execSync(cmd, {
+        cwd: workspacePath,
+        encoding: 'utf-8',
+        timeout,
+        maxBuffer: 1024 * 1024 * 4,
+        shell: restoreShell,
+        env: { ...process.env },
+      });
+      return { success: true, output: output || '(git restore completed — file reverted to last committed state)' };
+    } catch (err: any) {
+      const stderr = err?.stderr ? String(err.stderr).trim() : '';
+      const stdout = err?.stdout ? String(err.stdout).trim() : '';
+      return { success: false, output: [stdout, stderr].filter(Boolean).join('\n') || String(err?.message ?? err) };
+    }
+  }
+
+  // ── Vite Panic Blocker (v8.16.12) ────────────────────────────────────────────
+  // When npm run build fails, the LLM tends to panic and try to delete dist/,
+  // .vite cache, node_modules/.cache, or pass --force to bypass "stale cache".
+  // None of these fix syntax errors — the bug is in the code, not the cache.
+  // Intercept these commands BEFORE anything else and force the agent back to
+  // reading the compiler error and fixing the actual file.
+  const VITE_PANIC_PATTERNS = [
+    /--force\b/i,
+    /\bdel\s+(?:\/[a-z]\s+)*["']?dist["']?\b/i,
+    /\brmdir\b/i,
+    /\bcopy\s+\/b\b/i,
+    /\brm\s+-rf?\s+["']?(?:\.\/)?(?:dist|\.vite|\.cache|node_modules[\\\/]\.cache)/i,
+    /\bRemove-Item\b.*\b(?:dist|\.vite|\.cache|node_modules)/i,
+  ];
+  if (VITE_PANIC_PATTERNS.some(p => p.test(cmd))) {
+    return {
+      success: false,
+      output:
+        "[SYSTEM ERROR] Comando denegado. Vite NO está cacheando tu error. " +
+        "El error de sintaxis sigue en el código. No intentes borrar 'dist' ni usar '--force'. " +
+        "Encuentra el error real en el archivo, arréglalo y vuelve a ejecutar 'npm run build'.",
+    };
+  }
+
+  // ── Destructive command block ────────────────────────────────────────────────
+  const BLOCKED = [/rm\s+-rf\s+[/\\~]/, /format\s+[a-z]:/, /del\s+\/[fs]/i, /mkfs/, /dd\s+if=/];
+  if (BLOCKED.some(b => b.test(cmd))) {
+    return { success: false, output: `Blocked dangerous command: ${cmd}` };
+  }
+
+  // ── Anti-Hacker Shield: block CLI direct file-reading ───────────────────────
+  // Only the FIRST segment (before any pipe) is checked — this allows legitimate
+  // pipeline filtering like "npm run build | head -50" or "tsc 2>&1 | grep error".
+  // The filter in those cases processes STDIN (stdout from the prior command),
+  // not a file on disk. Direct usage as first command IS blocked.
+  //
+  // BLOCKED: grep "error" src/file.ts  |  head -100 src/file.ts  |  cat file.js
+  // ALLOWED: npm run build | grep error |  tsc | head -50         |  git log | tail -20
+  const CLI_FILE_READ = /^\s*(cat|tail|head|less|more|type|Get-Content|findstr|grep|wc)\b/i;
+  const cmdSegments = cmd.split(/\s*[|;&]+\s*/);
+  const firstSegment = cmdSegments[0] ?? '';
+  if (CLI_FILE_READ.test(firstSegment)) {
+    return {
+      success: false,
+      output:
+        'SYSTEM ERROR: Intento de lectura de archivo por terminal bloqueado. ' +
+        'NO uses comandos de consola (cat, type, grep, head, etc.) para leer código directamente. ' +
+        'Usa read_file o search_in_files. ' +
+        'Para filtrar OUTPUT de otro comando, usa el pipe: "npm run build | grep error" es VÁLIDO.',
+    };
+  }
+
+  // ── Evasion Block: prevent sed, awk, node -e, perl, python -c ───────────────
+  const EVASION_TOOLS = /^\s*(sed|awk|node\s+-e|perl|python\s+-c)\b/i;
+  if (cmdSegments.some(seg => EVASION_TOOLS.test(seg))) {
+    return {
+      success: false,
+      output:
+        'SYSTEM SECURITY ALERT: Intento de evasión detectado. Tienes PROHIBIDO usar ' +
+        'herramientas de CLI (sed, awk, node -e, etc.) para manipular código. ' +
+        'Usa read_file y replace_block o replace_symbol inmediatamente.',
+    };
+  }
+
+  // ── Persistent dev-server block ──────────────────────────────────────────────
+  const PERSISTENT_PATTERNS = [
+    /\bnpm\s+run\s+dev\b/,
+    /\bnpm\s+start\b/,
+    /\bnpm\s+run\s+start\b/,
+    /\byarn\s+dev\b/,
+    /\byarn\s+start\b/,
+    /\bpnpm\s+dev\b/,
+    /\bpnpm\s+start\b/,
+    /\bnodemon\b/,
+    /\bnext\s+dev\b/,
+    /\bvite\b(?!\s+build)/,
+    /\bwebpack\s+--watch\b/,
+    /\bng\s+serve\b/,
+  ];
+  if (PERSISTENT_PATTERNS.some(p => p.test(cmd))) {
+    return {
+      success: false,
+      output:
+        'CRITICAL: Persistent servers like "npm run dev" hang the swarm. ' +
+        'DIRECTIVE: Do not panic. Use "npm run build" instead to verify your changes and continue.',
+    };
+  }
+
+  // ── Execute ──────────────────────────────────────────────────────────────────
+  // v8.16.8 — Windows Shell Patch: pass `shell` explicitly so Node never resolves
+  // an empty/missing ComSpec. On Windows we prefer `%ComSpec%` (usually
+  // C:\WINDOWS\system32\cmd.exe), fall back to literal "cmd.exe", and merge in
+  // `process.env` so System32 stays on PATH. On POSIX we just pass `shell: true`.
+  const isWindows = process.platform === 'win32';
+  const shellPath: string | undefined = isWindows
+    ? (process.env.ComSpec || process.env.COMSPEC || 'cmd.exe')
+    : undefined; // POSIX: let execSync default to /bin/sh
+
+  try {
+    const output = execSync(cmd, {
+      cwd: workspacePath,
+      encoding: 'utf-8',
+      timeout,
+      maxBuffer: 1024 * 1024 * 4,
+      shell: shellPath,
+      env: { ...process.env },
+    });
+    return { success: true, output: output || '(command completed with no output)' };
+  } catch (err: any) {
+    // ── ENOENT cmd.exe detection (v8.16.8) ─────────────────────────────────────
+    // Surface a clear "yield to human" message instead of letting the LLM panic
+    // and try to evade with PowerShell or sed/awk hacks.
+    const errMsg = String(err?.message ?? err ?? '');
+    const errCode = err?.code ?? '';
+    const isShellMissing =
+      errCode === 'ENOENT' &&
+      (/cmd\.exe/i.test(errMsg) || /spawnSync/i.test(errMsg) || /system32/i.test(errMsg));
+    if (isShellMissing) {
+      return {
+        success: false,
+        output:
+          '[YIELD TO HUMAN — Node Environment Error] spawnSync could not locate cmd.exe ' +
+          '(ENOENT). This is NOT a code problem and NOT a tool problem — Node lost its ' +
+          'reference to the system shell, usually because the ComSpec environment variable ' +
+          'is empty or System32 is missing from PATH in this VS Code session. ' +
+          'DO NOT retry this command. DO NOT switch to PowerShell, node -e, or any other ' +
+          'evasion script. Stop the task and ask the user to: (1) restart VS Code from a ' +
+          'fresh terminal so the environment is reloaded, or (2) verify that ' +
+          '%ComSpec% points to C:\\Windows\\System32\\cmd.exe and that System32 is on PATH.',
+      };
+    }
+    // execSync throws on non-zero exit — capture both stdout and stderr from the error object
+    const stdout = err.stdout ? String(err.stdout).trim() : '';
+    const stderr = err.stderr ? String(err.stderr).trim() : '';
+    const combined = [stdout, stderr].filter(Boolean).join('\n').trim();
+    return { success: false, output: combined || errMsg || 'Command failed with no output' };
   }
 }
 
 ```
 
-### 📁 FILE: `.fluxo\memory.md`
-```text
-# Fluxo AI — Workspace Memory & Rules
+### 📁 FILE: `src\tools\SearchImagesTool\index.ts`
+```typescript
+import { NativeTool, ToolResult } from '../shared';
 
-> Binding rules for this workspace. Applied automatically on every task without being asked.
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'search_images',
+    description: 'Get free stock image URLs for a given subject from Lorem Picsum.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Subject or keywords for the image search.' },
+        count: { type: 'number', description: 'Number of URLs to return (1-10, default 5).' },
+      },
+      required: ['query'],
+    },
+  },
+};
 
----
-
-### Entorno de Ejecución
-
-- WORKSPACE RULE: Este es un proyecto ESM (type: module). Tienes ESTRICTAMENTE PROHIBIDO usar `require()`. Usa únicamente sintaxis `import/export`.
+export function execute(args: Record<string, any>, _workspacePath: string): ToolResult {
+  const query = encodeURIComponent(String(args.query || 'nature'));
+  const count = Math.min(Math.max(Number(args.count) || 5, 1), 10);
+  const urls: string[] = [];
+  for (let i = 1; i <= count; i++) {
+    urls.push(`https://picsum.photos/seed/${query}${i}/1400/900`);
+  }
+  return {
+    success: true,
+    output: [
+      `Free image URLs for "${args.query}":`,
+      ...urls.map((u, i) => `${i + 1}. ${u}`),
+      '',
+      'Usage: <img src="URL_HERE" alt="description" />',
+    ].join('\n'),
+  };
+}
 
 ```
 
-### 📁 FILE: `CHANGELOG.md`
-```text
-# 📜 Changelog - Fluxo AI
-
----
-
-## [v8.16.22] - The Strict Fallback Patch
-
-**Objetivo:** En las pruebas de Escenario 4 el @coder agotó sus 25 iteraciones intentando editar un archivo. Cuando `search_and_replace` falló con un MATCH ERROR, el agente ignoró el consejo del motor de usar `read_file` y empezó a abusar del `grep` con cadenas genéricas (`return`, `function`, `.`) intentando triangular la posición del bloque. El "CONSEJO DEL MOTOR" original era demasiado amable — sugerencias suaves que el LLM podía interpretar como opcionales. Esta versión endurece la salida con prohibición explícita de grep + único path de recuperación pinned a `read_file`.
-
-- **Smart Failure Interceptor endurecido (`src/agentEngine.ts`):** El antiguo "CONSEJO DEL MOTOR" después de un fallo de `search_and_replace` (`"El texto no coincide exactamente. Las causas más comunes son... SIGUIENTE PASO OBLIGATORIO: llama get_code_structure..."`) era una sugerencia conversacional que el LLM podía ignorar. Reemplazado por una directiva imperativa en mayúsculas: _"[SYSTEM ENFORCEMENT] MATCH ERROR. You hallucinated the search_snippet. You are STRICTLY FORBIDDEN from using 'grep' or guessing to fix this. You MUST immediately use 'read_file' to extract the exact lines verbatim. Any other action will result in system failure."_ El cambio de tono ("CONSEJO" → "[SYSTEM ENFORCEMENT]"), la prohibición explícita de grep, y la amenaza de "system failure" hacen que el LLM interprete el output como un blocker no-negociable, no como un tip.
-- **GREP ABUSE RULE (`src/agents.ts` — @coder):** Nuevo bloque `NON-NEGOTIABLE` insertado en el system prompt del @coder, justo antes del TASK COMPLETION PROTOCOL. Establece la regla en una línea — _"You must NEVER use the grep tool as a substitute for reading code before an edit. If an edit fails, your ONLY allowed recovery path is to use read_file"_ — y la refuerza con tres patrones prohibidos explícitos (grep("return"), grep("function"), triangulación por repeated grep) y un patrón requerido único (`read_file → copy verbatim → retry search_and_replace`). Cierra con la distinción semántica: _"grep is a SEARCH tool, not a READ tool. Use it to locate which file contains a symbol you have not yet seen — never to inspect a file you are about to edit."_ Defensa por anclaje conceptual: el LLM entiende *por qué* el patrón es incorrecto, no sólo que está prohibido.
-- **Resultado:** El @coder con un fallo de match ya tiene un único camino legal — leer el archivo, copiar verbatim, reintentar. La prohibición vive en dos capas: el output del motor (visible en cada fallo) y el system prompt (visible en cada turno). Ambas dicen lo mismo: `read_file` es el único recovery path.
-
----
-
-## [v8.16.21] - The Graceful Handoff Patch
-
-**Objetivo:** En el Escenario 3 de dogfooding, el @coder inyectó un componente masivo, el `npm run build` pasó limpio, y aun así quedó atrapado en un bucle infinito. El motivo: intentaba cerrar la sesión emitiendo el `ORCHESTRATOR'S REPORT` y el hard-block Anti-Gaslighting (v8.16.14) lo interceptaba una y otra vez. Tenía la prohibición pero no tenía vía de escape. Esta versión le da un ramp de salida legal y único.
-
-- **TASK COMPLETION PROTOCOL (`src/agents.ts` — @coder):** Nuevo bloque `NON-NEGOTIABLE` insertado al final del system prompt del @coder, justo antes del `WEB_ARCHITECTURE_SOP`. Estructura del bloque:
-  1. **Condición de fin de tarea** — código inyectado + `npm run build` verde marcan el final, no antes.
-  2. **Prohibición explícita** — desde el prompt mismo se prohíbe emitir el `ORCHESTRATOR'S REPORT` (refuerza la barrera física que el motor ya impone desde v8.16.14).
-  3. **Único ramp legal de salida** — llamar `ask_user_approval` con el mensaje literal _"Code injected successfully and build is green. Ready for review or merge."_
-  4. **Ejemplo concreto** — shape exacto de la llamada con `intent_summary` y `reason_and_files` para que el LLM no improvise el formato.
-  5. **Aviso causal** — el agente entiende *por qué* esa es la única salida (cualquier otro intento → intercepción Anti-Gaslighting → iteración inútil).
-- **Complementariedad con v8.16.20 — par de patches diseñado en conjunto:**
-  - **v8.16.20 fixea el motor:** garantizó que `ask_user_approval` puede invocarse en cualquier sesión sin crashear con `[SYSTEM ENGINE ERROR]` — incluso cuando no hay `approvalCallback` wired (modo headless / tests / UI sin enganchar). En ese caso devuelve un `success: false` graceful con guidance explícita en el output. Esto convirtió la herramienta en un ramp **seguro de invocar**.
-  - **v8.16.21 enseña al agente a usarlo:** ahora que el ramp es seguro, el prompt del @coder lo declara como la **única** forma legal de cerrar el turno tras un build verde. Sin v8.16.20 esta directiva sería peligrosa (cualquier sesión sin callback crashearía el motor); sin v8.16.21 el ramp existiría pero el LLM no sabría que debe usarlo.
-- **Resultado:** Cierra el bucle infinito del Escenario 3. El @coder ya no se queda atrapado entre la prohibición Anti-Gaslighting (v8.16.14) y la falta de vía de escape — tiene una salida explícita, segura, y única.
-
----
-
-## [v8.16.20] - The Orchestration Unblock Patch
-
-**Objetivo:** Dos bugs críticos detectados en el Escenario 2 de dogfooding causaban un bucle infinito en el @planner. Esta versión los corrige a nivel de motor.
-
-- **Plan Path Global Bypass (`src/agentEngine.ts`):** El bloque de Worktree Path Redirect (v8.8.0) reenviaba TODAS las operaciones de archivo al worktree activo, incluyendo `.fluxo/IMPLEMENTATION_PLAN.md`. El @planner escribía el plan dentro del sandbox; el @manager lo buscaba en la raíz y nunca lo encontraba; el motor disparaba el "Planner Hard Block" y el bucle no convergía. Fix: nuevo cómputo `_isPlanFile` que extrae `args.path ?? args.file_path ?? args.absolute_path`, normaliza separadores Windows, y aplica regex `/(?:^|\/)\.fluxo\/IMPLEMENTATION_PLAN\.md$/i` (con sufijo defensivo). Si match → `effectiveWorkspacePath = workspacePath` (raíz del repo) aunque el worktree esté activo. Centralizado en el bloque de redirect, así cubre `write_file`, `read_file`, `search_and_replace` y cualquier otro tool que toque el plan sin tener que parchear archivo por archivo. Log dedicado `[Plan Bypass v8.16.20]` para distinguirlo del redirect normal.
-- **ask_user_approval Hard Intercept (`src/agentEngine.ts`):** La condición original era `else if (toolName === 'ask_user_approval' && approvalCallback)`. Cuando `approvalCallback` era undefined (sesiones sin UI wired, modo headless, tests), el `&&` colapsaba y la llamada caía al `else` final → `executeTool('ask_user_approval', ...)` → no había handler nativo → el catch retornaba `[SYSTEM ENGINE ERROR]` → el LLM reintentaba la misma llamada → bucle infinito. Fix: la intercepción ahora es **incondicional** (`else if (toolName === 'ask_user_approval')` sin el AND). Con callback: comportamiento idéntico al anterior — pausa real, espera aprobación humana. Sin callback: failure graceful con `success: false` + mensaje `[ENGINE NOTICE]` que le dice al LLM literalmente _"Do NOT retry this tool. Send your question directly as plain text"_ + le devuelve su `intent_summary` y `reason_and_files` para que pueda reformular en texto plano.
-- **Resultado:** El @planner ya no diverge en lienzos con worktree activo, y `ask_user_approval` nunca puede crashear el motor — el agente siempre recibe un output útil que rompe cualquier loop.
-
----
-
-## [v8.16.19] - The Cognitive Alignment Patch
-
-**Objetivo:** v8.16.18 eliminó `replace_block` y `replace_lines` del toolset del @coder, pero el system prompt seguía teniendo más de 15 referencias a esas herramientas fantasma. Disonancia cognitiva grave: el agente leía "use replace_block para X" y luego no podía invocarlo. Esta versión hace el sweep quirúrgico para alinear el prompt con el toolset real.
-
-- **@coder rules (`src/agents.ts`):** Reemplazo unidad por unidad — BUILD REPAIR PROTOCOL (`Fix the exact syntax/logic issue using search_and_replace or insert_lines.`), JSX/AST RULE + MASSIVE COMPONENT INSERTION (advertencia exacta de que `search_and_replace` activará el Syntax Shield para inyecciones masivas → ordena `insert_lines`), VERBATIM MATCHING RULE (`when using editing tools (search_and_replace).` — sin `replace_block`), SEMANTIC VISION fallback, REPLACE_SYMBOL WORKFLOW pasos 3 y 4, BUILD VERIFICATION fix, GRACEFUL DEGRADATION, RULE 1 PROP CONSISTENCY, RULE 2 STRICT IMPORTS, LARGE FILE STRATEGY, MEMORY DISCIPLINE — todos apuntando a `search_and_replace` o `insert_lines` según el caso de uso.
-- **@manager rules (`src/agents.ts`):** Lista TOOLS YOU DO NOT HAVE actualizada (incluye los nuevos `search_and_replace · insert_lines`, removidos los obsoletos), SENTINEL PROTOCOL (`corrige con search_and_replace en [file]`), MANIFESTO ENFORCEMENT (Editing Philosophy violation), MEMORY DISCIPLINE.
-- **Bloques compartidos (`src/agents.ts`):** `MANIFESTO_REF` (Editing Philosophy), `HOLISTIC_DIAGNOSTIC_PROTOCOL` (Tech Lead Test), `SEPARATION_PROTOCOL` (ANTI-GHOST GUARD, ACTION VOCABULARY, WATERMARK), `REVISOR_PROMPT` (CONTEXT AWARENESS, HEALING MODE, SILOED CHANGES, TECH STACK DRIFT, WRITE_FILE FALLBACK, SCOPE check). Estos bloques se inyectan en el prompt de TODOS los agentes vía `buildAgentSystemPrompt`, así que la consistencia es global.
-- **Preservado intencionalmente:** `designer.tools` y su prompt mantienen `replace_block` (fuera del alcance — el Designer todavía lo usa). La lista negativa del @planner queda como está. La nota del REVISOR sobre el motor `ReplaceLinesTool` se mantiene (los archivos `src/tools/ReplaceLinesTool/` y `src/tools/ReplaceBlockTool/` siguen existiendo en disco — sólo fueron removidos del array del @coder).
-- **Resultado:** El @coder ya no recibe instrucciones contradictorias. Lee el prompt → ve sólo `search_and_replace`, `insert_lines`, `replace_symbol`, `write_file` → invoca lo que su toolset realmente expone → cero alucinaciones de tool names.
-
----
-
-## [v8.16.18] - The Toolset Purge Patch
-
-**Objetivo:** En el Escenario 2 el @coder se obsesionó con `replace_lines` y `replace_block` — fallando continuamente con errores de Syntax Shield y agotando las 25 iteraciones a pesar de que el motor le ordenaba usar `insert_lines` o `search_and_replace`. La causa raíz: la "Paradoja de la Elección" — demasiadas herramientas de edición en el toolset. Esta versión fuerza precisión cognitiva reduciendo el espacio de acción.
-
-- **Toolset reducido del @coder (`src/agents.ts:160`):** Removidos `replace_block` y `replace_lines` del array. Añadido `search_and_replace`. Editing primitives finales: `search_and_replace` (ediciones quirúrgicas con Verbatim Rule), `insert_lines` (inyecciones masivas), `replace_symbol` (AST workflow vía LSP), `write_file` (archivos nuevos). Cuatro herramientas, cada una con un caso de uso claro y no-solapado.
-- **SearchReplaceTool description (`src/tools/SearchReplaceTool/index.ts`):** Nuevo bloque `⚠️ SCOPE LIMIT (v8.16.18)` con la directiva exacta solicitada — _"If you need to inject a massive new React component, DO NOT use this tool. Use insert_lines instead."_ — para que el LLM lea el límite directamente en la descripción del tool y no lo intente.
-- **Mensaje de error "none" actualizado:** El error original cuando `search_snippet` no matcheaba apuntaba al tool removido (`replace_lines`) como fallback. Ahora redirige a `read_file` (verbatim) o `insert_lines` (bloque nuevo masivo). Sin esto, el @coder caería en un bucle pidiendo un tool que ya no tiene.
-- **Resultado:** El @coder con menos opciones es un @coder más preciso. Sólo dos herramientas para texto (search_and_replace + insert_lines) eliminan la indecisión cognitiva entre cuatro options.
-
----
-
-## [v8.16.17] - The Merge Enforcer
-
-**Objetivo:** Cerrar el último escape del @manager descubierto en dogfooding — el orquestador a veces emitía el `ORCHESTRATOR'S REPORT` directamente sin haber llamado `exit_worktree`, dejando los archivos atrapados en el sandbox sin merge a `main`. El system prompt v8.16.16 ya prohibía esto, pero el LLM podía ignorar la directiva. Esta versión añade un hard-block determinista a nivel de motor.
-
-- **Merge Enforcer Hard Block (`src/agentEngine.ts`):** Nuevo guard insertado inmediatamente después del Anti-Gaslighting v8.16.14, en el mismo punto del loop principal donde se evalúa el texto de la respuesta. Aplica a **CUALQUIER agente** (no solo `@coder`): si `textContent` matchea `/ORCHESTRATOR['']S\s+REPORT/i` Y `activeWorktreePath` no es null (la sesión sigue dentro del worktree), la respuesta es interceptada antes del streaming, NO llega al chat, NO se persiste como turno válido en `messages`, y se inyecta el directive corrector: _"[SYSTEM ENGINE BLOCK] You cannot emit the Orchestrator's Report while a worktree is still active. You MUST call the 'exit_worktree' tool with action='merge' to integrate your changes to the main branch first."_ El loop hace `continue` forzando otra iteración real.
-- **Resultado:** El @manager ya no puede declarar la tarea completa hasta que el worktree esté mergeado. El bloqueo es físico — el LLM no tiene forma de evadirlo, solo puede llamar `exit_worktree(merge)` y entonces, una iteración después y ya en `main`, emitir el reporte legítimo.
-
----
-
-## [v8.16.16] - The UX & Silence Patch
-
-**Objetivo:** El sistema base era estable pero la UX estaba arruinada por verbosidad — los agentes narraban cada paso ("ahora voy a leer X", "voy a refactorizar Y") y el @manager emitía múltiples `ORCHESTRATOR'S REPORT` parciales en lugar de uno solo al final. Esta versión normaliza el protocolo de comunicación: **un solo reporte final** y **cero narración** entre tool calls.
-
-- **ORCHESTRATOR REPORT RULE (`src/agents.ts` — @manager):** Nuevo bloque `NON-NEGOTIABLE` insertado antes del PARALLEL SWARM PROTOCOL. Establece la regla de reporte único: el `ORCHESTRATOR'S REPORT` se emite **EXACTAMENTE UNA VEZ por tarea**, como último mensaje, **únicamente después** de haber mergeado el worktree (`exit_worktree`) y verificado el build final en `main`. Prohíbe explícitamente reportes parciales o preliminares mientras el worktree sigue activo. Si los sub-agentes (@coder, @designer) devuelven sus propios resúmenes intermedios, el @manager los **absorbe silenciosamente** — el usuario solo ve UN reporte por tarea, escrito por el orquestador, al final.
-- **COMMUNICATION PROTOCOL — ZERO-YAPPING (`src/agents.ts` — `SEPARATION_PROTOCOL`):** Nuevo bloque `NON-NEGOTIABLE` inyectado al inicio del `SEPARATION_PROTOCOL`, lo que lo hace **global a todos los agentes** vía `buildAgentSystemPrompt`. Lista patrones prohibidos explícitos: `"Now I will…"`, `"Let me check…"`, `"I'm going to…"`, `"Here's what I changed…"` (fuera del reporte final), recapitulaciones paso a paso entre tool calls. Lista patrones permitidos: tool calls, `ask_user_approval`, el reporte final único, bloques `<thinking>...</thinking>`. Cap de 12 palabras para cualquier status entre tools — todo lo más largo es violación.
-- **Resultado:** El chat queda limpio. Los agentes ejecutan sus tools sin narrar, el usuario solo ve evidencia visible (tool calls, ediciones, builds) y al final un único reporte estructurado del @manager. Cero "yapping", cero reportes parciales.
-
----
-
-## [v8.16.15] - The Git Genesis Patch
-
-**Objetivo:** En pruebas de dogfooding sobre lienzos en blanco (carpetas sin Git inicializado), el `enter_worktree` fallaba en el primer paso con _"This workspace is not a git repository. git worktree requires git init"_, abortando la sesión antes de empezar. Esta versión hace que el motor auto-inicialice el entorno sin fricción para el usuario.
-
-- **Genesis Patch (`src/tools/EnterWorktreeTool/index.ts`):** Reemplazo del guard de validación por una secuencia de tres fases ejecutada **antes** de cualquier `git worktree add`. **Fase 1 (Detección):** ejecuta silenciosamente `git rev-parse --is-inside-work-tree`. Si falla → ejecuta `git init` automáticamente. **Fase 2 (Ancla Obligatoria):** los worktrees no pueden crearse desde un repo sin historial — verifica con `git rev-list -n 1 --all` si hay commits. Si no los hay → ejecuta `git commit --allow-empty -m "chore: initial genesis commit"` para crear el HEAD necesario. **Fase 3 (Salvaguarda):** si `user.email` o `user.name` no están configurados localmente, los fija a `fluxo@local` / `Fluxo AI` para que el commit-ancla no reviente en máquinas vírgenes sin identidad de committer global. Cada fase tiene su propio try/catch con error específico — el LLM recibe diagnóstico exacto si algo falla.
-- **Resultado:** El motor ahora puede crear un worktree desde cualquier carpeta — repo existente, repo sin commits, o carpeta vacía sin Git. La primera invocación de `enter_worktree` en un lienzo en blanco dispara: `git init` → genesis commit → worktree creado, todo en un solo paso invisible para el usuario.
-
----
-
-## [v8.16.14] - The Anti-Gaslighting Patch
-
-**Objetivo:** El @coder estaba sufriendo "alucinaciones de escape" — cuando una tarea se ponía difícil (build roto, archivo corrupto, varios reintentos consecutivos), generaba un falso `ORCHESTRATOR'S REPORT` o mensajes de "Build successful — exit code 0" sin haber ejecutado `run_command` realmente, intentando terminar el turno prematuramente. El motor lo aceptaba como señal de finalización y el bucle de 25 iteraciones se consumía sin llegar a fixear el problema. Esta versión combina una directiva en el system prompt con un hard-block físico en el engine.
-
-- **ANTI-GASLIGHTING RULE (`src/agents.ts` — @coder):** Nuevo bloque `NON-NEGOTIABLE` insertado justo antes del BUILD REPAIR PROTOCOL. Establece la frontera de roles — _"You are the CODER, not the MANAGER"_ — y prohíbe explícitamente: (a) emitir el "ORCHESTRATOR'S REPORT", (b) inventar mensajes de éxito de build sin haber llamado `run_command`. Cierra el bloque con la advertencia técnica: el engine bloquea físicamente cualquier respuesta de @coder con esa frase.
-- **Engine Hard Block (`src/agentEngine.ts`):** Nuevo guard inyectado inmediatamente después del parseo de `apiResponse.content` y ANTES del streaming. Verifica si `agentId === 'coder'` y `textContent` contiene la regex `/ORCHESTRATOR['']S\s+REPORT/i`. Si match: la respuesta es interceptada (NUNCA llega al chat bubble del usuario), no se añade al historial como válida, y se inyecta un mensaje de sistema: _"[SYSTEM ENGINE BLOCK] You are the Coder. Do not generate the Orchestrator's Report. Use your tools to fix the code or use 'ask_user_approval' if you are completely stuck."_ El loop continúa con `continue` forzando otra iteración real.
-- **Resultado:** El @coder ya no puede escapar de tareas difíciles inventando un reporte. Cuando lo intenta, el engine lo bloquea silenciosamente y le da dos opciones legítimas: seguir trabajando con tools o llamar `ask_user_approval` si está bloqueado. El @manager sigue siendo el único agente autorizado a emitir el Orchestrator's Report.
-
----
-
-## [v8.16.13] - The Micro-Rollback Protocol
-
-**Objetivo:** Cierre de seguridad final contra la corrupción del AST. Hasta ahora el @coder podía dejar un archivo en estado catastrófico (parser roto, llaves cruzadas, JSX huérfano) y luego entrar en bucles de pánico intentando "remendarlo" línea a línea. Esta versión le da una salida quirúrgica: cuando un edit deja un archivo irrecuperable, puede ejecutar `git restore <archivo>` para revertir solo ese archivo a su último estado committeado, sin tocar el resto del repositorio. Se complementa con la directiva en el system prompt que hace de esta acción la primera reacción ante un `[PARSE_ERROR]`, no la última.
-
-- **Explicit Allowlist `git restore` (`src/tools/RunCommandTool/index.ts`):** Nuevo guard al inicio del handler — ANTES del Vite Panic Blocker, ANTES de cualquier otro filtro — que detecta `git restore <path>` y lo enruta directo al `execSync`. Esto garantiza que ningún blocker downstream pueda dar un falso positivo sobre un nombre de archivo o flag (ej. si alguien llamara `git restore --force <file>` el Vite Panic Blocker lo cazaría — la allowlist explícita lo previene). La descripción del tool ahora documenta `git restore` como CTRL+Z permitido para que el LLM sepa que existe.
-- **CRITICAL ESCAPE HATCH en BUILD REPAIR PROTOCOL (`src/agents.ts` — @coder):** Nueva cláusula final dentro del bloque BUILD REPAIR PROTOCOL del @coder. Si una edición causa un `[PARSE_ERROR]` o rompe el build y el archivo está demasiado dañado para arreglarlo a mano, la directiva ordena **no entrar en pánico** y ejecutar inmediatamente `run_command` con `git restore <path>`. Después: leer el archivo limpio de nuevo y abordarlo con `insert_lines` en lugar de seguir intentando con `replace_block`/`replace_lines` sobre código corrupto.
-- **Resultado:** El @coder ya no se queda atrapado en bucles de "edit → corrupt → patch → corrupt más" sobre archivos irrecuperables. Tiene una vía de escape definida y autorizada que devuelve el archivo a un estado verde sin afectar el resto del trabajo del agente.
-
----
-
-## [v8.16.12] - The Iron Enforcer Patch
-
-**Objetivo:** Las reglas en el system prompt no fueron suficientes — el LLM seguía entrando en pánico tras un build fallido y se negaba a usar `insert_lines` para inyecciones masivas. Esta versión codifica las directivas DIRECTAMENTE EN EL MOTOR como hard-blocks deterministas. Tres bloqueos físicos: (1) cualquier comando de "borrado de caché" tras un build fallido es interceptado antes de ejecutarse, (2) el AST Syntax Shield ahora redirige forzadamente al @coder a `insert_lines`, (3) el plan path queda fijado en la raíz para evitar que el agente lo busque dentro del worktree.
-
-- **Vite Panic Blocker (`src/tools/RunCommandTool/index.ts`):** Nuevo guard al inicio del handler de comandos, ANTES del bloque `BLOCKED` existente. Intercepta seis patrones de pánico: `--force`, `del dist`/`del /s dist`, `rmdir`, `copy /b`, `rm -rf` sobre `dist`/`.vite`/`.cache`/`node_modules/.cache`, y `Remove-Item` sobre los mismos targets de PowerShell. Devuelve un mensaje específico que ataca la falacia mental: _"Vite NO está cacheando tu error. El error de sintaxis sigue en el código. No intentes borrar 'dist' ni usar '--force'. Encuentra el error real en el archivo, arréglalo y vuelve a ejecutar 'npm run build'."_ Este mensaje aterriza en el contexto del LLM como evidencia explícita de que su hipótesis (caché stale) es falsa.
-- **Forced Redirection en Syntax Shield (`src/tools/ReplaceBlockTool/index.ts` + `src/tools/ReplaceLinesTool/index.ts`):** Los cuatro mensajes de error críticos del AST Syntax Shield (dos por archivo: brace imbalance + JSX tag imbalance) ahora terminan con la directiva uniforme: _"ANTI-PANIC DIRECTIVE: STOP USING REPLACE_LINES/REPLACE_BLOCK FOR MASSIVE INJECTIONS. You MUST use the 'insert_lines' tool to inject this code cleanly."_ Esto reemplaza los antiguos consejos de "divide la inserción" y "usa healing_mode" — la única instrucción que el LLM ve ahora apunta a la herramienta correcta.
-- **PLAN PATH Rule (`src/agents.ts` — @coder):** Nueva línea dentro del bloque PATHING RULE: _"The plan is ALWAYS at the root: '.fluxo/IMPLEMENTATION_PLAN.md'. Do not prepend worktree paths to read it."_ Resuelve el bug donde @coder intentaba leer `.fluxo/worktrees/.../IMPLEMENTATION_PLAN.md` (no existe) en lugar del archivo en la raíz del repo.
-- **Resultado:** Las directivas del system prompt eran fácilmente ignorables tras múltiples iteraciones de pánico. Ahora son contratos deterministas a nivel de motor — el agente físicamente no puede ejecutar el comando de evasión, y el mensaje de error mismo le dice qué herramienta usar.
-
----
-
-## [v8.16.11] - The Build Repair Protocol
-
-**Objetivo:** Eliminar el "Panic Grepping" — el comportamiento en el que @coder, tras un fallo de `npm run build`, entra en modo pánico y empieza a usar `grep` para buscar términos aleatorios en otros archivos hasta agotar todas sus iteraciones sin nunca arreglar el error real. La causa raíz es Context Drift: el LLM pierde el foco del error exacto del compilador y vuelve a su tarea original de implementación.
-
-- **BUILD REPAIR PROTOCOL (`src/agents.ts` — @coder):** Nueva directiva `NON-NEGOTIABLE` insertada inmediatamente después del bloque BUILD VERIFICATION, para que se active en el mismo contexto mental que el resultado de `npm run build`. Cuando el build falla, el agente entra en "estado de EMERGENCIA" y sus únicos tres movimientos permitidos son: (1) `read_file` del archivo y línea exacta reportados por el compilador, (2) `replace_block` o `replace_symbol` para corregir ese punto exacto, (3) volver a ejecutar `npm run build`. Explícitamente prohíbe `grep` sobre términos no relacionados, continuar el plan de implementación, hacer cambios de feature, o emitir el Orchestrator's Report hasta que el build sea verde. La directiva enfatiza el principio clave: "The compiler error message already tells you EXACTLY what file and line broke. Trust it."
-
----
-
-## [v8.16.10] - The Grep Polish
-
-**Objetivo:** Corregir la ceguera del @coder cuando usa la herramienta `grep` con filtros glob complejos (`src/**/*.{js,jsx}`). Ripgrep no expande llaves en el argumento `path_filter` — retorna cero resultados silenciosamente, haciendo que el agente abandone búsquedas legítimas antes de tiempo.
-
-- **GREP RULE (`src/agents.ts` — @coder):** Nueva directiva insertada después de VERBATIM MATCHING RULE. Prohíbe el uso de sintaxis glob con llaves (`{js,jsx}`) en `path_filter` y ordena usar rutas de directorio simples (`src/`) o ningún filtro. Si `grep` retorna cero resultados, el agente debe ampliar el filtro antes de declarar que algo no existe.
-
----
-
-## [v8.16.9] - The Read-First Protocol Patch
-
-**Objetivo:** Eliminar el desperdicio de tokens causado por el @coder intentando adivinar `search_snippet` de memoria. La regla hace que el LLM lea el archivo primero y copie el texto objetivo de forma verbatim antes de cada edición — en lugar de reconstruirlo de su memoria de entrenamiento con errores sutiles de espaciado o puntuación.
-
-- **VERBATIM MATCHING RULE (`src/agents.ts` — @coder):** Nueva directiva marcada como `NON-NEGOTIABLE` insertada inmediatamente después del REPLACE_SYMBOL WORKFLOW. Prohíbe explícitamente adivinar o alucinar `search_snippet` y obliga a llamar `read_file` justo antes de cualquier edición con `search_and_replace` o `replace_block`. Si la herramienta devuelve "Snippet exacto no encontrado", la única acción válida es leer el archivo de nuevo — no reintentar con una variante inventada.
-
----
-
-## [v8.16.8] - The Environment & Precision Patch
-
-**Objetivo:** Triple parche operativo. (a) Cerrar el bug `spawnSync C:\WINDOWS\system32\cmd.exe ENOENT` que aparecía cuando Node perdía el path del shell de Windows en sesiones recientes de VS Code. (b) Darle al @coder un bisturí más fino (`insert_lines`) para inyectar componentes JSX masivos sin pelearse con el conteo de llaves. (c) Reescribir la JSX/AST RULE del @coder para canalizar todas las inserciones >50 líneas a través de la nueva herramienta.
-
-- **Windows Shell Patch (`src/tools/RunCommandTool/index.ts`):** `execSync` ahora pasa `shell` explícitamente (`process.env.ComSpec || 'cmd.exe'` en Windows, `true` en POSIX) y reinyecta `process.env` para garantizar que `System32` esté en `PATH`. Si aun así aparece un `ENOENT` con `cmd.exe` o `spawnSync`, el motor devuelve `[YIELD TO HUMAN — Node Environment Error]` con instrucciones específicas (reiniciar VS Code, validar `%ComSpec%`) y prohíbe explícitamente intentar PowerShell, `node -e` o scripts de evasión. La descripción del tool incluye la **WINDOWS ENOENT RULE** para que el LLM no entre en pánico.
-- **Nueva Herramienta `insert_lines` (`src/tools/InsertLinesTool/index.ts`):** Inserción pura — añade líneas ANTES de un `at_line` 1-based sin tocar el contenido existente. Acepta `content` como string o array de strings. Pasa por el AST Syntax Shield igual que `replace_lines`/`replace_block`, pero como nada se borra los inserts balanceados pasan al primer intento. Casos de uso primarios: (1) `at_line: 1` para prepender imports, (2) `at_line: totalLines + 1` para apendear un componente nuevo al EOF, (3) anclar después de un símbolo localizado por `grep`. Registrado en `src/tools/index.ts` y añadido al toolset del @coder.
-- **JSX/AST RULE Reescrita (`src/agents.ts` — @coder):** La directiva crítica del system prompt ahora distingue dos casos: (1) ediciones quirúrgicas balanceadas → `replace_block`, (2) **inserciones masivas (>50 líneas)** → `insert_lines` directamente, prohibiendo explícitamente `replace_block`/`replace_lines` en ese flujo porque "you will likely miscount brackets and the Syntax Shield will hard-block the edit". El @coder también recibe `replace_lines` como alias visible en su array de tools (ya estaba accesible vía registry, ahora explícito).
-- **Resultado:** Los entornos Windows con ComSpec roto dejan de generar bucles infinitos del agente, y la inyección de componentes React de 50–300 líneas (típica del workflow de @designer + @coder) deja de pelearse con el AST Syntax Shield.
-
----
-
-## [v8.16.7] - Smart Auto-Commit & Coder Prompt Polish
-
-**Objetivo:** Doble parche de fricción y precisión. (a) Eliminar el bloqueo `[SYSTEM ALERT]` de v8.15.0 cuando hay cambios humanos sin confirmar — ahora se autoguardan en un commit `WIP` antes del ancla del agente. (b) Pulir las instrucciones del @coder para erradicar dos clases de fallos recurrentes: rutas con prefijo `.fluxo/worktrees/...` y ediciones JSX con tags desbalanceadas que el AST Syntax Shield rechaza.
-
-- **Smart Auto-Commit (`src/utils/gitSafety.ts`):** `createSilentCheckpoint()` ya no lanza el error `[SYSTEM ALERT]`. Si `git status --porcelain` reporta cambios humanos, ejecuta automáticamente `git add . && git commit -m "WIP: Auto-saved human changes before agent task"`, y luego apila el ancla `git commit --allow-empty -m "fluxo-auto-checkpoint: <taskId>"` encima.
-- **Pre-flight Removal (`src/agentEngine.ts`):** Eliminado el bloque que interrumpía la ejecución antes de `MAX_ITERATIONS` cuando `hasUncommittedChanges()` devolvía `true`. La importación `hasUncommittedChanges` queda fuera de `agentEngine.ts` (sigue exportada desde `gitSafety` para uso externo). El motor ahora siempre intenta el checkpoint y delega la decisión al utility.
-- **Rollback Boundary (sin cambios):** `rollbackToLastCheckpoint()` mantiene `git reset --hard HEAD~1`. Como el ancla del agente está exactamente a un commit por encima del WIP humano, el reset descarta solo las ediciones del agente. El commit `WIP: Auto-saved human changes…` sobrevive intacto y el usuario lo ve listado en `git log`, pudiendo hacer `git reset HEAD~1` manualmente si quiere volver a un working tree sucio.
-- **PATHING RULE (`src/agents.ts` — @coder):** Nueva directiva crítica al tope del system prompt: el agente opera dentro de un worktree invisible y todas las rutas deben ser **estrictamente relativas a la raíz del repositorio**. Prohibido prefijar `.fluxo/worktrees/...` — el motor enruta automáticamente. Erradica una clase entera de errores `ENOENT` por doble prefijo.
-- **JSX/AST RULE (`src/agents.ts` — @coder):** Segunda directiva crítica complementaria al AST Syntax Shield: cuando se usa `replace_block` sobre archivos React/JSX, los `search_snippet` y `replace_snippet` deben contener tags HTML/JSX completamente balanceadas. Cualquier `</div>` colgante o componente cortado por la mitad activa el hard-block del Syntax Shield y aborta la tarea.
-- **Resultado:** Los usuarios ya no necesitan stashear/commitear manualmente antes de invocar al agente, y el @coder produce ediciones que pasan el AST Shield al primer intento mucho más a menudo.
-
----
-
-## [v8.16.6] - Planner Hard Block & Intent Routing Bypass
-
-**Objetivo:** Eliminar la causa raíz del bug de terminación prematura del @planner que persistía tras v8.16.5. `detectIntent` re-enrutaba el @planner a @coder leyendo keywords de la misión ("Adapt MealPlannerV2.jsx"), de modo que el LLM nunca recibía el prompt ni los tools del planner. Resultado: 3 intentos del retry harness fallando idénticamente.
-
-- **Intent Routing Bypass (`src/agentEngine.ts`):** Nueva constante `SUB_AGENTS_NO_ROUTING = new Set(['planner'])`. Los sub-agentes invocados desde un contexto de herramienta tienen rol fijo y nunca pasan por `detectIntent`. El router solo opera sobre mensajes top-level del usuario.
-- **Planner Hard Block (`src/agentEngine.ts`):** Primera comprobación dentro de `if (toolCalls.length === 0)`. Cuando `agentId === 'planner'`, el motor ejecuta `fs.existsSync('.fluxo/IMPLEMENTATION_PLAN.md')`. Si el archivo no existe, la respuesta es **rechazada físicamente**, se inyecta `[ENGINE HARD BLOCK]` y el loop continúa sin incrementar `ghostRetries`. La fuente de verdad es el filesystem — no `toolCallHistory`.
-- **SEPARATION PROTOCOL (`src/agents.ts`):** Nueva sección en el prompt del planner: "Do NOT explain your plan in the chat. Output ONLY the tool call for write_file." Refuerza que el usuario lee el plan del disco, no del chat.
-- **Resultado:** Entrega del plan garantizada en tres capas independientes: bypass de routing, hard block del motor, y retry harness exterior (3×25 iteraciones). Terminación prematura matemáticamente imposible.
-
----
-
-## [v8.16.5] - Mandatory Output Enforcement Loop
-
-**Objetivo:** Convertir la entrega del plan del @planner en matemáticamente obligatoria a nivel del motor, no solo como regla de prompt. El retry harness externo de v8.16.3 relanzaba la misma sesión rota tres veces sin corregir el comportamiento raíz.
-
-- **Mandatory Output Enforcement Loop (`src/agentEngine.ts`):** El bloque `enter_plan_mode` ahora envuelve la invocación del planner en un `while (!fs.existsSync(planFile) && plannerAttempt < 3)`. Si el archivo no se produce, el planner es re-invocado con un mensaje `[SYSTEM RETRY N/3]` que prohíbe análisis adicional y exige `write_file` inmediatamente. El loop verifica el sistema de archivos real, no toolCallHistory.
-- **ANTI-PARALYSIS RULE v8.16.5 (`src/agents.ts`):** Añadida al bloque CRITICAL DIRECTIVE del planner: "NEVER return conversational text after reading files. A rough written plan is infinitely more valuable than a perfect unwritten one. After 1–2 read_file calls maximum, write the plan."
-- **`write_file` description fix (`src/tools/FileWriteTool/index.ts`):** La descripción anterior decía "Only use for NEW files — for existing files, always use edit_file" — el LLM leía esto y se auto-censuraba antes de usar `write_file` en `.fluxo/IMPLEMENTATION_PLAN.md`. Nueva descripción: autoriza explícitamente `.md`, `.json`, y archivos `.fluxo/*`, nombrando el output obligatorio del planner.
-
----
-
-## [v8.16.4] - Tool Deprivation para @planner (Analysis Paralysis Fix)
-
-**Objetivo:** Aplicar el patrón de Deprivación de Herramientas al @planner, que sufría de "Parálisis por Análisis" — bucles infinitos de exploración con `glob` y `grep` hasta que el motor abortaba por Timeout.
-
-- **Restricción del toolset (`src/agents.ts`):** Array de tools del planner reducido de 8 a 4: `['get_repo_map', 'read_file', 'write_file', 'ask_user_approval']`. Eliminados: `glob`, `grep`, `search_in_files`, `list_dir`, `get_code_structure`, `skill`. El planner físicamente no puede entrar en bucles de exploración porque las herramientas de búsqueda no existen en su schema.
-- **WORKFLOW reescrito (`src/agents.ts`):** El flujo de trabajo ahora obliga a: (1) `get_repo_map` para obtener el atlas completo del proyecto en una sola llamada, (2) máximo 2–3 `read_file` para detalles granulares, (3) `write_file` inmediato. Eliminado el step de `list_dir('.')` que iniciaba los bucles.
-- **CRITICAL directive (`src/agents.ts`):** Nueva línea al inicio del WORKFLOW: "You do not have directory search tools. Use get_repo_map to understand the holistic project structure… and IMMEDIATELY use write_file."
-
----
-
-## [v8.16.3] - Planner Output Hardening
-
-**Objetivo:** Garantizar que el directorio `.fluxo/` exista antes de que el @planner intente escribir el plan, y reforzar la directiva de entrega con lenguaje inequívoco.
-
-- **Auto-creación de `.fluxo/` (`src/agentEngine.ts`):** `fs.mkdirSync(path.join(workspacePath, '.fluxo'), { recursive: true })` ejecutado dentro de `enter_plan_mode` antes de invocar el sub-loop del planner. Elimina la causa de fallo silencioso donde `write_file` abortaba por directorio inexistente.
-- **CRITICAL DIRECTIVE v8.16.3 (`src/agents.ts`):** Actualizada con lenguaje explícito: "DO NOT finish your turn or use the ask_user_approval tool to say you are done until you have successfully called write_file on that exact path. The engine will physically check for this file's existence."
-
----
-
-## [v8.16.2] - YIELD_TO_HUMAN & Blind Checkpoint Guard
-
-**Objetivo:** Eliminar el "Infinite MISSION-ANALYSIS-ONLY Loop" donde el Circuit Breaker de herramientas IO_CORE inyectaba errores al agente que luego reintentaba análisis indefinidamente, y eliminar los checkpoints ciegos para sesiones de solo análisis.
-
-- **YIELD_TO_HUMAN (`src/agentEngine.ts`):** Dentro del bloque Circuit Breaker (`_cbFails >= 3`), las herramientas IO_CORE (`glob`, `search_in_files`, `list_dir`, `get_code_structure`) ahora activan YIELD_TO_HUMAN: abortan el loop con `yield streamChunk` → `yield streamEnd → return`, hablando directamente al humano en lugar de inyectar errores al agente. El loop nunca reintenta; la petición llega limpia al usuario.
-- **Blind Checkpoint Guard (`src/utils/gitSafety.ts`):** `createSilentCheckpoint()` recibe un early-return si `taskId.includes('MISSION-ANALYSIS-ONLY')`. Previene commits vacíos creados durante sesiones de análisis puro donde el motor construía task IDs de ese tipo.
-- **Versión bumpeada a 8.16.2 (`package.json`).**
-
----
-
-## [v8.16.1] - Escape Hatch & Quality Gate Circuit Breaker
-
-**Objetivo:** Evitar que el agente entre en un bucle infinito cuando el código falla la compilación repetidamente, forzando una pausa HITL después de 3 fallos consecutivos del Quality Gate.
-
-- **`consecutiveBuildFailures` counter (`src/agentEngine.ts`):** Nuevo contador inicializado a 0 al inicio del loop. Se incrementa cada vez que `validateBuild()` devuelve fallo. Al llegar a 3 fallos consecutivos, activa el **Circuit Breaker del Quality Gate**: el motor inyecta un mensaje que prohíbe al agente continuar e invoca `ask_user_approval` para intervención humana.
-- **`bypassQualityGate` flag (`src/agentEngine.ts`):** Cuando el usuario aprueba el bypass vía `ask_user_approval`, el motor detecta la respuesta y activa este flag, permitiendo que el agente complete la tarea omitiendo las validaciones de build restantes.
-- **Reset en éxito de edición:** El contador de fallos consecutivos se resetea a 0 después de cualquier herramienta de edición exitosa (`replace_lines`, `write_file`, `replace_block`, `replace_symbol`) — solo cuenta fallos sin progreso en medio.
-
----
-
-## [v8.16.0] - Quality Gate (Build Validation Before Completion)
-
-**Objetivo:** Cerrar el ciclo de calidad — el agente no puede declarar una tarea completa hasta que el proyecto compile limpiamente. Elimina el patrón de "ghost completion" donde el agente emitía el Orchestrator's Report con código roto.
-
-- **`validateBuild()` (`src/utils/buildValidator.ts`):** Nueva utilidad que ejecuta `npm run build` en el workspace y retorna `{ success, error }`. Detecta si el script existe (omite silenciosamente si no hay `build` script). Timeout de 60 segundos.
-- **Quality Gate en ambos exit paths (`src/agentEngine.ts`):** Insertado en los dos puntos de salida del loop: (1) cuando el agente emite "ALL STEPS COMPLETE" / "ORCHESTRATOR'S REPORT", (2) cuando `ghostRetries` se agota. En ambos casos, si el build falla, se inyecta `[QUALITY GATE FAILED]` con los errores del compilador y el loop continúa.
-- **QUALITY GATE RULE (`src/agents.ts`):** Nueva regla en Coder: "Before declaring a task complete, your code MUST pass the project's build process."
-- **Syntax Shield (`src/utils/syntaxValidator.ts` + `src/tools/`):** `checkSyntax()` valida TypeScript/JSX en memoria antes de que `write_file`, `replace_lines`, y `replace_block` escriban al disco. Si el AST falla, la escritura se aborta con diagnóstico. Imposible corromper código fuente.
-
----
-
-## [v8.15.0] - The Time Machine (Git Auto-Checkpointing)
-
-**Objetivo:** Dar al sistema una red de seguridad automática. Antes de cada tarea del agente, se crea un commit ancla "fluxo-auto-checkpoint" en un árbol de trabajo limpio. Si la tarea sale mal, `abort_and_rollback` puede restituir el código al estado previo con un solo `git reset --hard HEAD~1`.
-
-- **`createSilentCheckpoint(taskId, cwd)` (`src/utils/gitSafety.ts`):** Nueva utilidad que verifica que el árbol de trabajo esté limpio (`git status --porcelain`), luego ejecuta `git add . && git commit --allow-empty -m "fluxo-auto-checkpoint: <taskId>"`. Lanza un error descriptivo si detecta cambios humanos no comprometidos — la mezcla de trabajo humano y agente en el mismo checkpoint crearía un rollback ambiguo.
-- **`rollbackToLastCheckpoint(cwd)` (`src/utils/gitSafety.ts`):** Ejecuta `git reset --hard HEAD~1` para deshacer todos los cambios del agente hasta el checkpoint ancla. Retorna `{ success, output }`.
-- **`AbortAndRollbackTool` (`src/tools/AbortAndRollbackTool/index.ts`):** Nueva herramienta expuesta a Coder y Manager. El agente la llama con un `reason` cuando detecta que sus ediciones rompieron la lógica fundamentalmente. Invoca `rollbackToLastCheckpoint` directamente.
-- **Rollback Hard Stop (`src/agentEngine.ts`):** Cuando `abort_and_rollback` tiene éxito, el motor emite `yield streamEnd` inmediatamente, deteniendo el loop. El agente no puede continuar haciendo ediciones después de un rollback.
-- **Integración en `runAgentLoop` (`src/agentEngine.ts`):** El checkpoint se crea al inicio de cada sesión de tarea, antes del primer API call.
-
----
-
-## [v8.14.0] - MCP + Syntax Shield (AST Validation)
-
-**Objetivo:** Dos mejoras de producción en paralelo: conectividad MCP estable con inicialización no bloqueante, y una capa de validación AST que hace imposible escribir código sintácticamente roto al disco.
-
-- **MCP Estabilización:** Refactor del cliente MCP para inicialización asíncrona no-bloqueante. Servidores MCP se conectan en background; la UI carga inmediatamente. Timeouts de conexión (5s) y de tool listing. Manejo de errores silencioso si un servidor no responde.
-- **`checkSyntax()` (`src/utils/syntaxValidator.ts`):** Nueva utilidad que carga el compilador TypeScript en memoria y ejecuta `ts.transpileModule()` sobre el contenido propuesto. Si el AST produce errores de diagnóstico, devuelve `{ ok: false, errors }`. Skippea automáticamente extensiones no-TS/JS (`.md`, `.json`, `.css`).
-- **Integración en herramientas de escritura:** `FileWriteTool`, `ReplaceLinesTool`, y `ReplaceBlockTool` llaman `checkSyntax()` antes de `acquireLock()`. Si falla, abortan con `[SYNTAX ERROR DETECTED]` y el diagnóstico exacto. La escritura nunca ocurre — el archivo en disco permanece intacto.
-- **`healing_mode` bypass:** Parámetro opcional en las herramientas de escritura. Si `healing_mode: true`, la validación AST se omite — permite reparar deliberadamente archivos ya corruptos.
-
----
-
-## [v8.13.0] - Global Circuit Breaker (Pre-Execution Block)
-
-**Objetivo:** Elevar el Circuit Breaker de la v7.12.4 a pre-ejecución. En lugar de ejecutar la herramienta y reportar el fallo, el motor ahora bloquea la llamada antes de ejecutarla cuando una herramienta ha fallado 3 veces, inyectando una directiva de cambio de estrategia.
-
-- **Pre-execution Circuit Breaker (`src/agentEngine.ts`):** `toolFailureTracker` pasa de post-ejecución a pre-ejecución. Antes del bloque `try { execute }`, el motor comprueba `_cbFails >= 3`. Si se cumple, el tool call es interceptado con `[CIRCUIT BREAKER]` sin invocar `executeTool` — ahorra una iteración por fallo.
-- **`@planner` CRITICAL DIRECTIVE v8.13.0 (`src/agents.ts`):** Primera versión de la directiva fuerte en el prompt del planner: "Your SOLE purpose is to write a markdown file using the 'write_file' tool… If you do not call 'write_file', the system will crash."
-- **Exclusión de herramientas inmunes:** `run_command` y `get_code_structure` continúan exentos del Circuit Breaker — un build fallido legítimo no debe bloquear las herramientas de diagnóstico.
-
----
-
-## [v8.12.0] - Semantic Awareness Phase 2 (get_repo_map + AST RepoMap)
-
-**Objetivo:** Dar a los agentes un atlas semántico completo del workspace en una sola llamada. `get_repo_map` genera un mapa de todos los símbolos exportados (funciones, clases, constantes) con sus archivos de origen — sin necesidad de explorar el árbol con glob/grep.
-
-- **`buildRepoMap()` (`src/utils/repoMap.ts`):** Nueva utilidad que recorre el workspace en Node.js puro, parsea los archivos TypeScript/JavaScript con el compilador TS, y extrae todos los símbolos exportados con sus rutas relativas. Devuelve un bloque de texto estructurado `file → [symbol1, symbol2, …]`. Completamente fail-safe: retorna `''` ante cualquier error de I/O.
-- **`get_repo_map` tool (`src/tools/GetRepoMapTool/`):** Herramienta expuesta a Coder y Manager. Sin parámetros — devuelve el mapa completo del proyecto actual. Reemplaza la secuencia `glob + grep` para orientación inicial.
-- **TOPOGRAPHY RULE v8.12.0 (`src/agents.ts`):** Nueva regla en Coder y Manager: "Before making sweeping changes or searching blindly for functions, you MUST call get_repo_map to understand the semantic structure and dependencies of the workspace." Añadido también en Manager para que incluya las entradas del mapa en las task descriptions de `create_team`.
-
----
-
-## [v8.11.0] - Worktree Auto-Cleanup
-
-**Objetivo:** Eliminar el error de "worktree ya activo" que bloqueaba al agente cuando intentaba crear un nuevo worktree sin haber cerrado el anterior — situación habitual en sesiones largas o tras un crash.
-
-- **Auto-cleanup silencioso (`src/agentEngine.ts`):** En el intercept de `enter_worktree`, el motor comprueba si `activeWorktreePath` está activo. Si es así, ejecuta `exit_worktree({ action: 'discard' })` silenciosamente (el agente no lo ve), resetea `activeWorktreePath = null`, y luego procede con el `enter_worktree` solicitado. El usuario ve el nuevo worktree activarse limpiamente sin mensajes de error.
-- **Thinking tick:** Emite `🧹 Auto-cleanup: discarding stale worktree before entering new one…` en el status bar durante la limpieza para trazabilidad sin contaminar el chat.
-
----
-
-## [v8.10.0] - The Shield Patch (HITL + Iron Rule)
-
-**Objetivo:** Eliminar el uso destructivo de `run_command` para operaciones de sistema de archivos (crear, mover, eliminar archivos con `rm -rf`, `del`, etc.) y añadir un control Human-in-the-Loop para cualquier comando shell no reconocido como seguro.
-
-- **HITL para `run_command` (`src/agentEngine.ts` + `src/extension.ts`):** Nuevo mecanismo pre-ejecución. Antes de ejecutar cualquier shell command, el motor evalúa el primer segmento contra `HITL_SAFE_PATTERNS` (whitelist de `npm`, `git`, `tsc`, `node`, `npx`, etc.). Si no coincide, pausa el loop y envía `{ type: 'hitlCommand', command }` al webview — el usuario aprueba o rechaza antes de que el proceso arranque.
-- **`HITL_SAFE_PATTERNS` (`src/agentEngine.ts`):** Lista de RegExp que cubren git, npm/yarn/pnpm/bun, tsc, node, vsce, echo sin redirect, y comandos de version. Extensible sin tocar la lógica de intercepción.
-- **IRON RULE — Shell Scope (`src/agents.ts`):** Nueva regla `RULE (SHELL SCOPE — v8.10.0)` en Coder y Manager: `run_command` es EXCLUSIVAMENTE para compilación y tests. Para cualquier operación de archivos: `delete_file`, `delete_dir`, `write_file`, `create_dir`. Violar esta regla activa el HITL.
-- **Path validation en DeleteTool (`src/tools/DeleteFileTool/` + `DeleteDirTool/`):** Guards críticos que bloquean eliminación de rutas fuera del workspace, rutas vacías, y paths que apunten al directorio raíz. Previene `delete_dir('.')` accidental.
-
----
-
-## [v8.9.0] - Semantic Awareness Phase 1 (RepoMap Injection)
-
-**Objetivo:** Inyectar automáticamente un mapa del repositorio en el contexto del sistema de los agentes que escriben código, eliminando el "Sesgo de Exploración" donde @coder y @manager llamaban a `glob` o `grep` repetidamente al inicio de cada tarea para orientarse.
-
-- **RepoMap auto-injection (`src/agentEngine.ts`):** Al construir el `systemPrompt` de sesión, si `agentId` es `'coder'` o `'manager'` y el workspace está disponible, se invoca `buildRepoMap(workspacePath)`. Si el resultado no está vacío, se inyecta como bloque `<repo_map>…</repo_map>` al final del system prompt, seguido de la `REPO MAP RULE v8.9.0`.
-- **`REPO MAP RULE v8.9.0`:** Instrucción inyectada con el mapa: "DO NOT use run_command to search for files. Use this map to know exactly which path to pass to read_file, replace_lines, or replace_symbol. If a path from the map does not resolve, call glob() to confirm — never guess."
-- **Fail-safe:** `buildRepoMap()` retorna `''` ante cualquier error — la inyección no ocurre si el mapa está vacío, sin bloquear la sesión.
-
----
-
-## [v8.8.0] - Worktree Structural Isolation (Automatic Path Redirect)
-
-**Objetivo:** Completar la Fase 1 del Enterprise Roadmap — Aislamiento Estructural con Git Worktrees. Las herramientas `enter_worktree` y `exit_worktree` ya existían desde v8.0.0, pero el agente tenía que prefijar MANUALMENTE cada ruta con la ruta del worktree. La v8.8.0 hace esta redirección INVISIBLE: el agente escribe `read_file("src/App.tsx")` y el motor silenciosamente lee `.fluxo/worktrees/branch/src/App.tsx`.
-
-- **`activeWorktreePath` Session State (`src/agentEngine.ts`):** Nueva variable `let activeWorktreePath: string | null = null` inicializada al inicio de `runAgentLoop` leyendo `.fluxo/active_worktree.json`. Si el archivo existe y la ruta del worktree existe en disco, la variable se inicializa automáticamente — esto garantiza que el contexto de worktree sobrevive rearranques de sesión y es heredado por sub-agentes (planner, swarm) que leen el mismo JSON al iniciarse.
-- **`effectiveWorkspacePath` Redirect Middleware (`src/agentEngine.ts`):** Calculado antes del bloque `try { execute }` para cada tool call: si `activeWorktreePath` está activo Y el tool no es `enter_worktree`/`exit_worktree`/`skill`/`enter_plan_mode` (herramientas que operan en el workspace principal para operaciones git y de planificación), entonces `effectiveWorkspacePath = activeWorktreePath`. En todos los demás casos, `effectiveWorkspacePath = workspacePath`. El `executeTool(toolName, args, workspacePath)` del `else` final fue cambiado a `executeTool(toolName, args, effectiveWorkspacePath)`. `debugLog` registra cada redirección para trazabilidad.
-- **Worktree State Sync (`src/agentEngine.ts`):** En el success handler (bloque `else` del circuit breaker): después de un `enter_worktree` exitoso se lee el state file y se actualiza `activeWorktreePath`; después de `exit_worktree` exitoso (merge o discard) se resetea a `null`. Esto cubre también el flujo de Human Review (v8.3.0) donde el `worktreeReviewCallback` ejecuta `exit_worktree` — el `toolName` sigue siendo `'exit_worktree'` en el success check.
-- **`EnterWorktreeTool` output actualizado (`src/tools/EnterWorktreeTool/index.ts`):** El mensaje de éxito ahora dice "PATH REDIRECT ACTIVE — Continue using NORMAL relative paths (e.g. 'src/App.tsx'). The engine automatically redirects ALL file operations to the worktree." Esto evita que el LLM siga prefijando rutas manualmente (comportamiento previo que causaba path-not-found errors).
-- **`isolationNotice` actualizado (`src/agentEngine.ts`):** El mensaje inyectado al inicio de sesión para agentes con `isolation: 'worktree'` ahora menciona la redirección automática explícitamente.
-- **Regla WORKTREE ISOLATION en Manager (`src/agents.ts`):** Nueva regla `RULE (WORKTREE ISOLATION — v8.8.0)`: para tareas >1 archivo o refactorizaciones complejas, `enter_worktree` antes de `create_team`. Merge si build pasa, discard si falla irremediablemente. El código en main queda INTACTO en ambos casos.
-
----
-
-## [v8.7.1] - Clean Output Rendering (CoT Leak Fix)
-
-**Objetivo:** Eliminar el "Message Accumulation" y "CoT Leak" donde el motor concatenaba monólogos internos del agente (planning, razonamiento intermedio) en la burbuja de chat final, produciendo respuestas largas y confusas mezclando pensamiento con resultado.
-
-- **Intermediate Text Rerouting (`src/agentEngine.ts`):** Cambio quirúrgico en el bloque de emisión de texto. Si `toolCalls.length > 0` (el modelo está pensando antes de actuar), el texto de esa respuesta se enruta a `yield { type: 'thinking' }` (barra de estado, visible solo como indicador) en lugar de `yield { type: 'streamChunk' }` (burbuja de chat). Solo las respuestas donde `toolCalls.length === 0` (respuesta final del Orchestrator's Report) emiten `streamChunk`. Un truncado de 300 chars en el tick de thinking previene que monólogos largos saturen el status bar.
-- **`<thinking>` tag policy (`src/agents.ts` — `SEPARATION_PROTOCOL`):** Directiva nueva al inicio del protocolo, con ejemplo de output CORRECTO vs INCORRECTO: si el agente necesita razonar antes de llamar una herramienta, el razonamiento VA DENTRO de `<thinking>...</thinking>`. El "CoT Leak" (mezclar pensamiento con respuesta final) queda explícitamente marcado como violación del protocolo.
-- **Acordeón colapsable para `<thinking>` (`media/main.js` — `renderMarkdown`):** Nuevo paso `0c` en la función `renderMarkdown`. Bloques completos `<thinking>...</thinking>` se reemplazan con un `<details class="thinking-details">` colapsado por defecto con summary "💭 Ver proceso de pensamiento". Paso `0d`: bloques incompletos (aún abiertos durante streaming — sin tag de cierre todavía) se eliminan con regex para prevenir que CoT parcial aparezca en la burbuja mientras el modelo escribe.
-- **CSS para `.thinking-details` (`media/style.css`):** Nueva sección `─── Thinking Blocks ───` con color indigo `rgba(99, 102, 241, ...)` para distinguirlos visualmente de los bloques `<reasoning>` (border gris) y `<tool_result>` (azul). Acordeón colapsado por default — expandible con clic. Mismo patrón estructural que `.reasoning-details` (ya existente).
-
----
-
-## [v8.7.0] - OS Awareness & Iron Curtain Tuning
-
-**Objetivo:** Eliminar la fricción severa detectada en `.fluxo/improvements.md` causada por dos fuentes: (1) el agente usando comandos Linux (`ls`, `rm`, `mv`) en un entorno Windows, y (2) la Cortina de Hierro de `RunCommandTool` bloqueando pipelines legítimos como `npm run build | head -50`.
-
-- **OS Awareness Directive (`src/agents.ts` — `OS_DIRECTIVE`):** Nueva constante computada una sola vez al cargar el módulo con `process.platform === 'win32'`. En Windows: directiva bilingüe con tabla de equivalencias exactas (dir/ls, del/rm, move/mv, copy/cp, md/mkdir -p), advertencia sobre rutas con backslash y comillas, y lista explícita de comandos Unix PROHIBIDOS. En Unix/Linux/macOS: directiva breve confirmando el entorno POSIX. Inyectada en `buildAgentSystemPrompt()` ÚNICAMENTE para agentes que tienen `run_command` en su toolset — `@planner` no recibe el bloque (es read-only y no usa terminal). Esta arquitectura es dinámica: si un nuevo agente recibe `run_command` en el futuro, hereda el bloque automáticamente sin ningún cambio adicional.
-- **Fine-tuning de la Cortina de Hierro (`src/tools/RunCommandTool/index.ts`):** Cambio quirúrgico en la lógica `CLI_FILE_READ`: de `.cmdSegments.some(seg => CLI_FILE_READ.test(seg))` a `.CLI_FILE_READ.test(firstSegment)`. El bloque ahora examina ÚNICAMENTE el primer segmento del comando (antes del primer `|`). Resultado: `npm run build | head -50`, `tsc 2>&1 | grep error`, `git log | tail -20` son PERMITIDOS (el filtro procesa stdin, no un archivo). `grep "error" src/file.ts`, `head -100 src/main.ts` siguen BLOQUEADOS (son el primer segmento, acceso directo a archivo). El mensaje de error actualizado explica la distinción: el pipe es válido, el acceso directo no.
-- **TOOL_DEF actualizado (`src/tools/RunCommandTool/index.ts`):** Descripción expandida con dos aclaraciones críticas: (1) diferencia de comandos Windows/Unix, y (2) la nota sobre Worktrees — si hay un Worktree activo, el agente NO debe intentar `cd` hacia él; todas las herramientas nativas (read_file, run_command, replace_block) ya operan sobre el contexto correcto automáticamente.
-- **Error capture mejorado (`src/tools/RunCommandTool/index.ts`):** Añadido `try-catch` alrededor de `execSync`. Cuando un comando retorna exit code ≠ 0, el error ahora captura `err.stdout` + `err.stderr` del objeto de error de Node.js y los combina en el output — el agente recibe el mensaje de compilación completo en lugar de solo `err.message` (que era el comportamiento anterior cuando el engine capturaba el throw).
-
----
-
-## [v8.6.0] - Community Skills System
-
-**Objetivo:** Dar a Fluxo AI una biblioteca de recetas de implementación comunitarias. Un Skill es un archivo JSON en `src/skills/` que contiene el blueprint completo de una integración estándar (Stripe, Firebase, etc.). En lugar de pedirle al `@planner` que analice el código desde cero, el `@manager` puede buscar un skill existente y aplicarlo directamente — el engine inyecta la receta en `.fluxo/IMPLEMENTATION_PLAN.md` en milisegundos.
-
-- **`skills/stripe-payment-flow.json`:** Primer skill comunitario oficial. Cubre el flujo completo de Stripe Checkout: instalación del SDK, variables de entorno (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, VITE_STRIPE_PUBLISHABLE_KEY), endpoint de creación de sesión (`/api/create-checkout-session`), handler de webhook con verificación de firma y raw-body parsing, componente `Checkout.tsx`, páginas `PaymentSuccess.tsx` y `PaymentCancel.tsx`, registro de rutas en `App.tsx`, y verificación de build. Incluye advertencias críticas sobre raw-body middleware, tarjetas de prueba de Stripe, y testing local con Stripe CLI.
-- **`SkillTool` (`src/tools/SkillTool/index.ts`):** Nueva herramienta passthrough (patrón idéntico a `EnterPlanModeTool`). Dos acciones: `list` (devuelve nombre + descripción de todos los JSONs en `src/skills/`) y `apply` (inyecta la receta en `.fluxo/IMPLEMENTATION_PLAN.md`). Disponible ÚNICAMENTE para `@planner` y `@manager`.
-- **Intercept `skill` en `agentEngine.ts`:** El engine resuelve la ruta `src/skills/` usando `path.join(__dirname, '..', 'src', 'skills')` — funciona tanto en desarrollo (`out/` → `../src/skills`) como en producción (extensión instalada desde VSIX). `action='list'`: lee todos los `.json` del directorio y devuelve lista con nombre y descripción. `action='apply'`: parsea el JSON, extrae `recipe` (soporta string o array), escribe `.fluxo/IMPLEMENTATION_PLAN.md` con el contenido, emite un thinking tick `✅ Skill applied`, y devuelve la receta completa al agente con la directiva `create_team`. Manejo de errores completo: directorio inexistente, skill no encontrado, JSON malformado, error de escritura.
-- **Prompts actualizados (`src/agents.ts`):** `@planner` recibe la directiva "COMMUNITY SKILLS SHORTCUT": antes del análisis manual, llamar `skill(action='list')`. Si hay un match, `skill(action='apply')` y saltarse el análisis. `@manager` recibe "COMMUNITY SKILLS FAST LANE" en la sección PLANNING GATE: antes de `enter_plan_mode`, verificar si existe un skill aplicable — es más rápido que spawning el `@planner` para integraciones conocidas. `skill` añadido al toolset de `@planner` y `@manager`.
-- **`media/main.js`:** Nuevo `case 'skill'` en `getToolTitle`: muestra `• skill  apply → stripe-payment-flow` o `• skill  list`.
-- **`README.md`:** Actualizado a v8.6.0 con nueva sección "🧩 Community Skills" que explica a la comunidad cómo contribuir con archivos JSON.
-
----
-
-## [v8.5.3] - The Orchestration Core (Planning Gate)
-
-**Objetivo:** Alinear Fluxo AI al 100% con la arquitectura de planificación de Claude Code. La v8.5.3 introduce el `@planner` como sub-agente especializado y el `enter_plan_mode` como puerta obligatoria para el Manager antes de delegar cualquier tarea multi-archivo. Esto cierra el ciclo del "Motor Base": el Manager ya no improvisa — primero analiza, luego delega con precisión quirúrgica.
-
-- **`EnterPlanModeTool` (`src/tools/EnterPlanModeTool/index.ts`):** Nueva herramienta passthrough (patrón idéntico a `TeamCreateTool` y `ReplaceSymbolTool`). El `execute()` es un stub — el engine intercepta la llamada antes de llegar al `executeTool` genérico. Parámetro: `task_description` (descripción completa de la tarea a planificar).
-- **`@planner` sub-agente (`src/agents.ts`):** Nuevo agente `planner` con emoji 📋 y color `#6366f1`. Toolset de solo lectura: `read_file`, `glob`, `grep`, `get_code_structure`, `search_in_files`, `list_dir` más `write_file` exclusivamente para `.fluxo/IMPLEMENTATION_PLAN.md`. System prompt estricto: análisis primero, plan siempre, cero modificaciones de código fuente. El formato del plan es obligatorio: `## Objective`, `## Files to Modify`, `## Sequential Steps` (con File + Action + Symbol/Block + Details por paso), `## Integration Points`, `## Dependencies & Risks`, `## Agent Assignment`.
-- **Intercept `enter_plan_mode` en `agentEngine.ts`:** Insertado antes del bloque `create_team`. Cuando el Manager llama `enter_plan_mode`, el engine lanza un loop `runAgentLoop` del `@planner` con parámetros de solo análisis (sin `approvalCallback`, `nativeEditCallback`, `worktreeReviewCallback`, ni `replaceSymbolCallback`). Los eventos del planner se bufferean y se emiten en el UI principal. Al terminar, el engine lee `.fluxo/IMPLEMENTATION_PLAN.md` y lo devuelve como tool result al Manager con la directiva `create_team`.
-- **HARD BRAKE bypass para `@planner` (`agentEngine.ts`):** El `isPlanBrake` ahora incluye la guarda `agentId !== 'planner'`. Sin esto, la escritura de `IMPLEMENTATION_PLAN.md` activaría el Hard Brake en el contexto del sub-loop del planner — congelandolo antes de completar. La guarda garantiza que el plan se escriba sin interrupción; el Hard Brake sigue funcionando normalmente en Manager y Coder.
-- **PLAN_VERIFICATION_SHIELD actualizado (`agentEngine.ts`):** La ruta del plan ahora es `.fluxo/IMPLEMENTATION_PLAN.md` (antes era `IMPLEMENTATION_PLAN.md` en la raíz). Alineado con la convención Zero Footprint (v8.4.0) donde todos los artefactos de Fluxo viven en `.fluxo/`.
-- **PLANNING GATE en Manager prompt (`src/agents.ts`):** Nueva sección `─── PLANNING GATE — IRON RULE (v8.5.3) ───` insertada inmediatamente después del STRICT ORCHESTRATOR CONSTRAINT. Regla de hierro: para cualquier tarea >1 archivo o refactor lógico, el Manager TIENE PROHIBIDO llamar `create_team` si no existe `.fluxo/IMPLEMENTATION_PLAN.md`. `enter_plan_mode` se añade también al listado de `TOOLS YOU HAVE`.
-- **UX Polish — Silencio de Action Enforcement:** Eliminados el `yield { type: 'thinking' }` y el `await sleep(2000ms)` del bloque Action Enforcement en `agentEngine.ts`. El motor ya seguía reintentando internamente (`ghostRetries < 2`) con `debugLog` al archivo, pero el spinner "⚡ Enforcing action (retry N/2)…" y la pausa de 2 segundos eran ruido visible para el usuario. Ahora el motor "pelea" con el LLM en silencio — el usuario solo ve el resultado limpio.
-- **`media/main.js`:** Añadido `case 'enter_plan_mode'` en `getToolTitle` con preview de los primeros 50 chars del `task_description`.
-
----
-
-## [v8.5.2] - The Sense-Making Patch (Spatial Awareness)
-
-**Objetivo:** Eliminar la "Amnesia Espacial" y el "Sesgo de Terminal" donde el agente usaba `ls`, `pwd`, `grep`, y rutas absolutas de Windows o `/workspace/` para orientarse, saturando el sistema con comandos CLI que fallan o producen outputs inútiles. La v8.5.2 da "ojos" al agente con herramientas nativas de exploración de proyectos, y un middleware que normaliza silenciosamente cualquier ruta hallucinated antes de que llegue a una herramienta.
-
-- **`GlobTool` (`src/tools/GlobTool/index.ts`):** Nueva herramienta nativa que acepta un glob pattern (e.g. `"src/**/*.tsx"`) y devuelve la lista de archivos coincidentes recorriendo el árbol del workspace en Node.js — sin shell, sin permisos de terminal. Implementa su propio `globToRegex()` que soporta `**` (profundidad arbitraria), `*` (cualquier char salvo `/`), y `?` (un char). Omite automáticamente `node_modules`, `.git`, `dist`, `out`, `.fluxo`. Reemplaza `ls`, `find`, y `dir` en `run_command`. Límite: 300 resultados.
-- **`GrepTool` (`src/tools/GrepTool/index.ts`):** Nueva herramienta nativa que acepta un string o regex JavaScript y un `path_filter` glob opcional, y devuelve matches en formato `file:line: content`. Primero intenta compilar `pattern` como RegExp; si falla, lo escapa y lo trata como string literal — esto permite queries tanto técnicas (`"import.*useAuth"`) como en lenguaje natural (`"login button"`). Omite archivos binarios por extensión. Reemplaza `grep`, `findstr`, y `rg` en `run_command`. Límite: 500 matches.
-- **Path Normalization Middleware en `agentEngine.ts`:** Nueva función `normalizeAgentPath()` que convierte silenciosamente antes de cada tool call: (1) `/workspace/path` → `path`; (2) `D:\Users\...\project\src\file.ts` → `src/file.ts` (path.relative); (3) Rutas absolutas fuera del workspace → error inmediato con la raíz real. La normalización aplica a los argumentos `path` y `file_path` de TODAS las herramientas. El LLM ya no necesita conocer la ruta absoluta del workspace — puede usar rutas relativas y el middleware garantiza que lleguen correctamente.
-- **System prompts actualizados (`src/agents.ts`):** Nueva `RULE 5b (WORKSPACE ORIENTATION)` en el coder: prohibición explícita de `ls/pwd/find/grep/rg/findstr/dir` vía `run_command`, con la tabla de sustituciones (`glob` → `find/ls`, `grep` → `grep/findstr`). `glob` y `grep` añadidos al toolset de Coder, Designer, y Manager. `media/main.js` actualizado: nuevos títulos en `getToolTitle` para `replace_symbol`, `glob`, y `grep`.
-
----
-
-## [v8.5.1] - The Boundary Patch (LSP Mismatch Fix)
-
-**Objetivo:** Corregir el "LSP Boundary Mismatch" donde el rango del símbolo devuelto por el Language Server excluye el keyword inicial (`const`/`let`/`async`). Cuando el LLM incluye ese keyword en `new_code` y el engine aplica el reemplazo, el resultado es `const const foo = ...` o `;;`. Además, el REDUNDANT_DECLARATION de Sherlock bloqueaba los hotfixes de sintaxis legítimos.
-
-- **LSP Boundary Sanitizer (`src/extension.ts` — `replaceSymbolCallback`):** Bloque de sanitización insertado entre la resolución del símbolo y la llamada a `edit.replace()`. Cinco regex ordered (multi-palabra antes que mono-palabra para evitar false positives): `async async` → `async`, `const const` → `const`, `let let` → `let`, `var var` → `var`, `;;+` → `;`. El orden es intencional — `async async function` debe resolverse antes que un hipotético `async` aislado. La sanitización opera sobre `sanitizedCode` (copia de `newCode`) sin mutar el argumento original.
-- **BUILD FAILURE HOTFIX EXCEPTION en `REVISOR_PROMPT` (`src/agents.ts`):** Añadida como addendum al check #6 (REDUNDANCY CHECK). Si el contexto contiene `BUILD_FAILED` o un resultado de herramienta previo que indica sintaxis corrupta o AST corruption, el agente tiene PERMISO EXPLÍCITO de re-declarar o reescribir cualquier símbolo como hotfix. En ese caso Sherlock debe emitir `"OK"` en lugar de `REDUNDANT_DECLARATION`. Lógica: cuando el build está roto, la inyección previa ya está corrupta — re-declararla es la corrección, no el error.
-
----
-
-## [v8.5.0] - The Monolith Core (LSP-Native Symbol Replace)
-
-**Objetivo:** Eliminar los fallos de AST (llaves desbalanceadas, rangos incorrectos) causados por la edición de código basada en strings. La v8.5.0 introduce `replace_symbol` — una herramienta que delega la localización del bloque de código al Language Server Protocol de VS Code, el mismo motor que usa el autocompletado y el refactor nativo. El agente ya no cuenta llaves ni calcula líneas: solo provee el nombre del símbolo y su nueva versión.
-
-- **`ReplaceSymbolTool` (`src/tools/ReplaceSymbolTool/index.ts`):** Nueva herramienta con TOOL_DEF (`file_path`, `symbol_name`, `new_code`). El `execute()` es un passthrough — la ejecución real es interceptada por el engine antes de llegar al `executeTool` genérico, igual que `ask_user_approval` y `exit_worktree`. El `file_path` admite tanto rutas relativas al workspace como absolutas.
-- **`replaceSymbolCallback` en `src/extension.ts`:** Implementación completa del flujo LSP. (1) Abre el documento vía `vscode.workspace.openTextDocument`. (2) Llama `vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', uri)` con retry loop de 4 intentos (2s total) para tolerancia a Language Servers lentos — mismo patrón que `getCodeStructureCallback`. (3) Búsqueda recursiva del símbolo en el árbol (nodos raíz + todos sus `children`). (4) Si no se encuentra, devuelve el mensaje exacto: `"Símbolo no encontrado por el LSP..."` con la lista de símbolos disponibles en el nivel raíz. (5) Aplica `vscode.workspace.applyEdit(WorkspaceEdit)` y guarda — idéntico al flujo de `search_and_replace`. (6) El output de éxito incluye el `SymbolKind` (Function, Class, Variable, etc.) y el rango reemplazado.
-- **Intercept `replace_symbol` en `agentEngine.ts`:** Añadido antes de `fetch_documentation`. Hace `yield thinking` con texto descriptivo, llama `replaceSymbolCallback`, y en caso de fallo enriquece el output con una directiva de recuperación. El callback se propaga también a los sub-agentes del Parallel Swarm vía el parámetro adicional en la firma de `runAgentLoop`.
-- **Toolsets actualizados en `src/agents.ts`:** `replace_symbol` añadido a Coder y Designer **además** de `replace_block` (que se mantiene como fallback explícito para archivos sin soporte LSP). Los agentes tienen ahora ambas herramientas — la jerarquía es: `replace_symbol` (preferido, AST-safe) > `replace_block` (fallback, string-based) > `write_file` (solo para archivos nuevos).
-- **System prompts actualizados (`src/agents.ts`):** `REGLA DE ORO` reescrita como `AST Protocol v8.5.0`. `REPLACE_BLOCK WORKFLOW` reemplazado por `REPLACE_SYMBOL WORKFLOW` con la instrucción del usuario: "Ya no buscas texto plano. Ahora editas código por Nodos AST. El sistema calculará las llaves por ti." Rules 6, 7, BUG PROTOCOL, LARGE FILE STRATEGY, BUILD VERIFICATION, y GRACEFUL DEGRADATION actualizadas. `REVISOR_PROMPT` actualizado: checks #3, #4, #5 y la nota de scope ahora reconocen `replace_symbol` y `new_code`.
-
----
-
-## [v8.4.0] - Zero Footprint Protocol
-
-**Objetivo:** Eliminar la contaminación del workspace y del panel de Git causada por los archivos `.bak` de los backups automáticos y por la carpeta `.fluxo/` no ignorada. La extensión ahora opera con huella cero en el árbol de trabajo del usuario.
-
-- **Auto-Gitignore (`src/extension.ts` — `ensureGitignore()`):** Nueva función ejecutada silenciosamente en cada `activate()` inmediatamente después de `cleanupLogsOnActivation()`. Lee el `.gitignore` de la raíz del workspace (si existe), verifica si `.fluxo/` o `.fluxo` ya están listados (comparación exact, normalizada por `.trim()`), y en caso contrario añade al final del archivo: `\n# Fluxo AI Engine Data\n.fluxo/\n`. Si el archivo `.gitignore` no existe aún, lo crea. La función es idempotente — múltiples activaciones no duplican la entrada. Los fallos (workspace read-only, sin carpeta abierta) son silenciosos y no-fatales.
-- **Backups de cero huella (`src/tools/ReplaceLinesTool/index.ts` + `src/tools/ReplaceBlockTool/index.ts`):** `import * as os from 'os'` añadido en ambas herramientas. La ruta de backup cambia de `path.join(workspacePath, '.fluxo', 'backups')` a `path.join(os.tmpdir(), 'fluxo-backups')`. El directorio se crea con `fs.mkdirSync(..., { recursive: true })` igual que antes. Los archivos `.bak` ahora aterrizan en el directorio temporal del sistema operativo (`/tmp/fluxo-backups` en Linux/macOS, `%TEMP%\fluxo-backups` en Windows) — completamente fuera del workspace, invisibles para Git, y gestionados por el OS. La funcionalidad de recuperación es idéntica.
-
----
-
-## [v8.3.4] - The Visibility Patch (Untracked Files in Worktree Review)
-
-**Objetivo:** Corregir el edge case en la tarjeta de revisión del Worktree donde los archivos nuevos (creados por el agente dentro del worktree) no aparecían en la lista de "Archivos modificados". La causa raíz: `git diff --name-only HEAD` solo reporta archivos tracked que difieren del HEAD — los archivos untracked (nunca añadidos al índice de git) son invisibles para ese comando.
-
-- **`worktreeReviewCallback` en `src/extension.ts`:** Reemplazado `git diff --name-only HEAD` por `git status --porcelain`. El formato porcelain reporta TODOS los cambios en el working tree: `M ` (modificados), `A ` (staged nuevos), `D ` (eliminados), `R ` (renombrados), y `??` (untracked — los archivos nuevos que antes se perdían). El parser extrae solo la ruta de cada línea (`.slice(3).trim()`) y maneja renombrados (`old -> new`) tomando únicamente el nombre final. El resultado completo se pasa al webview via `{ type: 'worktreeReview', changedFiles }` — la tarjeta de revisión ahora muestra todos los archivos sin excepción.
-
----
-
-## [v8.3.3] - The Resilience Patch (Worktree Auditor Fix)
-
-**Objetivo:** Eliminar el falso positivo del Sherlock Auditor que bloqueaba `exit_worktree(discard)` cuando el agente intentaba limpiar un worktree conflictivo para reintentar la tarea. El problema tenía dos capas: (1) Sherlock veía el discard como una "eliminación no solicitada" y lo bloqueaba; (2) cuando `enter_worktree` fallaba por conflicto, el agente no tenía autorización explícita para resolverlo. Ambas capas se resuelven de forma independiente y redundante.
-
-- **`isSafeBatch` en `agentEngine.ts`:** `exit_worktree` con `action='discard'` añadido a la lista de llamadas que bypasan el Sherlock Auditor completamente. La condición evalúa el campo `action` de los args antes de clasificar el batch como seguro. Esto es la corrección más robusta — si la llamada nunca llega a Sherlock, no puede ser bloqueada. La lógica es consistente con cómo `run_command` con comandos git seguros ya bypasaba el Auditor.
-- **`WORKTREE CLEANUP EXCEPTION` en `REVISOR_PROMPT` (`src/agents.ts`):** Segunda capa de defensa. Nueva sección inyectada después de `HEALING MODE OVERRIDE` con prioridad explícita. Declara que `exit_worktree(discard)` es SIEMPRE autorizado y que si Sherlock lo detectaría como error, debe en cambio emitir: `"Cleanup Authorized: Se permite el descarte para resolver el conflicto de entorno detectado."` Esto garantiza el comportamiento correcto incluso si el isSafeBatch tiene un edge case no contemplado.
-- **Worktree Conflict Resolution Hint en `agentEngine.ts`:** Cuando `enter_worktree` falla con el mensaje "already active" (worktree existente), el motor enriquece el output del tool con la directiva: `"CONFLICTO DE WORKTREE DETECTADO: Tienes permiso para usar exit_worktree con action='discard' para limpiar el entorno antes de reintentar."` Esto resuelve el vector de bloqueo por indecisión — el LLM recibe autorización explícita del motor sin necesidad de interpretar el error por su cuenta.
-
----
-
-## [v8.3.2] - The Precision Protocol (Semantic Replace)
-
-**Objetivo:** Eliminar el anti-patrón de edición por coordenadas de línea (`replace_lines`) que causa corrupción de AST cuando el LLM calcula mal los números de línea. La v8.3.2 implementa el "Reemplazo Semántico": el agente identifica el bloque a reemplazar por su contenido exacto (`search_snippet`), no por su posición en el archivo. Si el snippet no coincide exactamente, la herramienta no hace nada — el archivo nunca se corrompe.
-
-- **`ReplaceBlockTool` actualizado (`src/tools/ReplaceBlockTool/index.ts`):** Nuevos parámetros primarios `search_snippet` y `replace_snippet` (alineados al spec del usuario). Los nombres legacy `target_snippet`/`new_content` siguen siendo aceptados como fallback para backward compat. El TOOL_DEF actualiza la descripción para explicar el fail-safe explícitamente. El mensaje de error cuando el snippet no se encuentra ahora devuelve exactamente: `"Snippet exacto no encontrado. Usa read_file para copiar el bloque literal antes de reemplazar."`. **FileLockManager integrado**: `acquireLock` antes del `fs.writeFileSync`, `releaseLock` en el `finally` — idéntico al patrón de `ReplaceLinesTool` y `FileWriteTool`. El auto-inject de `agent_id` desde `agentEngine.ts` aplica también a `replace_block`.
-- **Toolset del @coder actualizado (`src/agents.ts`):** `search_and_replace` eliminado del array `tools`. `replace_block` añadido como único tool de edición de archivos existentes.
-- **Toolset del @designer actualizado (`src/agents.ts`):** `replace_block` añadido. El designer ahora puede editar archivos CSS/HTML existentes de forma segura sin acceso a coordenadas de línea.
-- **System prompt del @coder (`src/agents.ts`):** Todas las referencias a `search_and_replace` (8 ocurrencias) actualizadas a `replace_block`. La sección `SEARCH_AND_REPLACE WORKFLOW` reemplazada por `REPLACE_BLOCK WORKFLOW` con la instrucción exacta del usuario: "Debes proveer un search_snippet con el código exacto actual (copiado de read_file) incluyendo un par de líneas de contexto arriba y abajo". `RULE (GRACEFUL DEGRADATION)` actualizada: fallback ahora es `replace_block` con un `search_snippet` más amplio, no `replace_lines`.
-- **System prompt del @designer (`src/agents.ts`):** Añadida sección `REPLACE_BLOCK WORKFLOW` con la instrucción completa en español.
-- **Auto-inject de `agent_id` en `agentEngine.ts`:** El bloque de auto-inject existente (que cubría `replace_lines` y `write_file`) ahora incluye también `replace_block` — el `FileLockManager` siempre recibe el `agentId` correcto sin que el LLM deba recordarlo.
-
----
-
-## [v8.3.1] - Strict Orchestrator (Tool Deprivation)
-
-**Objetivo:** Corregir el patrón de "LLM Laziness" observado en los logs de la v8.3.0: el @manager, al tener acceso a herramientas de edición, intentaba hacer el trabajo de programación directamente (y fallaba), en lugar de delegar a @coder y @designer vía `create_team`. La solución es arquitectural — se elimina físicamente el acceso a las herramientas de mutación del Manager, forzando la delegación como única ruta posible.
-
-- **Deprivación de herramientas en `src/agents.ts`:** La lista `tools` del agente `manager` se reduce de 18 herramientas a 8. Eliminadas: `write_file`, `search_and_replace`, `replace_lines` (implícito), `replace_block` (implícito), `create_dir`, `list_dir`, `delete_file`, `delete_dir`, `propose_plan`, `ask_user_approval`, `update_memory`, `fetch_documentation`. Conservadas: `read_file` (diagnóstico de solo lectura), `search_in_files`, `get_code_structure`, `run_command` (solo git/npm), `enter_worktree`, `exit_worktree`, `create_team`, `send_message`. El engine construye el schema de tools a partir de esta lista — si el LLM intenta llamar a una herramienta no registrada, el engine devuelve `[SYSTEM ENGINE ERROR]: Unknown tool` directamente.
-- **Bloque `STRICT ORCHESTRATOR CONSTRAINT` en el system prompt del Manager (`src/agents.ts`):** Inyectado como primera sección del prompt, antes del Sentinel Protocol. Declara explícitamente qué herramientas tiene y qué herramientas NO tiene. La frase *"Físicamente no tienes acceso a herramientas de escritura"* es deliberadamente concreta — modelos de lenguaje responden mejor a restricciones físicas que a restricciones de comportamiento. El bloque cierra con la `MANDATORY DELEGATION RULE`: cualquier tarea de código o diseño → `create_team` inmediatamente, sin excepciones.
-
----
-
-## [v8.3.0] - Native Visual Diff (Worktree Human Review)
-
-**Objetivo:** Eliminar el diff de texto simulado (líneas verdes) del webview y reemplazarlo con el motor nativo de comparación de VS Code. Cuando un agente completa su trabajo en un Worktree y solicita fusión, el motor pausa la ejecución y presenta al usuario una tarjeta de revisión con: la lista de archivos modificados (cada uno abre `vscode.diff` nativo con un click), y los botones [Aprobar Merge] / [Descartar Worktree] que resuelven la pausa sin pasar por el LLM.
-
-- **`vscode.diff` nativo (`src/extension.ts`):** Nuevo handler `open_worktree_diff` — recibe `{filePath}` del webview, lee `.fluxo/active_worktree.json` para obtener el path del worktree, construye `uriOriginal` (archivo en la rama principal) y `uriWorktree` (archivo modificado en `.fluxo/worktrees/<branch>/`), y ejecuta `vscode.commands.executeCommand('vscode.diff', uriOriginal, uriWorktree, 'Diff: [archivo] — Original vs Cambios de Fluxo')`. El motor nativo de VS Code muestra el diff lado a lado con highlighting sintáctico completo — sin procesamiento adicional.
-- **Intercept pre-merge en `agentEngine.ts` (v8.3.0):** Cuando el agente llama `exit_worktree` con `action='merge'`, el motor intercepta la llamada ANTES de ejecutar el git merge. Lee `.fluxo/active_worktree.json`, hace `yield { type: 'thinking', text: '🔍 Requesting human review...' }`, y llama `worktreeReviewCallback(branch, worktreePath)` — una Promise que suspende el bucle del agente hasta que el usuario toma una decisión. El resultado (`'merge'` o `'discard'`) reemplaza el `action` original antes de pasarlo a `executeTool`. Si no hay callback (sub-agentes en Parallel Swarm), el merge se ejecuta directamente sin pausa.
-- **`worktreeReviewCallback` en `extension.ts`:** Implementado como closure dentro de `_handleSendMessage`. Ejecuta `git diff --name-only HEAD` dentro del worktree para obtener la lista de archivos modificados, postea `{ type: 'worktreeReview', branch, worktreePath, changedFiles }` al webview, y retorna una `Promise<'merge' | 'discard'>` guardando el resolver en `_pendingWorktreeReview`. El handler `worktree_decision` en `_handleMessage` resuelve la Promise cuando el usuario hace click en un botón.
-- **Tarjeta de revisión Worktree (`media/main.js` — `handleWorktreeReview`):** Componente visual en el webview que se muestra cuando el engine emite `worktreeReview`. Contiene: header con rama activa (`wt-branch-badge`), hint de instrucción, lista de archivos clickeables (cada `.wt-file-btn` envía `open_worktree_diff`), y dos botones de acción — `.wt-approve` (verde, envía `worktree_decision: merge`) y `.wt-discard` (rojo, envía `worktree_decision: discard`). Ambos botones se deshabilitan al hacer click para prevenir doble-submit, mostrando "⏳ Merging…" / "⏳ Discarding…" mientras el engine procesa.
-- **Eliminación del diff simulado (`media/main.js`):** El bloque que renderizaba líneas verdes (`<span class="diff-line-added">`) para `write_file`, `replace_lines`, `replace_block`, `replace_block`, y `edit_file` en `handleToolCall()` ha sido eliminado. Las tarjetas de herramientas ahora muestran solo los argumentos esenciales (ruta, rango de líneas) sin contenido de código simulado — el diff real se abre bajo demanda vía `vscode.diff`.
-- **Nuevos estilos (`media/style.css`):** Clases `.worktree-review-card`, `.wt-review-header`, `.wt-branch-badge`, `.wt-hint`, `.wt-files-list`, `.wt-file-btn`, `.wt-actions`, `.wt-btn`, `.wt-approve`, `.wt-discard` — diseño coherente con el sistema de glassmorphism oscuro existente.
-- **Nuevos títulos de herramientas en `getToolTitle` (`media/main.js`):** `enter_worktree`, `exit_worktree`, `create_team`, y `send_message` ahora tienen representaciones legibles en las tarjetas de actividad del agente.
-- **Versión de UI actualizada** a `v8.3.0` en el header del webview y en `renderWelcome()`.
-
----
-
-## [v8.2.0] - The Parallel Swarm (Concurrent Agent Orchestration)
-
-**Objetivo:** Activar la Fase 2 de la orquestación: el Manager puede ahora delegar tareas independientes a múltiples agentes y ejecutarlos en paralelo con `Promise.all`. El motor de bloqueo de archivos de la v8.1.0 actúa como red de seguridad — si dos hilos intentan editar el mismo archivo simultáneamente, el segundo recibe un `SYSTEM LOCK` y espera. Los agentes pueden intercambiarse payloads de contexto en segundo plano sin contaminar la interfaz del usuario con JSON crudo.
-
-- **`AgentMailbox` (`src/utils/agentMailbox.ts`):** Nuevo singleton que implementa un sistema de mensajería asíncrona entre agentes. `send(toAgentId, fromAgentId, payload)` encola un mensaje en el inbox del agente receptor. `drain(agentId)` consume y vacía el inbox, retornando los mensajes formateados como `[FROM @agentId]: payload`. `hasPending(agentId)` permite comprobar sin consumir. El mailbox es en memoria, compartido en el proceso Node.js, y persiste entre iteraciones pero no entre sesiones de VS Code.
-- **`TeamCreateTool` (`src/tools/TeamCreateTool/index.ts`):** Nueva herramienta exclusiva del Manager que define un esquema de delegación paralela: `{ "team": [{"agent": "coder", "task": "..."}, {"agent": "designer", "task": "..."}] }`. La herramienta es un passthrough — su `execute()` nunca se llama. El engine la intercepta en el bloque especial de `create_team` antes de llegar al `executeTool` genérico.
-- **`SendMessageTool` (`src/tools/SendMessageTool/index.ts`):** Nueva herramienta disponible para todos los agentes (Coder, Designer, Manager). `send_message({ to_agent, from_agent, payload })` escribe el payload en el `AgentMailbox` silenciosamente. El output devuelto al LLM Y a la UI es un ACK corto (`"Message queued for @designer"`), **nunca el payload completo** — así el usuario no ve JSON crudo de 200 líneas en el chat. El payload real se entrega en el contexto del receptor.
-- **Parallel Swarm Engine (`src/agentEngine.ts`):** Intercept de `create_team` en el bloque de ejecución de herramientas (mismo patrón que `ask_user_approval`). Cuando el Manager llama `create_team`, el motor: (1) crea un buffer de eventos por sub-agente; (2) llama `runAgentLoop()` recursivamente para cada miembro del equipo, pasando un contexto limpio; (3) ejecuta todos con `Promise.all()` — los hilos corren concurrentemente y comparten el `FileLockManager`; (4) hace replay secuencial de todos los eventos bufferizados con separadores visuales (`━━━ @coder — thread 1/2 ━━━`) una vez que `Promise.all` resuelve. Sub-agentes que intentan escribir el mismo archivo reciben `SYSTEM LOCK` del `FileLockManager` y abortan su operación sin corromper el archivo.
-- **Mailbox drain por iteración (`src/agentEngine.ts`):** Al inicio de cada iteración del bucle (antes del API call), el motor llama `AgentMailbox.drain(agentId)` e inyecta los mensajes entrantes como user turns en el historial del agente receptor. Esto permite que mensajes enviados por un agente paralelo (`send_message`) lleguen al destinatario en su próxima iteración, sin importar el orden de ejecución.
-- **Auto-inject de `agent_id` (`src/agentEngine.ts`):** El motor inyecta automáticamente `args.agent_id = agentId` en cada llamada a `replace_lines` y `write_file` que no tenga ya un `agent_id` explícito. Esto elimina la responsabilidad del LLM de recordar su propio ID en cada herramienta de edición — el `FileLockManager` siempre tiene la información correcta sin instrucción adicional al agente.
-- **Actualización de `AgentDefinition` en `src/agents.ts`:** `send_message` añadido al toolset de Coder y Designer. `create_team` y `send_message` añadidos al Manager. Nueva sección `PARALLEL SWARM PROTOCOL` en el system prompt del Manager con ejemplos de `create_team` y reglas de diseño de tareas independientes.
-
----
-
-## [v8.1.0] - The Mutex Protocol (File Lock Manager)
-
-**Objetivo:** Proteger la integridad del sistema de archivos cuando múltiples agentes ejecutan en paralelo (Fase 2: Orquestación Paralela con `Promise.all`). Sin un mecanismo de bloqueo, dos agentes corriendo concurrentemente pueden intentar escribir el mismo archivo simultáneamente, produciendo race conditions que corrompen el contenido final — el segundo write sobreescribe silenciosamente el trabajo del primero. Esta versión introduce un gestor de cerrojos en memoria que garantiza acceso mutuamente exclusivo a los archivos durante cada operación de escritura.
-
-- **`FileLockManager` (`src/utils/lockfile.ts`):** Nuevo singleton estático que implementa el protocolo de exclusión mutua a nivel de archivo. Internamente usa un `Map<string, { agentId, acquiredAt }>` con claves normalizadas a lowercase (para case-insensitive en Windows). `acquireLock(filePath, agentId)` retorna `true` si el cerrojo está libre o si el mismo agente ya lo sostiene (reentrant), y `false` si un agente diferente lo posee. `releaseLock(filePath, agentId)` solo libera el cerrojo si el llamador es el titular actual, previniendo liberaciones accidentales cruzadas. `getHolder(filePath)` expone el agentId del titular actual para mensajes de diagnóstico.
-- **Mutex en `ReplaceLinesTool` (`src/tools/ReplaceLinesTool/index.ts`):** Toda la validación previa (brace-balance, JSX-AST, anti-mass-deletion) se ejecuta SIN cerrojos — los guards son read-only y no necesitan exclusión. El `acquireLock` se llama únicamente en el punto exacto antes de `fs.writeFileSync`. Si el archivo está bloqueado por otro agente, la herramienta retorna `success: false` con el mensaje exacto `SYSTEM LOCK: El archivo [X] está siendo editado actualmente por otro agente...`. La escritura ocurre dentro de un bloque `try { fs.writeFileSync(...) } finally { releaseLock(...) }`, garantizando que el cerrojo se libere siempre, incluso si la escritura lanza una excepción inesperada.
-- **Mutex en `FileWriteTool` (`src/tools/FileWriteTool/index.ts`):** Mismo patrón de cerrojo aplicado al `write_file`. `acquireLock` antes del `fs.writeFileSync`, `releaseLock` en el `finally`. El `fs.mkdirSync` (creación de directorios intermedios) también está dentro del bloque protegido, ya que es parte atómica de la operación de creación de archivo.
-- **Parámetro `agent_id` (opcional) en ambas herramientas:** Se añadió `agent_id: string` como propiedad opcional en los schemas `TOOL_DEF` de `replace_lines` y `write_file`. Cuando los agentes corren en modo de orquestación paralela, cada uno pasa su identificador (ej. `"coder-1"`, `"designer-2"`) para que el sistema de cerrojos sepa quién posee qué archivo. Si `agent_id` se omite, el motor usa el valor por defecto `"agent"` — el comportamiento es compatible hacia atrás y no rompe sesiones de agente único.
-
----
-
-## [v8.0.0] - Aislamiento Estructural Absoluto (git worktree Sandbox)
-
-**Objetivo:** Erradicar los bugs destructivos en la rama `main` causados por refactorizaciones de alto riesgo que el agente ejecuta directamente sobre el código de producción. Cuando el LLM corrompe el AST o el build falla, no hay forma de revertir sin intervención manual del usuario. Esta versión introduce un sandbox de aislamiento completo basado en `git worktree`.
-
-- **`EnterWorktreeTool` (`src/tools/EnterWorktreeTool/index.ts`):** Nueva herramienta que ejecuta `git worktree add .fluxo/worktrees/<branch> -b <branch>` creando un checkout completo del HEAD actual en una rama fresca y aislada. Persiste el estado activo en `.fluxo/active_worktree.json`. Bloquea la creación de un segundo worktree si ya hay uno activo. Devuelve el path del worktree y las instrucciones de prefijo de ruta para el agente.
-- **`ExitWorktreeTool` (`src/tools/ExitWorktreeTool/index.ts`):** Herramienta de finalización con dos modos: `action='merge'` hace `git add -A && git commit` dentro del worktree y luego `git merge --no-ff` en el workspace principal; `action='discard'` ejecuta `git worktree remove --force` + `git branch -D` eliminando el sandbox sin tocar `main`. Ambos modos limpian el state file y ejecutan `git worktree prune`.
-- **`isolation: 'worktree'` en `AgentDefinition` (`src/agents.ts`):** Nueva propiedad opcional en la interfaz del agente. Coder y Manager tienen `isolation: 'worktree'` activado. Cuando está presente, el motor inyecta un turn de usuario `[ISOLATION MODE ACTIVE]` al inicio de la sesión, poniendo al LLM en modo de conciencia de aislamiento desde la primera iteración.
-- **`RULE (WORKTREE ISOLATION)` en Coder y Manager (`src/agents.ts`):** Nueva regla inyectada en los system prompts: obligatoria para refactorizaciones >50 líneas o multi-archivo; opcional para ediciones simples (<50 líneas, 1-2 archivos). Define el workflow completo: enter → edit → build → merge/discard.
-- **Registro de herramientas (`src/tools/index.ts`):** `EnterWorktreeTool` y `ExitWorktreeTool` añadidos al array `ALL_TOOLS` y al `TOOL_MAP`.
-
----
-
-## [v7.21.0] - Resilient Payload (replace_lines Array Normalizer)
-
-**Objetivo:** Eliminar el error `CRITICAL ERROR: new_content must be a string` que bloqueaba al agente cuando intentaba empaquetar bloques grandes de JSX en un único string JSON. Al escapar comillas y saltos de línea en bloques de 50+ líneas, el LLM comete errores de serialización o decide enviar el contenido como un `Array` de strings, lo que rompía la validación estricta de la herramienta.
-
-- **Payload Normalizer en `ReplaceLinesTool` (`src/tools/ReplaceLinesTool/index.ts`):** Se insertó un bloque de normalización de input antes de la validación estricta de tipo. El normalizer maneja tres casos de fallo silenciosamente: (1) `Array` — se une con `\n` automáticamente vía `.join('\n')`; (2) `null` / `undefined` — se asigna `""` (delete semantics); (3) `object` mal parseado — se extraen los valores con `Object.values().map(String).join('\n')` o se hace `JSON.stringify` como último recurso. Solo si el tipo sigue sin ser `string` tras la normalización se devuelve el error (caso prácticamente imposible en uso real).
-- **TOOL_DEF actualizado — `new_content` acepta Array (`src/tools/ReplaceLinesTool/index.ts`):** El tipo JSON Schema de `new_content` cambia de `'string'` a `['string', 'array']`. La descripción ahora instruye explícitamente al LLM: *"Para evitar errores de escape JSON en bloques grandes de JSX/TSX, tienes PERMITIDO enviar este parámetro como un Array de strings (una línea de código por elemento)."* Esto evita que el modelo intente construir strings multi-línea escapados manualmente y reduce la tasa de error en bloques grandes a cero.
-
----
-
-## [v7.20.0] - The Last Resort Exemption (Anti-Deadlock)
-
-**Objetivo:** Eliminar el deadlock en el que el agente se quedaba sin herramientas de edición válidas: `search_and_replace` prohibido por el usuario (Tool Masker v7.18), `replace_lines` bloqueado por el Circuit Breaker tras 2 fallos, `write_file` rechazado por Sherlock. El motor entraba en un estado terminal sin ruta de escape.
-
-- **Exención del Circuit Breaker para `replace_lines` (`agentEngine.ts`):** Se añadió `replace_lines` a la lista de herramientas inmunes al Circuit Breaker, junto a `run_command` y `get_code_structure`. La condición de activación cambia de `toolName !== 'run_command' && toolName !== 'get_code_structure'` a incluir `&& toolName !== 'replace_lines'`. El Circuit Breaker jamás podrá bloquear la herramienta de edición de último recurso del sistema, garantizando que siempre exista un camino de recuperación.
-- **Chunking Hint en fallos de `replace_lines` (`agentEngine.ts`):** Cuando `replace_lines` devuelve `success: false` (causado frecuentemente por JSON mal formado en bloques de código muy largos), el motor enriquece el output con una directiva de fragmentación estricta antes de que el LLM reciba el error. La directiva instruye al agente a dividir el reemplazo en segmentos de 10-20 líneas en lugar de intentar un reemplazo monolítico, eliminando la causa raíz de los fallos por tamaño. El Circuit Breaker es la última línea de defensa; el Chunking Hint es la guía proactiva.
-
----
-
-## [v7.19.0] - Stateless Auditor (Anti REDUNDANT_DECLARATION State Leak)
-
-**Objetivo:** Eliminar el "State Leak" crítico en Sherlock Auditor que causaba falsos positivos de `REDUNDANT_DECLARATION`. Cuando una inyección de código fallaba (ej. nombre de parámetro incorrecto: `content` en lugar de `new_content`), la declaración ya había sido registrada en `toolCallHistory`. Al reintentar, Sherlock la reconocía como un duplicado del turno anterior fallido y bloqueaba la inyección válida.
-
-- **Arquitectura de doble historial (`agentEngine.ts`):** Se introdujo un segundo array `successfulToolCallHistory: string[]` paralelo al existente `toolCallHistory`. La separación de responsabilidades es clara: `toolCallHistory` (push antes de ejecución) sigue siendo la fuente de verdad para la **detección de loops pre-vuelo** — esto no cambia. El nuevo `successfulToolCallHistory` solo recibe el push dentro del bloque `else` del Circuit Breaker, es decir, únicamente cuando `result.success === true`. Así los fallos no contaminan el estado.
-- **Sherlock alimentado con estado comprometido:** La variable `priorHistory` que se construye antes de cada llamada a Sherlock ahora usa `successfulToolCallHistory` en lugar de `toolCallHistory`. Sherlock solo ve declaraciones que realmente llegaron al archivo — nunca intentos fallidos. Esto elimina el vector de falso positivo por completo sin necesidad de lógica de rollback explícita.
-- **Sin regresiones:** El Loop Interceptor pre-vuelo (líneas 419–439) sigue usando `toolCallHistory` completo — si el agente reintenta exactamente la misma llamada fallida con los mismos args, el interceptor lo suprime igual que antes. Sólo el contexto de Sherlock cambia.
-
----
-
-## [v7.18.0] - Deep Masking (Anti Tool Hallucination)
-
-**Objetivo:** Resolver el problema de "Tool Hallucination" en el que el agente seguía invocando herramientas desactivadas porque su System Prompt base las mencionaba explícitamente. El filtrado del array `agentTools` no era suficiente — el LLM recordaba las reglas de su entrenamiento y las llamaba de todas formas.
-
-- **Regex Refinada del Tool Masker (`agentEngine.ts`):** Se reemplazó la regex simple de la v7.17.0 por una versión robusta con soporte de texto intermedio (`[^\w]*(?:[\w]+\s+){0,3}`). Ahora captura variaciones como `"PROHIBIDO usar la herramienta search_and_replace"`, `"stop using write_file"` y `"no uses run_command"`. Se añadió el verbo `stop using` a la lista de disparadores.
-- **Dynamic System Prompt Override (`agentEngine.ts`):** Cuando el Masker detecta una herramienta a deshabilitar, ya no sólo la elimina del schema de tools. Ahora inyecta dinámicamente un bloque `[CRITICAL SYSTEM OVERRIDE]` al final del `systemPrompt` base por cada herramienta enmascarada, anulando cualquier regla preexistente que la mencione. Esto cierra el vector de "regla base vs. schema filtrado".
-- **Soft Fail Interceptor (`agentEngine.ts`):** En el bucle de ejecución de herramientas, si el LLM alucina un `tool_call` para una herramienta desactivada (a pesar de los dos controles anteriores), el motor lo intercepta silenciosamente. En lugar de pasarlo a Sherlock o generar un error de pánico, devuelve `success: false` con el mensaje `"SYSTEM OVERRIDE: Has intentado alucinar la herramienta [X]..."`, redirigiendo al agente hacia una estrategia alternativa sin interrumpir el flujo de ejecución.
-
----
-
-## [v7.17.1] - MCP Initialization Hotfix
-
-**Objetivo:** Evitar que la inicialización de servidores MCP bloquee la UI de la Webview y asegurar la correcta inclusión de las dependencias nativas en el instalador `.vsix`.
-
-- **Inicialización No Bloqueante:** Se refactorizó `McpSwarmClient` para que el arranque de los servidores (`StdioClientTransport` y `listTools()`) suceda asíncronamente en un "fire-and-forget", cacheando las herramientas en memoria y retornándolas instantáneamente sin bloquear el hilo principal de la UI.
-- **Robustez y Try/Catch:** Añadidos timeouts de conexión (5s) y de obtención de herramientas. Si un servidor local no existe o npx falla, la extensión captura el error silenciosamente y continúa operando con los demás agentes/servidores.
-- **Dependencias en VSIX:** Se corrigió el archivo `.vscodeignore` que bloqueaba accidentalmente el empaquetado de dependencias (`@modelcontextprotocol/sdk`), solventando el fallo crítico "module not found" en producción.
-
----
-
-## [v7.17.0] - The MCP Leap (Dynamic Masking & Extensibility)
-
-**Objetivo:** Introducir la capacidad de conectarse a Servidores MCP (Model Context Protocol), añadir filtrado dinámico de herramientas por directiva de usuario y evitar la pérdida de mensajes de sistema críticos por la poda de contexto.
-
-- **Infraestructura MCP (Nivel 4):** Se añadió el soporte nativo para Model Context Protocol usando el SDK oficial `@modelcontextprotocol/sdk`. Los usuarios ahora pueden configurar servidores externos en la opción `fluxo.mcpServers` (en `settings.json`) para extender las capacidades del enjambre con herramientas como SQLite, navegadores, etc.
-- **Tool Masker (Filtro Dinámico):** El motor ahora intercepta prohibiciones explícitas en el prompt del usuario (ej. `"no uses search_and_replace"`) y enmascara dinámicamente esas herramientas, asegurando que el LLM ni siquiera sepa de su existencia para esa tarea, eliminando la tentación de usarlas.
-- **Context Pruning Amnesia Fix:** Se parcheó la función `pruneToolResults` para que nunca trunque mensajes que contengan alertas del sistema (`SYSTEM ERROR`, `BUILD_FAILED`, `[CIRCUIT BREAKER ACTIVATED]`), garantizando que el agente siempre mantenga en contexto por qué fue bloqueado.
-
----
-
-## [v7.16.0] - Circuit Breaker Exemption & Hard Replace
-
-**Objetivo:** Evitar falsos positivos en el Circuit Breaker que bloqueaban la ejecución de comandos legítimos (como compilaciones fallidas `npm run build`) y reforzar la caída de `search_and_replace` hacia `replace_lines`.
-
-- **Exención en Circuit Breaker:** Se actualizó `src/agentEngine.ts` para que las herramientas `run_command` y `get_code_structure` NUNCA incrementen el contador de fallos (`toolFailureTracker`). El Circuit Breaker ahora se aplica principalmente a herramientas de edición frágiles.
-- **Refuerzo de `replace_lines`:** Se modificó el mensaje de error de `search_and_replace` en `src/tools/SearchReplaceTool/index.ts` cuando no se encuentra el bloque exacto. Ahora emite una orden directa e ineludible prohibiendo reintentar `search_and_replace` en la misma zona y forzando el uso inmediato de `replace_lines`.
-
----
-
-## [v7.15.0] - The Iron Curtain (Anti-Evasion & Hardened Paths)
-
-**Objetivo:** Bloquear intentos de evasión de reglas usando herramientas CLI avanzadas y eliminar sesgos de rutas en Windows.
-
-- **Refactor del Interceptor en RunCommandTool:** Actualizada la regex de bloqueo para incluir `sed`, `awk`, `node -e`, `perl` y `python -c`. La lógica detecta estos comandos y devuelve una alerta de seguridad ("SYSTEM SECURITY ALERT: Intento de evasión detectado...").
-- **Hardened Path Sanitizer:** Mejorada la función de validación de rutas en `src/extension.ts` y `shared.ts`. Si el string contiene una letra de unidad precedida por cualquier cosa (ej. `/workspace/d:`), el motor ahora descarta todo lo que esté a la izquierda de la letra de unidad (anulando el Docker-bias de raíz antes del Language Server).
-- **Actualización de RULE 5 (NO CLI READING/EDITING):** Nueva redacción estricta en `agents.ts` prohibiendo terminantemente usar la terminal para leer, filtrar o editar código (incluyendo uso creativo de `sed`, `awk`, etc.).
-
----
-
-## [v7.14.1] - Smart Memory & Semantic Enforcement (Hotfix)
-
-**Objetivo:** Solucionar el `BUG-2026-0428-REDUNDANT-LOOKUP` en el que el agente repetía búsquedas inútiles sobre archivos y anclajes ya descubiertos en lugar de ejecutar la edición con confianza.
-
-- **RULE 7 (DECISIVE ACTION) en Coder:** Se agregó una nueva regla crítica en `agents.ts` que prohíbe explícitamente re-ejecutar `search_in_files` con los mismos términos tras identificar puntos de anclaje, ordenándole al agente confiar en su Smart Memory y proceder de inmediato al flujo de `read_file` → `search_and_replace`.
-- **Eliminación de dependencia de usuario para recuperación de AST:** El agente ahora es estrictamente instruido a aplicar la lógica de auto-reparación en caso de corrupciones (Hard Reset interno), en lugar de delegar el fix en el usuario.
-
----
-
-## [v7.14.0] - Smart Memory & Semantic Enforcement
-
-**Objetivo:** El motor de poda de contexto eliminaba el mapa semántico del agente (`get_code_structure`) y su última lectura de archivo (`read_file`) para ahorrar tokens, provocando bucles de re-lectura y fallos ciegos en `search_and_replace`. Esta versión introduce una capa de "memoria inteligente" que protege la brújula semántica del agente y lo redirige proactivamente cuando un reemplazo falla.
-
-- **Refactor de `pruneToolResults` (`agentEngine.ts`):** Nueva `Lista Blanca de Inmunidad` implementada con `PRUNE_IMMUNE_TOOLS = new Set(['get_code_structure'])`. La función ahora también localiza el índice del ÚLTIMO resultado de `read_file` en el historial completo (`lastReadFileIdx`) y lo exime del truncamiento. Cuatro guards comentados ordenados por prioridad: turns recientes → mensajes no-tool → tools inmunes → último read_file → truncamiento normal.
-- **Interceptor de Reemplazo Fallido (`agentEngine.ts`):** Inmediatamente después de que `nativeEditCallback` devuelve `success: false` (y ANTES de que el Circuit Breaker de v7.12.4 pueda acumularlo como un fallo), el motor enriquece el `output` con un `CONSEJO DEL MOTOR` que prescribe: (1) llamar `get_code_structure` para obtener el mapa de líneas actualizado, (2) usar `read_file` con `start_line/end_line` exactos para ver el bloque real, (3) reintentar solo después. Esto convierte un fallo opaco en un plan de recuperación accionable.
-- **Fix `list_dir` file-path guard (`src/tools/ListDirTool/index.ts`):** Nuevo bloque post-`existsSync` que llama `fs.statSync(dp).isFile()`. Si el path apunta a un archivo, retorna `success: false` con un mensaje bilingüe que indica la carpeta contenedora calculada y los dos comandos correctos (`read_file` / `list_dir` sobre el padre). Previene el error silencioso donde `readdirSync` sobre un archivo lanzaba una excepción sin contexto.
-- **Robust Path Sanitization (`extension.ts` & `shared.ts`):** Se rediseñó la lógica de limpieza de rutas para manejar solapamientos de "Docker-bias" y rutas absolutas (ej. `/workspace/d:\...`). Ahora usa `path.resolve` con comparaciones case-insensitive en Windows, asegurando que el LSP siempre encuentre el archivo correcto y eliminando el "Friction Loop" causado por rutas alucinadas fuera del workspace.
-
----
-
-## [v7.13.0] - Nivel 4: MCP / External Fetching — fetch_documentation
-
-**Objetivo:** Eliminar el "Tutorial Bias" del agente swarm. Cuando el LLM implementaba librerías externas usando únicamente su memoria de entrenamiento estática, cometía errores de API desactualizados. Esta versión le da al swarm la capacidad de leer documentación oficial en tiempo real antes de escribir código.
-
-- **Nueva herramienta `fetch_documentation` (`src/tools/FetchDocumentationTool/`):** Acepta un parámetro `url` (string). Realiza una petición GET con la API nativa `fetch` de Node.js. Implementa un pipeline de limpieza HTML por regex (sin dependencias externas): extrae `<body>`, elimina `<script>`, `<style>`, `<nav>`, `<header>`, `<footer>`, `<svg>` y convierte headings, listas y `<pre>` a Markdown simplificado. Decodifica entidades HTML, colapsa whitespace y trunca a 20,000 caracteres con nota de truncamiento. Timeout de 15 segundos. Devuelve mensaje limpio en errores HTTP o de red.
-- **Motor asíncrono (`agentEngine.ts`):** La ejecución de `fetch_documentation` es intercept ada directamente en el bucle principal del engine (patrón `else if` existente, igual que `ask_user_approval`, `search_and_replace` y `get_code_structure`), preservando la naturaleza síncrona del resto de herramientas sin refactorizar `ToolResult`.
-- **RULE (EXTERNAL CONTEXT) — Coder y Manager (`agents.ts`):** Nueva regla inyectada en ambos system prompts. Establece que ante cualquier pedido de implementar una librería externa o concepto de precisión técnica, el agente tiene PERMITIDO y se RECOMIENDA llamar `fetch_documentation` (preferir URLs raw de GitHub o npmjs.com) ANTES de escribir código.
-- **Asignada a:** Coder y Manager.
-
----
-
-## [v7.12.4] - Circuit Breaker & Graceful Degradation
-
-- **Circuit Breaker (agentEngine.ts):** Nuevo `toolFailureTracker: Map<string, number>` inicializado antes del loop. En cada fallo de herramienta incrementa el contador; al llegar a 2 fallos consecutivos activa el breaker sobrescribiendo el output con `[CIRCUIT BREAKER ACTIVATED]` y una directiva de cambio de estrategia. En cada éxito resetea el contador con `delete`. Los mensajes del circuit breaker pasan directamente al LLM sin el wrapping de `MANAGER DIRECTIVE` (exclusión añadida en `anchoredContent`).
-- **Graceful Degradation (agents.ts):** Nueva `RULE (GRACEFUL DEGRADATION)` en el Coder: ante un circuit breaker activado, el agente debe cambiar a `replace_lines` o comunicar el problema al usuario — nunca evadir con CLI.
-
----
-
-## [v7.12.3] - Hotfix: Docker Bias Path Sanitization
-
-- **Bug crítico:** El LLM inyectaba `/workspace/` como prefijo absoluto (Docker bias). En Windows, `path.isAbsolute('/workspace/src/...')` devuelve `true`, por lo que la lógica anterior lo pasaba directamente a `vscode.Uri.file()` — apuntando a la raíz del disco en lugar del workspace real.
-- **Fix en `getCodeStructureCallback` (extension.ts):** Nuevo bloque de saneamiento que strips `/workspace/`, `workspace/`, y `\\workspace\\` antes de normalizar y unir con el `workspacePath` real.
-- **Fix sistémico en `safePath` (tools/shared.ts):** El mismo saneamiento se aplicó a la función base usada por **todos los tools** (`read_file`, `write_file`, `search_and_replace`, etc.). `path.resolve(workspacePath, '/workspace/src/...')` ignoraba el workspacePath silenciosamente; ahora se sanitiza antes del resolve.
-
----
-
-## [v7.12.2] - Hotfix: LSP Race Condition & Fallback Shield
-
-- **Fix condición de carrera (LSP):** `getCodeStructureCallback` ahora implementa un bucle de reintento de hasta 4 intentos con 500 ms de espera entre cada uno (2 s en total). Si el `executeDocumentSymbolProvider` devuelve `[]` en todos los intentos, retorna `success: false` con el mensaje `'LSP ERROR: El servidor de lenguaje no pudo extraer los símbolos a tiempo. Usa read_file como fallback.'` en lugar del silent `success: true` que provocaba el pánico del LLM.
-- **Refuerzo de seguridad de fallback (agents.ts):** `RULE 6 (SEMANTIC VISION)` en el Coder ahora incluye la directiva explícita: si `get_code_structure` falla o devuelve vacío, el fallback obligatorio es `read_file` + `search_and_replace`. `write_file` sobre archivos existentes sigue siendo una violación que activa el Auditor de Seguridad.
-
----
-
-## [v7.12.1] - Hotfix: Path Resolution en get_code_structure
-
-- **Bug fix:** `getCodeStructureCallback` en `extension.ts` ahora resuelve rutas relativas antes de crear el `vscode.Uri`. Lógica: `path.isAbsolute(absolutePath) ? absolutePath : path.join(workspacePath, absolutePath)`. Esto corrige el fallo en producción donde el agente enviaba `src/components/...` y VS Code intentaba buscarlo en la raíz del disco.
-- **Verificación de backups:** Confirmado que `SearchReplaceTool` y la función de limpieza `cleanupLogsOnActivation` ya operan exclusivamente sobre `.fluxo/backups/` — sin cambios necesarios.
-
----
-
-## [v7.12.0] - Visión Semántica (LSP — get_code_structure)
-
-- **Nueva herramienta `get_code_structure`:** Usa el comando nativo `vscode.executeDocumentSymbolProvider` del Language Server Protocol para extraer todos los símbolos de un archivo (funciones, clases, variables, métodos) con sus números de línea de inicio y fin exactos. Devuelve un JSON jerárquico con `name`, `kind`, `start`, `end`, y `children` para símbolos anidados.
-- **Arquitectura nativa (Callback):** La herramienta funciona vía `getCodeStructureCallback` en `extension.ts` — mismo patrón que `search_and_replace`. Usa `vscode.workspace.openTextDocument()` para asegurar que el archivo esté cargado antes de invocar el provider. El `execute()` en el archivo de tool es un fallback de error para contextos no-VS Code.
-- **Regla RULE 6 (SEMANTIC VISION):** Inyectada en el Coder. El agente debe llamar `get_code_structure` antes de modificar archivos grandes, usando el mapa de líneas para hacer `read_file` quirúrgico en lugar de leer el archivo completo en cada iteración.
-- **Asignada a:** Coder y Manager.
-
----
-
-## [v7.11.1] - Anti-Hacker Shield (Bloqueo de Lectura por CLI)
-
-- **Defensa Estática:** Nueva RULE 5 (NO CLI READING) inyectada en el system prompt de Coder y Manager. Los agentes reciben instrucción explícita de usar `read_file` / `search_in_files` en lugar de comandos de terminal para inspeccionar código.
-- **Defensa Activa:** Interceptor en `RunCommandTool` que evalúa cada segmento del comando (incluyendo comandos encadenados con `|`, `&&`, `;`). Si detecta `cat`, `tail`, `head`, `less`, `more`, `type`, `Get-Content`, `findstr`, `grep`, o `wc` al inicio de cualquier segmento, retorna inmediatamente `success: false` con mensaje de redirección a `read_file` / `search_in_files`.
-- **Impacto:** Elimina el patrón de burn-out de iteraciones donde el agente intentaba leer código con CLI multiplataforma (fallando por incompatibilidad de SO) y consumía el límite de 25 iteraciones sin avanzar.
-
----
-
-## [v7.11.0] - Context Pruning (Anti Context Balloon)
-
-- **Context Pruning:** Nueva función `pruneToolResults()` en `agentEngine.ts`. Antes de cada llamada a la API, recorre el array `messages` y trunca el contenido de cualquier mensaje `role: 'tool'` antiguo (fuera de los últimos 2 turnos) que supere 1,500 caracteres. El placeholder informativo sustituye el contenido completo para que el agente sepa que puede re-ejecutar la herramienta si lo necesita.
-- **Impacto medible:** Tareas con múltiples `read_file` o `run_command` de salida larga pasarán de ~32k tokens por prompt a ~18k, reduciendo costos ~44% en escenarios de tarea larga.
-- **Seguridad:** El `messages` original nunca se mutó — el pruning opera sobre una copia inmutable (`msgsToSend`). El system prompt y los mensajes del usuario nunca se truncan.
-
----
-
-## [v7.10.0] - Arquitectura Multi-Brain & Telemetría Nativa
-
-- **Multi-Brain:** Selector de modelos dividido en Manager Model (🧭 @manager + Sherlock) y Worker Model (💻 @coder, @designer, etc.). El motor enruta automáticamente cada llamada al modelo correcto según el agente activo.
-- **Motor Telemetry:** El engine de TypeScript registra automáticamente cada fallo de herramienta (`success: false`) en `.fluxo/improvements.md` sin depender del agente. Eliminada la herramienta `log_friction` por sesgo de optimismo del LLM.
-- **Backups:** Confirmado que los backups de `search_and_replace` ya residían en `.fluxo/backups/` (sin cambios necesarios).
-
----
-
-## [v0.0.1 - v7.9.0] - El Nacimiento y la Estabilización
-
-- **Hito:** Creación de la arquitectura base de extensión de VS Code.
-- **Motor:** Implementación del sistema de agentes (Manager, Coder, Designer, Sherlock).
-- **UI:** Desarrollo de la interfaz Glassmorphism con React y Tailwind.
-- **Core:** Integración de herramientas de edición de archivos y ejecución de terminal.
-
----
-
-## [v7.9.1 - v7.9.9] - Refinamiento y Blindaje
-
-- **v7.9.1:** Enlaces clickeables (Magic Links) en el chat para abrir archivos nativamente.
-- **v7.9.2:** Implementación del Chat Diff (visualización rojo/verde) en las respuestas.
-- **v7.9.3:** Smart Auto-Scroll y renderizado cronológico intercalado (Interleaving).
-- **v7.9.4:** Persistencia de estado (visualEvents) y reglas contra modales anidados.
-- **v7.9.5:** Parche de seguridad 'Early Exit Guard' y eliminación del Focus Stealing.
-- **v7.9.6:** Enrutamiento agnóstico de proveedores para compresión de contexto.
-- **v7.9.8:** Auto-Save + Git Safety Net. Edición continua sin bloqueos manuales.
-- **v7.9.9:** Telemetría proactiva con la herramienta `log_friction`.
-
----
-
-## [v7.9.10] - Enterprise UX
-
-- **Working Tree:** Botón 'Ver Working Tree' para abrir el Diff nativo de Git en VS Code.
-- **Fallback:** Sistema de degradación elegante si Git no está inicializado.
-
----
-
-## [v7.9.11] - Registro Histórico Oficial
-
-- **CHANGELOG:** Creación del registro histórico público siguiendo estándares de la industria.
-- **Manager Rule:** Nueva regla de mantenimiento del changelog para futuras versiones.
+### 📁 FILE: `src\tools\SearchInFilesTool\index.ts`
+```typescript
+import { NativeTool, ToolResult, safePath, searchRecursive } from '../shared';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'search_in_files',
+    description: 'Search for a text pattern across workspace files. Returns matching file:line results.',
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern:   { type: 'string', description: 'The text pattern to search for (case-insensitive).' },
+        directory: { type: 'string', description: 'Subdirectory to restrict the search. Defaults to workspace root.' },
+      },
+      required: ['pattern'],
+    },
+  },
+};
+
+export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  const searchRoot = safePath(workspacePath, args.directory || '.');
+  const results: string[] = [];
+  searchRecursive(searchRoot, workspacePath, String(args.pattern || ''), results, 0);
+  if (results.length === 0) {
+    return { success: true, output: 'No matches found.' };
+  }
+  return { success: true, output: results.slice(0, 60).join('\n') };
+}
 
 ```
 
-### 📁 FILE: `CNOS_MANIFESTO.md`
-```text
-# FLUXO AI — CNOS MANIFESTO (v8.16.1)
-**Documento Vinculante · Reglas de Vuelo del Motor Cognitivo**
+### 📁 FILE: `src\tools\SearchReplaceTool\index.ts`
+```typescript
+import * as fs from 'fs';
+import * as path from 'path';
+import { NativeTool, ToolResult, safePath } from '../shared';
 
-Fluxo AI es un **enjambre asíncrono, paralelo y autónomo** de agentes especializados orquestados dentro de VS Code. No es un autocompletador. Es un motor cognitivo de Tier-1 que ejecuta tareas de ingeniería complejas bajo un conjunto de reglas de vuelo inquebrantables. Este documento es la constitución del sistema. Cuando un agente tenga dudas sobre cómo actuar, **este documento tiene la última palabra.**
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'search_and_replace',
+    description: `Replace a specific block of code in a file using contextual search — no line numbers required.
+PREFERRED EDITING TOOL: Use this for small, surgical edits guided by the Verbatim Rule.
 
----
+⚠️ SCOPE LIMIT (v8.16.18): If you need to inject a massive new React component, DO NOT use this tool. Use insert_lines instead.
 
-## I. EL ENJAMBRE — The Swarm
+STRATEGY: In 'search_snippet', include enough context (2–3 lines before and after the target change) to ensure the match is unique in the file. Minor indentation differences are tolerated via fuzzy whitespace-normalization.
+WORKFLOW:
+  1. Call read_file to get the current file content.
+  2. Copy the exact block you want to replace as search_snippet (include surrounding context for uniqueness).
+  3. Call search_and_replace — the engine applies the change in the VS Code editor (file stays unsaved for review).
+  4. After the call, tell the user: "Cambio aplicado en el editor. Revísalo y presiona Ctrl+S para guardar."
+RULES:
+  • search_snippet must match a unique block — add more surrounding lines if ambiguous.
+  • No AST guards: the edit appears in VS Code for visual review before saving.
+  • Use replace_snippet = "" to delete a block.
+  • Do NOT call further edit tools on the same file before the user confirms with Ctrl+S.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path:            { type: 'string', description: 'File path relative to workspace root.' },
+        search_snippet:  { type: 'string', description: 'The EXACT code currently in the file that you want to replace. Include 2–3 surrounding lines of context to guarantee uniqueness.' },
+        replace_snippet: { type: 'string', description: 'The NEW code that will replace search_snippet. Use empty string "" to delete the block.' },
+      },
+      required: ['path', 'search_snippet', 'replace_snippet'],
+    },
+  },
+};
 
-El enjambre consiste en agentes especializados con roles y permisos distintos. La especialización no es una preferencia — es una restricción de seguridad.
+// ─── Fuzzy Matching (mirrors ReplaceBlockTool logic) ─────────────────────────
 
-### `@manager` — El Orquestador
+function normalizeLine(line: string): string {
+  return line.trim().replace(/\s+/g, ' ');
+}
 
-El `@manager` es el cerebro ejecutivo del enjambre. Su trabajo es pensar, delegar y consolidar. **Nunca escribe código directamente.**
+type MatchResult =
+  | { kind: 'strict' }
+  | { kind: 'fuzzy'; start: number; end: number }
+  | { kind: 'none' }
+  | { kind: 'ambiguous'; count: number };
 
-**Responsabilidades:**
-- Analizar la intención del usuario y traducirla en un plan de acción
-- Invocar `enter_plan_mode` para delegar el análisis arquitectónico al `@planner` antes de cualquier ejecución
-- Lanzar equipos paralelos con `create_team` asignando agentes según especialidad
-- Revisar worktrees pendientes con `exit_worktree(action: 'merge' | 'discard')` tras revisión humana
-- Escribir y actualizar `update_memory` con las decisiones arquitectónicas del proyecto
-- Escalar al usuario cuando ningún agente puede resolver el bloqueo
+function findMatch(fileContent: string, snippet: string): MatchResult {
+  const content = fileContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const snip    = snippet.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-**Reglas absolutas del `@manager`:**
-1. PROHIBIDO editar archivos de código directamente — para eso existe el `@coder`
-2. PROHIBIDO delegar sin un plan previo — `enter_plan_mode` va antes que `create_team`
-3. PROHIBIDO declarar una tarea completa si hay un worktree activo sin revisión humana
+  const strictCount = content.split(snip).length - 1;
+  if (strictCount === 1) { return { kind: 'strict' }; }
+  if (strictCount > 1)  { return { kind: 'ambiguous', count: strictCount }; }
 
----
+  // Fuzzy: line-by-line normalized comparison
+  const fileLines = content.split('\n');
+  const rawSnip = snip.split('\n');
 
-### `@planner` — El Arquitecto
+  let si = 0, ei = rawSnip.length - 1;
+  while (si <= ei && rawSnip[si].trim() === '') { si++; }
+  while (ei >= si && rawSnip[ei].trim() === '') { ei--; }
+  const snippetLines = rawSnip.slice(si, ei + 1);
+  if (snippetLines.length === 0) { return { kind: 'none' }; }
 
-El `@planner` es un agente de solo lectura. Entiende el repositorio antes de que cualquier línea sea modificada.
+  const snipNorm = snippetLines.map(normalizeLine);
+  const n = snippetLines.length;
+  const matches: number[] = [];
 
-**Responsabilidades:**
-- Usar `get_repo_map` para obtener la estructura completa del repositorio
-- Usar `glob` para localizar archivos por patrón y `grep` para rastrear símbolos, imports y dependencias
-- Leer archivos clave con `read_file` para entender el contexto real — nunca asumir
-- Producir un `IMPLEMENTATION_PLAN.md` en `.fluxo/` con pasos concretos, archivos afectados y riesgos
+  outer: for (let i = 0; i <= fileLines.length - n; i++) {
+    for (let j = 0; j < n; j++) {
+      if (normalizeLine(fileLines[i + j]) !== snipNorm[j]) { continue outer; }
+    }
+    matches.push(i);
+  }
 
-**Reglas absolutas del `@planner`:**
-1. PROHIBIDO escribir o editar archivos de código — su output es únicamente el plan
-2. PROHIBIDO generar un plan sin haber explorado el repo con `get_repo_map` y `glob` primero
-3. Cada paso del plan debe especificar: archivo exacto, símbolo o bloque a modificar, herramienta a usar
+  if (matches.length === 0) { return { kind: 'none' }; }
+  if (matches.length > 1)  { return { kind: 'ambiguous', count: matches.length }; }
+  return { kind: 'fuzzy', start: matches[0], end: matches[0] + n - 1 };
+}
 
----
+// ─── Diff Builder ─────────────────────────────────────────────────────────────
 
-### `@coder` — El Ejecutor Aislado
+const MAX_DIFF_LINES = 25;
 
-El `@coder` es el único agente autorizado a modificar el código fuente. Opera bajo validación estricta en cada escritura.
+function buildDiffBlock(search: string, replace: string): string {
+  const norm = (s: string) => s.replace(/\r\n/g, '\n').trimEnd();
+  const remLines = norm(search).split('\n');
+  const addLines = replace === '' ? [] : norm(replace).split('\n');
 
-**Responsabilidades:**
-- Ejecutar los pasos del plan del `@planner` con precisión quirúrgica
-- Usar `replace_block` o `replace_symbol` para ediciones — nunca `write_file` sobre archivos existentes
-- Usar `run_command` para verificación de build tras cambios estructurales
-- Usar `ask_user_approval` cuando el bloqueo sea irresoluble por medios automáticos
+  const remSection = remLines.length > MAX_DIFF_LINES
+    ? [...remLines.slice(0, MAX_DIFF_LINES).map(l => `- ${l}`), `- … (+${remLines.length - MAX_DIFF_LINES} lines not shown)`]
+    : remLines.map(l => `- ${l}`);
+  const addSection = addLines.length > MAX_DIFF_LINES
+    ? [...addLines.slice(0, MAX_DIFF_LINES).map(l => `+ ${l}`), `+ … (+${addLines.length - MAX_DIFF_LINES} lines not shown)`]
+    : addLines.map(l => `+ ${l}`);
 
-**Reglas absolutas del `@coder`:**
-1. PROHIBIDO usar `write_file` sobre un archivo que ya existe — la herramienta correcta es `replace_block` o `replace_symbol`
-2. PROHIBIDO declarar una tarea completa sin que el Quality Gate la haya validado
-3. PROHIBIDO hacer más de 3 intentos fallidos de build sin escalar al usuario vía `ask_user_approval`
+  return '```diff\n' + [...remSection, ...addSection].join('\n') + '\n```';
+}
 
----
+// ─── Disk-based fallback executor (used when VS Code native edit is unavailable) ─
 
-### `@designer` — El Especialista de UI
+export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  const fp = safePath(workspacePath, args.path);
+  if (!fs.existsSync(fp)) {
+    return { success: false, output: `File not found: ${args.path}. Use list_dir to verify the path.` };
+  }
+  if (typeof args.search_snippet !== 'string' || args.search_snippet === '') {
+    return { success: false, output: 'CRITICAL ERROR: search_snippet must be a non-empty string.' };
+  }
+  if (typeof args.replace_snippet !== 'string') {
+    return { success: false, output: 'CRITICAL ERROR: replace_snippet must be a string. Use "" to delete.' };
+  }
 
-El `@designer` opera en el mismo nivel de permisos que el `@coder`, restringido al dominio visual.
+  const original = fs.readFileSync(fp, 'utf-8');
+  const match = findMatch(original, args.search_snippet);
 
-**Herramientas adicionales:** `search_images` para referencia visual, `replace_block` para edición de componentes React/CSS.
+  if (match.kind === 'none') {
+    return {
+      success: false,
+      output: `ERROR: El bloque exacto no se encontró (posible problema de indentación o archivo corrupto). Tienes PROHIBIDO volver a intentar search_and_replace en esta zona con un snippet adivinado. DEBES llamar read_file primero para copiar el texto VERBATIM, o usar insert_lines si vas a inyectar un bloque nuevo masivo.`,
+    };
+  }
+  if (match.kind === 'ambiguous') {
+    return {
+      success: false,
+      output: `AMBIGUOUS MATCH: search_snippet appears ${match.count} times in ${args.path}.\n` +
+              `Expand the snippet — add more surrounding lines to make the block unique.`,
+    };
+  }
 
-**Sistema de diseño oficial:** Glassmorphism + Tailwind. Breakpoints: `sm:` → `md:` → `lg:` → `xl:`. Iconos: `lucide-react` exclusivamente.
+  let updated: string;
+  let removedPreview: string;
+  let removedLines: number;
+  let startLine: number;
 
----
+  if (match.kind === 'strict') {
+    const snip = args.search_snippet.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    updated = original.replace(/\r\n/g, '\n').replace(snip, args.replace_snippet.replace(/\n$/, ''));
+    const before = original.replace(/\r\n/g, '\n').indexOf(snip);
+    startLine = original.slice(0, before).split('\n').length;
+    removedLines = snip.split('\n').length;
+    removedPreview = snip.length > 300 ? snip.slice(0, 300) + '\n…(truncated)' : snip;
+  } else {
+    const fileLines = original.replace(/\r\n/g, '\n').split('\n');
+    const newLines = args.replace_snippet === '' ? [] : args.replace_snippet.replace(/\n$/, '').split('\n');
+    updated = [...fileLines.slice(0, match.start), ...newLines, ...fileLines.slice(match.end + 1)].join('\n');
+    startLine = match.start + 1;
+    removedLines = match.end - match.start + 1;
+    const removed = fileLines.slice(match.start, match.end + 1).join('\n');
+    removedPreview = removed.length > 300 ? removed.slice(0, 300) + '\n…(truncated)' : removed;
+  }
 
-## II. EL PROTOCOLO DE PRECISIÓN — Herramientas de Edición
+  if (updated.trim() === '' && original.trim() !== '') {
+    return { success: false, output: 'SAFETY ABORT: replacement would produce an empty file.' };
+  }
 
-### La Regla de Oro
+  // Auto-backup
+  try {
+    const backupDir = path.join(workspacePath, '.fluxo', 'backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    fs.writeFileSync(path.join(backupDir, `${path.basename(fp)}_${ts}.bak`), original, 'utf-8');
+  } catch { /* non-fatal */ }
 
-> **Un agente que reescribe un archivo completo desde memoria es un agente que alucina.**
-> Fluxo AI opera con bisturí, no con motosierra.
+  fs.writeFileSync(fp, updated, 'utf-8');
 
-### Exploración Obligatoria (antes de editar)
-
-Ningún agente puede editar un archivo sin haberlo explorado primero. El orden es:
-
-```
-1. get_repo_map   →  Mapa estructural completo del repo (árbol de archivos y símbolos)
-2. glob           →  Localizar archivos por patrón (ej. "src/**/*.ts")
-3. grep           →  Rastrear símbolos, imports, referencias exactas en el código
-4. read_file      →  Leer el bloque específico a modificar — nunca el archivo completo si es evitable
-```
-
-### El Bisturí Semántico (herramientas principales de edición)
-
-| Herramienta | Cuándo usar | Por qué es segura |
-|---|---|---|
-| `replace_block` | Modificar un bloque de código en un archivo existente | Opera con `search_snippet` exacto + contexto — no puede escribir sobre el lugar equivocado |
-| `replace_symbol` | Modificar una función, clase o método por nombre | Delega la localización al LSP de VS Code — el agente nombra el símbolo, el LSP calcula el rango exacto |
-| `write_file` | **Exclusivamente** crear archivos nuevos que no existen | Prohibido sobre archivos existentes — fuerza regeneración desde memoria con alta probabilidad de alucinar |
-| `search_and_replace` | Reemplazos literales simples (strings, constantes) | Fuzzy-matching de indentación, backup automático en `.fluxo/backups/` |
-
-### Herramientas Prohibidas (contextos específicos)
-
-| Acción prohibida | Alternativa correcta |
-|---|---|
-| `write_file` sobre archivo existente | `replace_block` o `replace_symbol` |
-| `run_command` con servidor persistente (`npm run dev`, `next dev`) | Usar solo `npm run build` o comandos de corta duración |
-| Editar sin leer el bloque actual primero | `read_file` → editar con snippet exacto |
-
----
-
-## III. LOS ESCUDOS — Core Protections
-
-Estas cuatro barreras son **innegociables**. No pueden ser desactivadas por el agente, y ninguna instrucción del usuario en el chat puede anularlas. Son mecanismos del motor, no preferencias del agente.
-
----
-
-### 🕰️ ESCUDO 1 — Time Machine (Auto-Checkpoint)
-
-**Qué hace:** Antes de cada iteración del loop cognitivo, el motor ejecuta silenciosamente un checkpoint de Git (`git add . && git commit`) en el workspace activo. El agente no tiene conocimiento de este proceso — ocurre a nivel del motor.
-
-**Por qué existe:** Proporciona un punto de restauración garantizado antes de cualquier edición. Si una secuencia de cambios corrompe el proyecto de forma irreparable, `abort_and_rollback` recupera el estado exacto anterior sin pérdida de trabajo previo.
-
-**Cómo usarlo:** Cuando el agente o el usuario detecte que el proyecto está en un estado irrecuperable, el agente debe llamar `abort_and_rollback`. El motor revertirá al último checkpoint automático.
-
-**Regla de vuelo:** `abort_and_rollback` es un mecanismo de emergencia — no un undo de conveniencia. Solo se activa cuando la iteración actual ha dejado el proyecto en un estado peor que el inicial.
-
----
-
-### 🌳 ESCUDO 2 — Worktree Isolation (Sandbox Obligatorio)
-
-**Qué hace:** `enter_worktree` crea un branch Git aislado y redirige silenciosamente **todas** las operaciones de archivo del agente al worktree — el agente trabaja con rutas normales, el motor se encarga del redirect. La rama `main` permanece intacta durante toda la ejecución.
-
-**Por qué existe:** Ninguna tarea de refactorización, feature nueva o integración tiene derecho a romper la rama principal. El worktree garantiza que el código en producción nunca es afectado por un agente en ejecución.
-
-**Protocolo de cierre:** Al completar la tarea, el agente debe llamar `exit_worktree`. El motor presenta un diff nativo en VS Code. El humano decide:
-- `action: 'merge'` — Los cambios se integran a `main`
-- `action: 'discard'` — El worktree se destruye sin rastro
-
-**Reglas de vuelo:**
-1. PROHIBIDO editar archivos en `main` directamente si hay un worktree activo
-2. PROHIBIDO llamar `exit_worktree` sin haber verificado que el build pasa
-3. PROHIBIDO al `@manager` declarar tarea completa si `exit_worktree` no ha recibido aprobación humana
-
----
-
-### 🧬 ESCUDO 3 — Syntax Shield (AST Validation)
-
-**Qué hace:** Antes de persistir cualquier escritura en disco (`write_file`, `replace_block`), el motor valida el AST del contenido resultante en memoria. Si el código produce un error de parseo — JSX roto, llave sin cerrar, import malformado — la escritura es **abortada** y el motor devuelve un diagnóstico de error al agente.
-
-**Por qué existe:** Los LLMs generan código sintácticamente inválido con frecuencia no despreciable, especialmente en ediciones de bloques complejos. Sin esta validación, un archivo puede quedar corrupto silenciosamente hasta que el usuario intenta compilar. El Syntax Shield garantiza que el disco siempre contiene código parseable.
-
-**Respuesta del agente al recibir un Syntax Shield rejection:**
-1. Leer el diagnóstico de error exacto devuelto por el motor
-2. Identificar la línea y el tipo de error (JSX, TS, indentación)
-3. Corregir el snippet antes de reintentar — no reenviar el mismo contenido
-
-**Regla de vuelo:** Un rechazo del Syntax Shield no es un error del sistema — es el sistema funcionando correctamente. El agente no debe escalar ni pedir bypass; debe corregir el código.
-
----
-
-### 🔒 ESCUDO 4 — Quality Gate & Escape Hatch (Closed-Loop Validation)
-
-**Qué hace:** Inmediatamente antes de aceptar la declaración de tarea completa del agente, el motor ejecuta `npm run build` de forma invisible. La finalización de la tarea está **bloqueada** hasta que el build devuelva exit code 0.
-
-**Por qué existe:** Un agente puede creer honestamente que su edición es correcta y estar equivocado. El Quality Gate elimina la posibilidad de entregar código roto al usuario — la validación es automática y obligatoria, no opcional.
-
-**El Ciclo Cerrado:**
-
-```
-Agente declara tarea completa
-        ↓
-Motor ejecuta npm run build (silencioso)
-        ↓
-   ¿Exit code 0?
-   ├─ SÍ  →  ✅ Tarea aceptada — Completion Report entregado al usuario
-   └─ NO  →  [QUALITY GATE FAILED] inyectado en el contexto del agente
-              El agente DEBE leer el error y corregirlo
-              consecutiveBuildFailures++
-```
-
-**El Circuit Breaker (Escape Hatch):**
-
-Si el agente falla el Quality Gate **3 veces consecutivas**, el motor activa el Circuit Breaker:
+  const matchNote = match.kind === 'fuzzy' ? ` [fuzzy match, line ${startLine}]` : ` [exact match, line ${startLine}]`;
+  const diffBlock = buildDiffBlock(args.search_snippet, args.replace_snippet);
+  return {
+    success: true,
+    output: `${diffBlock}\n\n**${args.path}** — ${removedLines} line${removedLines !== 1 ? 's' : ''} replaced.${matchNote}\n\nCambio aplicado en el editor. Revisa el Diff arriba y presiona Ctrl+S en el archivo para guardar.\n\nEDICIÓN EXITOSA — Si la tarea no está completa, llama la siguiente herramienta.`,
+  };
+}
 
 ```
-consecutiveBuildFailures >= 3
-        ↓
-[QUALITY GATE CIRCUIT BREAKER] inyectado
-        ↓
-Agente tiene PROHIBIDO intentar completar la tarea nuevamente
-        ↓
-OBLIGATORIO: llamar ask_user_approval
-  → Explicar los errores de build al humano
-  → Pedir instrucciones manuales O solicitar bypass explícito
+
+### 📁 FILE: `src\tools\SendMessageTool\index.ts`
+```typescript
+import { NativeTool, ToolResult } from '../shared';
+import { AgentMailbox } from '../../utils/agentMailbox';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'send_message',
+    description: `Send a context payload to another agent running in a parallel thread.
+The payload is delivered silently — it does NOT appear as raw content in the user's chat UI.
+The recipient will receive it as an injected context message on their next iteration.
+Use this to share API schemas, file paths, partial results, or any structured data between agents.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        to_agent:   { type: 'string', description: 'ID of the recipient agent (e.g. "designer", "coder", "manager").' },
+        from_agent: { type: 'string', description: 'Your own agent ID — so the recipient knows who sent the message.' },
+        payload:    { type: 'string', description: 'The data or context to deliver. Can be JSON, plain text, or structured notes.' },
+      },
+      required: ['to_agent', 'from_agent', 'payload'],
+    },
+  },
+};
+
+export function execute(args: Record<string, any>, _workspacePath: string): ToolResult {
+  const toAgent   = String(args.to_agent   ?? '').trim();
+  const fromAgent = String(args.from_agent ?? 'unknown').trim();
+  const payload   = String(args.payload    ?? '').trim();
+
+  if (!toAgent) {
+    return { success: false, output: 'send_message: "to_agent" is required.' };
+  }
+  if (!payload) {
+    return { success: false, output: 'send_message: "payload" cannot be empty.' };
+  }
+
+  AgentMailbox.send(toAgent, fromAgent, payload);
+  // The output here is the LLM's tool result AND the UI tooltip — keep it short.
+  // The actual payload is stored silently in the mailbox, not echoed here.
+  return {
+    success: true,
+    output: `Message queued for @${toAgent}. It will be injected into their context on the next iteration.`,
+  };
+}
+
 ```
 
-**Bypass del Quality Gate:** Solo se activa cuando el usuario aprueba explícitamente vía `ask_user_approval` con intención de bypass ("saltar build", "bypass", "skip"). Una vez activado, el bypass es válido para el resto de la sesión activa.
+### 📁 FILE: `src\tools\shared.ts`
+```typescript
+import * as fs from 'fs';
+import * as path from 'path';
 
-**Reglas de vuelo:**
-1. PROHIBIDO al agente intentar más de 3 iteraciones fallidas de build sin escalar
-2. PROHIBIDO interpretar el Circuit Breaker como un error del motor — es una señal de escalación obligatoria
-3. El contador de fallos se resetea automáticamente tras cada edición de archivo exitosa
+// ─── Shared Types ─────────────────────────────────────────────────────────────
 
----
+export interface ToolResult {
+  success: boolean;
+  output: string;
+}
 
-## IV. SHERLOCK AUDITOR — Doble Capa de Seguridad
+export interface NativeTool {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: {
+      type: 'object';
+      // Permissive to support array schemas (items, enum, etc.) alongside simple { type, description } entries.
+      properties: Record<string, any>;
+      required: string[];
+    };
+  };
+}
 
-El Sherlock Auditor es una capa de validación LLM independiente que analiza cada respuesta del agente **antes** de ejecutar las herramientas. Bloquea los siguientes antipatrones:
+// ─── Shared Helpers ───────────────────────────────────────────────────────────
 
-| # | Antipatrón | Consecuencia |
-|---|---|---|
-| 1 | **ROGUE DESIGNER** — Crear UI no solicitada | Bloqueo + error |
-| 2 | **GHOST EXECUTION** — Narrar éxito sin llamar la herramienta ("I will now…", "Let me run…") | Bloqueo + retry forzado |
-| 3 | **WRITE_FILE FALLBACK** — Usar `write_file` sobre archivo existente | Bloqueo + redirección a `replace_block` |
-| 4 | **TECH STACK DRIFT** — Importar paquetes inexistentes en el proyecto | Bloqueo + error |
-| 5 | **LOOPING** — Repetir el mismo tool call con los mismos argumentos | Bloqueo + escalación al `@manager` |
-| 6 | **SILOED CHANGES** — Modificar un símbolo sin buscar sus usages primero | Bloqueo + error |
-| 7 | **SANDBOX HALLUCINATION** — Afirmar que no puede ejecutar comandos | Bloqueo + corrección |
+export function safePath(workspacePath: string, p: string): string {
+  if (!p) { throw new Error('Path is required'); }
 
----
+  // ── Robust Path Sanitization (v7.14.0) ──────────────────────────────
+  // Handles ALL known LLM path hallucinations:
+  //   1. Docker-bias:   /workspace/src/file.tsx
+  //   2. Overlap:       /workspace/d:\real\path\file.tsx  (Docker prefix + Windows absolute)
+  //   3. Pure relative: src/file.tsx
+  //   4. Pure absolute: d:\real\path\file.tsx (valid if inside workspace)
+  let clean = p;
+  if (clean.startsWith('/workspace/'))     { clean = clean.substring(11); }
+  else if (clean.startsWith('workspace/')) { clean = clean.substring(10); }
+  else if (clean.startsWith('\\workspace\\')) { clean = clean.substring(11); }
 
-## V. EL SISTEMA `.fluxo/` — Memoria Persistente del Enjambre
+  const driveIndex = clean.search(/[a-zA-Z]:/);
+  if (driveIndex > 0) {
+    clean = clean.substring(driveIndex);
+  }
 
-`.fluxo/` es la capa de persistencia del enjambre en cada workspace. El motor la crea automáticamente.
+  clean = path.normalize(clean);
 
-| Archivo | Propósito | Quién escribe |
-|---|---|---|
-| `.fluxo/memory.md` | Reglas, convenciones y decisiones arquitectónicas del proyecto | `@manager` vía `update_memory` |
-| `.fluxo/IMPLEMENTATION_PLAN.md` | Plan de acción generado por el `@planner` | `@planner` vía `write_file` |
-| `.fluxo/improvements.md` | Telemetría de fallos del motor | Motor (automático en cada `success: false`) |
-| `.fluxo/backups/` | Backup automático por `search_and_replace` (máx. 30 archivos, rotación FIFO) | Motor (automático) |
+  // Resolve to an absolute path
+  const resolvedWs    = path.resolve(workspacePath);
+  const resolvedClean = path.resolve(workspacePath, clean);
 
-El contenido de `.fluxo/memory.md` se inyecta automáticamente al inicio de cada sesión en el `systemPrompt` de todos los agentes. Las reglas escritas ahí son vinculantes sin que el usuario tenga que repetirlas.
+  // Case-insensitive comparison on Windows to ensure we are within the workspace root
+  if (!resolvedClean.toLowerCase().startsWith(resolvedWs.toLowerCase())) {
+    throw new Error(`Path traversal blocked or outside workspace: ${p}`);
+  }
 
----
+  return resolvedClean;
+}
 
-## VI. REFERENCIA DE HERRAMIENTAS — El Enjambre Completo
+export function searchRecursive(
+  dir: string,
+  root: string,
+  pattern: string,
+  results: string[],
+  depth: number
+): void {
+  if (depth > 6 || results.length > 100) { return; }
+  const SKIP = new Set(['node_modules', '.git', 'dist', 'out', 'build', '.next', '__pycache__']);
 
-| Herramienta | Agente(s) | Propósito |
-|---|---|---|
-| `get_repo_map` | Todos | Mapa estructural del repo — obligatorio antes de editar |
-| `glob` | Todos | Búsqueda de archivos por patrón |
-| `grep` | Todos | Búsqueda de símbolos y strings en el codebase |
-| `read_file` | Todos | Lectura de archivos — siempre antes de editar |
-| `replace_block` | `@coder`, `@designer` | Edición quirúrgica por snippet exacto |
-| `replace_symbol` | `@coder`, `@designer` | Edición LSP-nativa por nombre de símbolo |
-| `search_and_replace` | `@coder`, `@designer` | Reemplazos literales simples |
-| `write_file` | Todos (solo archivos nuevos) | Creación de archivos nuevos exclusivamente |
-| `run_command` | `@coder`, `@manager` | Comandos de terminal (HITL para comandos de alto impacto) |
-| `enter_worktree` | `@coder`, `@manager` | Activar sandbox Git aislado |
-| `exit_worktree` | `@manager` | Cerrar worktree con merge o discard + Human Review |
-| `abort_and_rollback` | `@coder`, `@manager` | Rollback al último checkpoint del Time Machine |
-| `enter_plan_mode` | `@manager` | Spawnar `@planner` para análisis arquitectónico |
-| `create_team` | `@manager` | Lanzar agentes en paralelo |
-| `send_message` | `@manager` | Comunicación inter-agente (mailbox asíncrono) |
-| `ask_user_approval` | Todos | HITL — pausar y pedir decisión humana |
-| `skill` | `@manager`, `@planner` | Aplicar recetas JSON de la Community Skills Library |
-| `update_memory` | `@manager` | Escribir reglas persistentes en `.fluxo/memory.md` |
-| `propose_plan` | `@planner`, `@manager` | Presentar plan al usuario antes de ejecutar |
-| `search_images` | `@designer` | Búsqueda de referencias visuales |
-| `fetch_documentation` | Todos | Obtener docs externas (MDN, npm, APIs) |
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
 
----
+  for (const entry of entries) {
+    if (SKIP.has(entry.name)) { continue; }
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      searchRecursive(full, root, pattern, results, depth + 1);
+    } else {
+      try {
+        const content = fs.readFileSync(full, 'utf-8');
+        const lowerContent = content.toLowerCase();
+        const lowerPattern = pattern.toLowerCase();
+        if (lowerContent.includes(lowerPattern)) {
+          const lines = content.split('\n');
+          lines.forEach((line, i) => {
+            if (line.toLowerCase().includes(lowerPattern)) {
+              results.push(`${path.relative(root, full)}:${i + 1}: ${line.trim().slice(0, 120)}`);
+            }
+          });
+        }
+      } catch { /* binary file */ }
+    }
+  }
+}
 
-## VII. ESTÁNDARES WEB — SOP Automático
-
-Estos estándares se aplican **sin que el usuario los solicite** en cada proyecto web.
-
-### SEO & LLMO
-- Crear `/llms.txt` en la raíz (índice para crawlers de IA)
-- Cada ruta debe incluir Schema Markup (`application/ld+json`), OpenGraph tags y `<meta name="description">`
-
-### Performance
-```tsx
-// OBLIGATORIO para componentes pesados, rutas, dashboards, mapas
-const HeavyPage = React.lazy(() => import('./HeavyPage'));
-<Suspense fallback={<div className="animate-pulse bg-white/10 rounded-xl h-40" />}>
-  <HeavyPage />
-</Suspense>
 ```
 
-### UI/UX — Sistema de Diseño Oficial
-- **Breakpoints**: `sm:` → `md:` → `lg:` → `xl:` — siempre mobile-first
-- **Estética**: Glassmorphism (`bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl`)
-- **Iconos**: `lucide-react` exclusivamente — prohibido `@heroicons`, `react-icons`, u otras librerías
+### 📁 FILE: `src\tools\SkillTool\index.ts`
+```typescript
+import { ToolResult, NativeTool } from '../shared';
 
----
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'skill',
+    description:
+      'Access the Community Skills library — pre-built implementation recipes for common integrations. ' +
+      'Use action="list" to see available skills. ' +
+      'Use action="apply" with a skill_name to inject the recipe into .fluxo/IMPLEMENTATION_PLAN.md ' +
+      'and skip manual planning for well-known tasks (e.g. stripe-payment-flow, firebase-auth, etc.).',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'apply'],
+          description: '"list" returns all available skills. "apply" injects a skill recipe into the implementation plan.',
+        },
+        skill_name: {
+          type: 'string',
+          description: 'The skill name to apply (required when action="apply"). Use the exact name returned by action="list".',
+        },
+      },
+      required: ['action'],
+    },
+  },
+};
 
-*FLUXO AI · Motor Cognitivo Tier-1 · Construido para domar el caos de la IA generativa*
-*Built by **Denayssam** & Fluxo Tech AI · Prohibida la aleatoriedad*
+export function execute(_args: Record<string, any>, _workspacePath: string): ToolResult {
+  return {
+    success: false,
+    output: '[SYSTEM]: skill is intercepted by the engine. This execute() body should never run.',
+  };
+}
+
+```
+
+### 📁 FILE: `src\tools\TeamCreateTool\index.ts`
+```typescript
+import { NativeTool, ToolResult } from '../shared';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'create_team',
+    description: `Launch a parallel team of sub-agents to work on INDEPENDENT tasks concurrently.
+WHEN TO USE: Only when tasks have NO shared files and NO data dependencies between them.
+Each sub-agent receives a fresh, isolated context — be explicit and self-contained in each task description.
+The engine will run all agents with Promise.all and the FileLockManager will prevent file collisions.
+EXAMPLE: { "team": [{"agent":"coder","task":"Build REST endpoints in src/api/..."},{"agent":"designer","task":"Create UI components in src/components/..."}] }`,
+    parameters: {
+      type: 'object',
+      properties: {
+        team: {
+          type: 'array',
+          description: 'Array of delegation entries. Each entry assigns one agent to one task.',
+          items: {
+            type: 'object',
+            properties: {
+              agent: { type: 'string', description: 'Agent ID to delegate to (e.g. "coder", "designer", "dashboard", "payments").' },
+              task:  { type: 'string', description: 'Complete, self-contained task description for this agent. Include all context it needs — it has no memory of the current conversation.' },
+            },
+            required: ['agent', 'task'],
+          },
+        },
+      },
+      required: ['team'],
+    },
+  },
+};
+
+// The real execution is intercepted by agentEngine.ts (similar to ask_user_approval).
+// This path is a safety fallback only and should never be reached in production.
+export function execute(_args: Record<string, any>, _workspacePath: string): ToolResult {
+  return {
+    success: false,
+    output: '[SYSTEM ENGINE ERROR]: create_team must be intercepted by the Parallel Swarm engine. This fallback should never execute.',
+  };
+}
+
+```
+
+### 📁 FILE: `src\tools\UpdateMemoryTool\index.ts`
+```typescript
+import * as fs from 'fs';
+import * as path from 'path';
+import { NativeTool, ToolResult } from '../shared';
+
+const MEMORY_PATH = '.fluxo/memory.md';
+
+export const TOOL_DEF: NativeTool = {
+  type: 'function',
+  function: {
+    name: 'update_memory',
+    description:
+      'Create or overwrite the workspace memory file (.fluxo/memory.md). ' +
+      'Use this tool when the user explicitly asks you to "remember" a rule, preference, or convention, ' +
+      'OR when you and the user agree on an important architectural decision that should persist across sessions. ' +
+      'Always include the full desired memory content — this overwrites the file completely. ' +
+      'Read the existing memory first (if any) so you can merge old rules with new ones before writing.',
+    parameters: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description:
+            'Full markdown content for .fluxo/memory.md. Use headings (##) to organize rules by category. ' +
+            'Example sections: ## Coding Conventions, ## Architecture Decisions, ## User Preferences.',
+        },
+      },
+      required: ['content'],
+    },
+  },
+};
+
+export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
+  if (typeof args.content !== 'string' || args.content.trim() === '') {
+    return { success: false, output: 'CRITICAL ERROR: "content" is missing or empty.' };
+  }
+  const memoryFilePath = path.join(workspacePath, MEMORY_PATH);
+  fs.mkdirSync(path.dirname(memoryFilePath), { recursive: true });
+  fs.writeFileSync(memoryFilePath, args.content, 'utf-8');
+  const size = Buffer.byteLength(args.content, 'utf-8');
+  return {
+    success: true,
+    output: `Workspace memory updated: ${MEMORY_PATH} (${size} bytes). Rules will be injected into all agents on the next session.`,
+  };
+}
+
+```
+
+### 📁 FILE: `src\utils\agentMailbox.ts`
+```typescript
+interface MailboxEntry {
+  fromAgentId: string;
+  payload: string;
+  sentAt: number;
+}
+
+class AgentMailboxClass {
+  private inbox = new Map<string, MailboxEntry[]>();
+
+  send(toAgentId: string, fromAgentId: string, payload: string): void {
+    const key = toAgentId.toLowerCase().trim();
+    if (!this.inbox.has(key)) { this.inbox.set(key, []); }
+    this.inbox.get(key)!.push({ fromAgentId, payload, sentAt: Date.now() });
+  }
+
+  // Consume and return all messages for an agent (empties the inbox slot).
+  drain(agentId: string): string[] {
+    const key = agentId.toLowerCase().trim();
+    const entries = this.inbox.get(key);
+    if (!entries || entries.length === 0) { return []; }
+    this.inbox.delete(key);
+    return entries.map(e => `[FROM @${e.fromAgentId}]: ${e.payload}`);
+  }
+
+  hasPending(agentId: string): boolean {
+    const entries = this.inbox.get(agentId.toLowerCase().trim());
+    return !!(entries && entries.length > 0);
+  }
+}
+
+export const AgentMailbox = new AgentMailboxClass();
+
+```
+
+### 📁 FILE: `src\utils\buildValidator.ts`
+```typescript
+import { exec } from 'child_process';
+
+export function validateBuild(workspacePath: string): Promise<{ success: boolean; error?: string }> {
+  return new Promise(resolve => {
+    exec('npm run build', { cwd: workspacePath, timeout: 45000 }, (err, stdout, stderr) => {
+      if (!err) {
+        resolve({ success: true });
+      } else {
+        resolve({ success: false, error: (stderr || stdout).trim().slice(0, 2000) });
+      }
+    });
+  });
+}
+
+```
+
+### 📁 FILE: `src\utils\gitSafety.ts`
+```typescript
+import { execSync } from 'child_process';
+
+// ─── Git Safety Utilities (v8.15.0 — The Time Machine) ───────────────────────
+
+export function hasUncommittedChanges(cwd: string): boolean {
+  try {
+    const out = execSync('git status --porcelain', { cwd, encoding: 'utf-8', timeout: 5000 });
+    return out.trim().length > 0;
+  } catch {
+    return false; // not a git repo or git unavailable — treat as clean
+  }
+}
+
+// Creates an empty anchor commit so rollbackToLastCheckpoint() has a fixed
+// HEAD~1 to reset to, undoing all subsequent agent file edits in one atomic
+// git reset --hard.
+//
+// v8.16.7 — Smart Auto-Commit: if the working tree has uncommitted human
+// changes, we no longer abort. Instead we auto-save them as a "WIP" commit
+// FIRST, then layer the agent's anchor commit on top. If the agent later
+// fails and we reset --hard HEAD~1, the human's WIP commit remains intact —
+// their work is preserved, only the agent's edits are discarded.
+export function createSilentCheckpoint(taskId: string, cwd: string): void {
+  // ── v8.16.2: Block checkpoints for invalid/analysis-only task IDs ────────────
+  if (taskId.includes('MISSION-ANALYSIS-ONLY')) {
+    return;
+  }
+  if (hasUncommittedChanges(cwd)) {
+    execSync('git add .', { cwd, encoding: 'utf-8', timeout: 10000 });
+    execSync(
+      'git commit -m "WIP: Auto-saved human changes before agent task"',
+      { cwd, encoding: 'utf-8', timeout: 10000 }
+    );
+  }
+  const safe = taskId.replace(/['"\\]/g, '').slice(0, 60);
+  execSync(`git commit --allow-empty -m "fluxo-auto-checkpoint: ${safe}"`, {
+    cwd,
+    encoding: 'utf-8',
+    timeout: 10000,
+  });
+}
+
+export function rollbackToLastCheckpoint(cwd: string): { success: boolean; output: string } {
+  try {
+    const out = execSync('git reset --hard HEAD~1', { cwd, encoding: 'utf-8', timeout: 15000 });
+    return {
+      success: true,
+      output: `Rollback complete. Working tree restored to the state before the last agent checkpoint.\n${out.trim()}`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      output: `Rollback failed: ${err.message ?? String(err)}`,
+    };
+  }
+}
+
+```
+
+### 📁 FILE: `src\utils\lockfile.ts`
+```typescript
+interface LockEntry {
+  agentId: string;
+  acquiredAt: number;
+}
+
+class FileLockManagerClass {
+  private locks = new Map<string, LockEntry>();
+
+  // Returns true if the lock was acquired (or is already held by the same agent).
+  // Returns false if the file is locked by a different agent.
+  acquireLock(filePath: string, agentId: string): boolean {
+    const key = filePath.toLowerCase();
+    const existing = this.locks.get(key);
+    if (existing) {
+      return existing.agentId === agentId; // reentrant for same agent
+    }
+    this.locks.set(key, { agentId, acquiredAt: Date.now() });
+    return true;
+  }
+
+  // Releases the lock only if the caller is the current holder.
+  releaseLock(filePath: string, agentId: string): void {
+    const key = filePath.toLowerCase();
+    const existing = this.locks.get(key);
+    if (existing && existing.agentId === agentId) {
+      this.locks.delete(key);
+    }
+  }
+
+  getHolder(filePath: string): string | undefined {
+    return this.locks.get(filePath.toLowerCase())?.agentId;
+  }
+}
+
+export const FileLockManager = new FileLockManagerClass();
+
+```
+
+### 📁 FILE: `src\utils\repoMap.ts`
+```typescript
+import * as ts from 'typescript';
+import * as fs from 'fs';
+import * as path from 'path';
+
+// ─── RepoMap Generator (v8.12.0 — Semantic Awareness Phase 2: AST Edition) ────
+// Produces a compressed semantic map using the TypeScript compiler AST.
+// Output is Aider-style: each file on its own header line, exported symbols indented below.
+// Agents consume this as a codebase topography atlas — no shell commands needed.
+
+const IGNORE_DIRS = new Set([
+  'node_modules', '.git', '.fluxo', 'dist', 'out', 'build',
+  'coverage', '.vscode', '.nyc_output', '__pycache__', '.next',
+  '.nuxt', 'vendor', 'tmp', 'temp', '.turbo', '.cache',
+]);
+
+const TARGET_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx']);
+const MAX_REPO_MAP_CHARS = 15_000;
+
+// ─── AST Helpers ─────────────────────────────────────────────────────────────
+
+function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
+  if (!ts.canHaveModifiers(node)) { return false; }
+  return (ts.getModifiers(node) ?? []).some(m => m.kind === kind);
+}
+
+function paramNames(params: ts.NodeArray<ts.ParameterDeclaration>): string {
+  if (params.length === 0) { return ''; }
+  if (params.length > 4) { return '…'; }
+  return params.map(p => {
+    const name = ts.isIdentifier(p.name) ? p.name.text : p.name.getText();
+    return p.dotDotDotToken ? `...${name}` : name;
+  }).join(', ');
+}
+
+function retSuffix(node: { type?: ts.TypeNode }, src: ts.SourceFile): string {
+  return node.type ? `: ${node.type.getText(src)}` : '';
+}
+
+// ─── Per-file Signature Extractor ────────────────────────────────────────────
+
+function extractSignatures(filePath: string): string[] {
+  let content: string;
+  try { content = fs.readFileSync(filePath, 'utf-8'); } catch { return []; }
+
+  // Skip minified files — single very long line with semicolons
+  const sampleLine = content.slice(0, 500);
+  if (sampleLine.length > 300 && sampleLine.indexOf('\n') === -1 && sampleLine.includes(';')) { return []; }
+
+  let src: ts.SourceFile;
+  try {
+    src = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true);
+  } catch { return []; }
+
+  const sigs: string[] = [];
+
+  ts.forEachChild(src, (node) => {
+
+    // ── export [async] [default] function Name(...): ReturnType ───────────────
+    if (ts.isFunctionDeclaration(node) && hasModifier(node, ts.SyntaxKind.ExportKeyword)) {
+      const name   = node.name?.text ?? '(anonymous)';
+      const async_ = hasModifier(node, ts.SyntaxKind.AsyncKeyword) ? 'async ' : '';
+      const dflt   = hasModifier(node, ts.SyntaxKind.DefaultKeyword) ? 'default ' : '';
+      const ps     = paramNames(node.parameters);
+      const rt     = retSuffix(node, src);
+      sigs.push(`  export ${dflt}${async_}function ${name}(${ps})${rt}`);
+      return;
+    }
+
+    // ── export [default] class Name ──────────────────────────────────────────
+    if (ts.isClassDeclaration(node) && hasModifier(node, ts.SyntaxKind.ExportKeyword)) {
+      const name = node.name?.text ?? '(anonymous)';
+      const dflt = hasModifier(node, ts.SyntaxKind.DefaultKeyword) ? 'default ' : '';
+      sigs.push(`  export ${dflt}class ${name}`);
+      return;
+    }
+
+    // ── export interface Name ─────────────────────────────────────────────────
+    if (ts.isInterfaceDeclaration(node) && hasModifier(node, ts.SyntaxKind.ExportKeyword)) {
+      sigs.push(`  export interface ${node.name.text}`);
+      return;
+    }
+
+    // ── export type Name ──────────────────────────────────────────────────────
+    if (ts.isTypeAliasDeclaration(node) && hasModifier(node, ts.SyntaxKind.ExportKeyword)) {
+      sigs.push(`  export type ${node.name.text}`);
+      return;
+    }
+
+    // ── export enum Name ─────────────────────────────────────────────────────
+    if (ts.isEnumDeclaration(node) && hasModifier(node, ts.SyntaxKind.ExportKeyword)) {
+      sigs.push(`  export enum ${node.name.text}`);
+      return;
+    }
+
+    // ── export const/let/var Name = [arrow | value] ──────────────────────────
+    if (ts.isVariableStatement(node) && hasModifier(node, ts.SyntaxKind.ExportKeyword)) {
+      const flags = node.declarationList.flags;
+      const kind  = flags & ts.NodeFlags.Const ? 'const' : flags & ts.NodeFlags.Let ? 'let' : 'var';
+      for (const decl of node.declarationList.declarations) {
+        if (!ts.isIdentifier(decl.name)) { continue; }
+        const name = decl.name.text;
+        const init = decl.initializer;
+        if (init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
+          const ps = paramNames(init.parameters);
+          const rt = init.type ? ` => ${init.type.getText(src)}` : ' => …';
+          sigs.push(`  ${kind} ${name} = (${ps})${rt}`);
+        } else {
+          const typeAnn = decl.type ? `: ${decl.type.getText(src)}` : '';
+          sigs.push(`  export ${kind} ${name}${typeAnn}`);
+        }
+      }
+      return;
+    }
+
+    // ── export default SomeExpression ─────────────────────────────────────────
+    if (ts.isExportAssignment(node) && !node.isExportEquals) {
+      const expr = node.expression.getText(src);
+      if (expr.length < 60) {
+        sigs.push(`  export default ${expr}`);
+      }
+    }
+  });
+
+  return sigs;
+}
+
+// ─── Directory Walker ─────────────────────────────────────────────────────────
+
+function scanDir(dirPath: string, workspacePath: string, blocks: string[]): void {
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return; }
+
+  for (const entry of entries) {
+    if (IGNORE_DIRS.has(entry.name)) { continue; }
+    const fullPath = path.join(dirPath, entry.name);
+
+    if (entry.isDirectory()) {
+      scanDir(fullPath, workspacePath, blocks);
+    } else if (entry.isFile() && TARGET_EXTS.has(path.extname(entry.name).toLowerCase())) {
+      try {
+        const relPath = path.relative(workspacePath, fullPath).replace(/\\/g, '/');
+        const sigs = extractSignatures(fullPath);
+        if (sigs.length > 0) {
+          blocks.push(`${relPath}:\n${sigs.join('\n')}`);
+        } else {
+          blocks.push(relPath);
+        }
+      } catch { /* skip unreadable entries silently */ }
+    }
+  }
+}
+
+// ─── Public API ──────────────────────────────────────────────────────────────
+
+export function buildRepoMap(workspacePath: string): string {
+  if (!workspacePath) { return ''; }
+  try {
+    const blocks: string[] = [];
+    scanDir(workspacePath, workspacePath, blocks);
+    if (blocks.length === 0) { return ''; }
+
+    let result = blocks.join('\n');
+
+    if (result.length > MAX_REPO_MAP_CHARS) {
+      result = result.substring(0, MAX_REPO_MAP_CHARS) +
+        '\n[repo_map truncated — showing partial structure]';
+    }
+
+    return result;
+  } catch {
+    return '';
+  }
+}
+
+```
+
+### 📁 FILE: `src\utils\syntaxValidator.ts`
+```typescript
+import * as ts from 'typescript';
+import * as path from 'path';
+
+// ─── AST Syntax Validator (v8.14.0 — Syntax Shield) ──────────────────────────
+// Validates TS/JS/TSX/JSX content in-memory using the TypeScript compiler.
+// No real filesystem access — uses a virtual CompilerHost.
+// Returns immediately (ok: true) for non-JS/TS file types.
+
+const CHECKABLE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx']);
+
+export interface SyntaxCheckResult {
+  ok: boolean;
+  errors: string;
+}
+
+export function checkSyntax(filePath: string, content: string): SyntaxCheckResult {
+  const ext = path.extname(filePath).toLowerCase();
+  if (!CHECKABLE_EXTS.has(ext)) { return { ok: true, errors: '' }; }
+
+  // Virtual path avoids Windows normalization issues and real-FS lookups.
+  // The extension is preserved so the compiler applies correct JSX rules.
+  const virtualPath = `__fluxo_virtual__${ext}`;
+
+  const compilerHost: ts.CompilerHost = {
+    getSourceFile: (name) => {
+      if (name === virtualPath) {
+        return ts.createSourceFile(virtualPath, content, ts.ScriptTarget.Latest, true);
+      }
+      return undefined;
+    },
+    writeFile: () => {},
+    getDefaultLibFileName: () => 'lib.d.ts',
+    useCaseSensitiveFileNames: () => false,
+    getCanonicalFileName: (f) => f,
+    getCurrentDirectory: () => '',
+    getNewLine: () => '\n',
+    fileExists: (name) => name === virtualPath,
+    readFile: () => '',
+    directoryExists: () => false,
+    getDirectories: () => [],
+  };
+
+  try {
+    const program = ts.createProgram(
+      [virtualPath],
+      {
+        noResolve: true,
+        target: ts.ScriptTarget.Latest,
+        allowJs: true,
+        jsx: ts.JsxEmit.React,
+        noLib: true,
+      },
+      compilerHost
+    );
+    const sourceFile = program.getSourceFile(virtualPath);
+    if (!sourceFile) { return { ok: true, errors: '' }; }
+
+    const diagnostics = program.getSyntacticDiagnostics(sourceFile);
+    if (diagnostics.length === 0) { return { ok: true, errors: '' }; }
+
+    const errors = [...diagnostics]
+      .slice(0, 5) // cap output — avoid wall-of-text on catastrophic failures
+      .map(d => {
+        const msg = ts.flattenDiagnosticMessageText(d.messageText, '\n');
+        if (d.file && d.start !== undefined) {
+          const { line, character } = d.file.getLineAndCharacterOfPosition(d.start);
+          return `  Line ${line + 1}, Col ${character + 1}: ${msg}`;
+        }
+        return `  ${msg}`;
+      })
+      .join('\n');
+
+    return { ok: false, errors };
+  } catch {
+    // Validator crash must never block a write — fail open
+    return { ok: true, errors: '' };
+  }
+}
+
+```
+
+### 📁 FILE: `tsconfig.json`
+```json
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2020",
+    "outDir": "./out",
+    "rootDir": "./src",
+    "sourceMap": true,
+    "strict": true,
+    "lib": ["ES2020"],
+    "types": ["node"],
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "out", "media"]
+}
+
+```
+
 
 ```
 
@@ -1083,7 +2265,8 @@ git tag -d v8.16.1
 
 git tag v8.16.1
 git push origin v8.16.1
-
+Si prefieres la terminal en lugar de hacer clics, puedes usar: git reset --hard HEAD~N (donde N es la cantidad de commits de fluxo-auto-checkpoint que quieres retroceder)
+git reset --hard HEAD~N
 ---
 
 # 🛠️ Cheat-sheet: comandos que uso al desarrollar Fluxo AI
@@ -2220,7 +3403,7 @@ npm run watch
     messagesEl.innerHTML = `
       <div class="welcome-card">
         <div class="welcome-logo">🐾</div>
-        <h2 class="welcome-title">Fluxo AI <span class="welcome-version">v8.16.1</span></h2>
+        <h2 class="welcome-title">Fluxo AI <span class="welcome-version">v8.24.0</span></h2>
         <div class="welcome-tips">
           <div class="tip"><span class="tip-key">↵</span> Send</div>
           <div class="tip-sep">·</div>
@@ -3341,7 +4524,7 @@ body { display: flex; flex-direction: column; height: 100vh; }
   "name": "fluxo-ai",
   "displayName": "Fluxo AI — Agent Swarm",
   "description": "Autonomous AI coding agent powered by OpenRouter. Writes files, runs commands, routes to specialized agents (Coder, Designer, Dashboard, Payments).",
-  "version": "8.16.22",
+  "version": "8.24.0",
   "publisher": "fluxotechai",
   "repository": {
     "type": "git",
@@ -3417,6 +4600,21 @@ body { display: flex; flex-direction: column; height: 100vh; }
         "command": "fluxo.toggleSentinel",
         "title": "Fluxo: Toggle Sentinel",
         "icon": "$(eye)"
+      },
+      {
+        "command": "fluxo.mcp.add",
+        "title": "Fluxo: Add MCP Server",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "fluxo.mcp.remove",
+        "title": "Fluxo: Remove MCP Server",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "fluxo.mcp.list",
+        "title": "Fluxo: List MCP Servers",
+        "icon": "$(list-tree)"
       }
     ],
     "menus": {
@@ -3537,7 +4735,7 @@ body { display: flex; flex-direction: column; height: 100vh; }
 
 Fluxo AI no es solo otro autocompletador de código. Es un **Motor Cognitivo (Tier-1)** integrado nativamente en Visual Studio Code, diseñado para Managers, Arquitectos y Tech Leads que requieren una colaboración segura y guiada (Human-in-the-Loop) con modelos de lenguaje.
 
-![Version](https://img.shields.io/badge/version-v8.16.22-blue)
+![Version](https://img.shields.io/badge/version-v8.24.0-blue)
 ![Architecture](https://img.shields.io/badge/architecture-Structural_Isolation-orange)
 ![Status](https://img.shields.io/badge/status-Active_Development-success)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -3550,7 +4748,7 @@ Los LLMs actuales son brillantes creando código desde cero, pero deficientes ha
 
 ---
 
-## 🚀 Características Principales (Motor v8.16.22)
+## 🚀 Características Principales (Motor v8.20.0 — Seamless UX & MCP Registry)
 
 | Característica | Descripción |
 |---|---|
@@ -3769,11 +4967,14 @@ Este documento define la "Estrella del Norte" de FLUXO AI. Tras consolidar el Ni
 import * as fs from 'fs';
 import * as path from 'path';
 import { executeTool, getNativeTools, NativeTool } from './tools';
+import { stripWorktreePrefix } from './tools/shared';
+import { compactToolFailures, proactiveCompact } from './utils/condenser';
 import { AGENTS, buildAgentSystemPrompt, ROUTER_PROMPT, REVISOR_PROMPT, SUMMARIZER_PROMPT } from './agents';
 import { AgentMailbox } from './utils/agentMailbox';
 import { buildRepoMap } from './utils/repoMap';
 import { createSilentCheckpoint } from './utils/gitSafety';
 import { validateBuild } from './utils/buildValidator';
+import * as DagController from './utils/dagController';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -3841,6 +5042,41 @@ function resolveEndpointAndKey(model: string, config: EngineConfig): { endpointU
   return { endpointUrl: OPENROUTER_URL, resolvedKey: config.apiKey, resolvedModel: model };
 }
 const MAX_ITERATIONS = 25;
+
+// ─── RBAC Categories (v8.19.0 — Phase 3 Deep MCP) ───────────────────────────
+// Principle of Least Privilege for MCP tools. Each agent role is allowed a
+// fixed set of category tags; a tool is admitted iff its inferred categories
+// (set by mcpClient.inferCategories) overlap the role's allow-set. Tools with
+// no categories ("unknown") are denied for every role EXCEPT @manager — the
+// orchestrator gets a permissive fallback so it can still operate when the
+// inference misses an exotic server.
+const RBAC_CATEGORIES: Record<string, Set<string>> = {
+  designer: new Set(['design', 'ui', 'figma', 'image']),
+  coder:    new Set(['database', 'compiler', 'git', 'github', 'devops']),
+  manager:  new Set(['pm', 'jira', 'github', 'git', 'project', 'issues']),
+};
+
+function applyMcpRbac(
+  agentId: string,
+  tools: NativeTool[],
+  categoryMap: Record<string, string[]>
+): NativeTool[] {
+  const allowed = RBAC_CATEGORIES[agentId];
+  return tools.filter(t => {
+    const cats = categoryMap[t.function.name] ?? [];
+    if (cats.length === 0) {
+      // Unknown category: only the @manager keeps the tool.
+      return agentId === 'manager';
+    }
+    if (!allowed) {
+      // Roles without an explicit RBAC entry (planner, dashboard, payments…)
+      // get nothing by default — Principle of Least Privilege.
+      return false;
+    }
+    return cats.some(c => allowed.has(c));
+  });
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 const MAX_LOG_SIZE = 2 * 1024 * 1024;
 
@@ -3999,7 +5235,20 @@ export async function* runAgentLoop(
   callMcpToolCallback?: (name: string, args: any) => Promise<{ success: boolean; output: string }>,
   worktreeReviewCallback?: (branch: string, worktreePath: string) => Promise<'merge' | 'discard'>,
   replaceSymbolCallback?: (filePath: string, symbolName: string, newCode: string) => Promise<{ success: boolean; output: string }>,
-  hitlCommandCallback?: (command: string) => Promise<boolean>
+  hitlCommandCallback?: (command: string) => Promise<boolean>,
+  // v8.19.0 — per-tool category map keyed by full tool name (mcp_<server>_<tool>).
+  // Drives the RBAC filter that runs immediately below. If absent, every tool
+  // is treated as 'unknown' and only the @manager keeps access — a safe fallback
+  // that satisfies "deny by default unless the agent is the @manager".
+  mcpToolCategories: Record<string, string[]> = {},
+  // v8.23.0 — LSP Passive Feedback. Polls vscode.languages.getDiagnostics for
+  // the recently edited files BEFORE the Quality Gate runs npm run build, so
+  // the agent learns about missing props / undeclared symbols / type
+  // mismatches without paying the cost of a full compiler invocation. Returns
+  // a list of human-readable diagnostic strings (already trimmed and capped).
+  // Engine treats absence (undefined/null callback) as "no LSP available" —
+  // skips the check silently so non-VS Code execution paths are unaffected.
+  getDiagnosticsCallback?: (relPaths: string[]) => Promise<string[]>
 ): AsyncGenerator<AgentEvent> {
 
   // 1. Intent Detection (Routing)
@@ -4026,8 +5275,17 @@ export async function* runAgentLoop(
 
   const agent = AGENTS[agentId] || AGENTS.coder;
   let agentTools: NativeTool[] = getNativeTools(agent.tools);
+  // v8.19.0 — RBAC filter for MCP tools. The filter consults RBAC_CATEGORIES
+  // and the per-tool category map produced by mcpClient.inferCategories.
+  // Tools with unmatched categories are dropped silently from the agent's
+  // tool surface; the LLM never sees them and cannot call them.
+  let allowedMcpTools: NativeTool[] = [];
   if (mcpTools && mcpTools.length > 0) {
-    agentTools.push(...mcpTools);
+    allowedMcpTools = applyMcpRbac(agentId, mcpTools, mcpToolCategories);
+    if (allowedMcpTools.length > 0) {
+      agentTools.push(...allowedMcpTools);
+    }
+    debugLog(workspacePath, `[MCP RBAC] @${agentId} — granted ${allowedMcpTools.length}/${mcpTools.length} MCP tool(s)`);
   }
 
   // ─── Tool Masker (Deep Masking v7.18.0) ────────────────────────────────────
@@ -4083,7 +5341,9 @@ export async function* runAgentLoop(
     } catch { /* memory file unreadable — proceed without it */ }
   }
 
-  const baseSystemPrompt = buildAgentSystemPrompt(agentId);
+  // v8.19.0 — pass hasMcpTools so the [EXTERNAL MCP KNOWLEDGE] block is only
+  // injected when the RBAC filter actually admitted at least one external tool.
+  const baseSystemPrompt = buildAgentSystemPrompt(agentId, allowedMcpTools.length > 0);
   let systemPrompt = workspaceMemoryBlock
     ? baseSystemPrompt + workspaceMemoryBlock
     : baseSystemPrompt;
@@ -4145,6 +5405,13 @@ export async function* runAgentLoop(
   let planCheckCount = 0;
   let consecutiveBuildFailures = 0;  // ── v8.16.1: Quality Gate circuit breaker counter
   let bypassQualityGate = false;     // ── v8.16.1: set to true when user approves bypass
+  // v8.23.0 — LSP Passive Feedback bookkeeping. Tracks the recently edited
+  // files so the diagnostics callback knows which files to poll, and a per-
+  // turn cap so we never block the same completion attempt more than once
+  // (otherwise a stubborn diagnostic could trap the agent in an infinite
+  // pre-build loop).
+  const recentlyEditedFiles = new Set<string>();
+  let lspPassiveInjected = false;
 
   // ── Worktree Session State (v8.8.0) ──────────────────────────────────────────
   // Initialized from disk so worktree context survives across iterations and is
@@ -4166,6 +5433,27 @@ export async function* runAgentLoop(
   // Reserved for Vector Memory integration.
   // Example: await contextIndexer.index(messages, workspacePath);
   // ──────────────────────────────────────────────────────────────────────────
+
+  // ─── DAG Dispatch Tracker (v8.17.0 — Phase 1) ────────────────────────────
+  // Tasks already announced as 'Ready for Instantiation' so the engine does not
+  // re-log the same dispatch resolution every iteration. Dispatch identity is
+  // (taskId + agent_type) because the agent_type can shift if the @manager
+  // rewrites the DAG mid-flight.
+  const dispatchedReady = new Set<string>();
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // ─── Panoramic Physical Shield (v8.17.4) ─────────────────────────────────
+  // The v8.17.3 PANORAMIC RULE was a prompt-level directive — the LLM ignored
+  // it under load and dove straight into grep/glob/search_in_files/
+  // search_and_replace, burning tokens to triangulate code it could have read
+  // for free with get_repo_map. v8.17.4 promotes the rule to a physical
+  // engine block: gated tools fail-fast with a [SYSTEM SHIELD] notice until
+  // the agent calls get_repo_map at least once this session. Only @coder and
+  // @designer are gated — @manager and @planner have other read paths.
+  let hasSeenRepoMap = false;
+  const PANORAMIC_GATED_AGENTS = new Set(['coder', 'designer']);
+  const PANORAMIC_GATED_TOOLS  = new Set(['grep', 'glob', 'search_in_files', 'search_and_replace']);
+  // ─────────────────────────────────────────────────────────────────────────
 
   // ── v8.16.7: Git Auto-Checkpointing (Smart Auto-Commit) ──────────────────
   // If the human has uncommitted changes, createSilentCheckpoint now auto-saves
@@ -4193,6 +5481,126 @@ export async function* runAgentLoop(
     debugLog(workspacePath, `--- Iteration ${iterations}/${MAX_ITERATIONS} ---`);
     yield { type: 'iterationCount', count: iterations, max: MAX_ITERATIONS };
     yield { type: 'thinking', text: iterations === 1 ? `Agent ${agent.name} is planning…` : `Iteration ${iterations}: processing…` };
+
+    // ── DAG Active Dispatcher (v8.17.2 — Phase 2) ────────────────────────────
+    // Scan .fluxo/dag_state.json once per iteration. Any PENDING task whose
+    // depends_on parents are all COMPLETED is now ACTIVELY delegated to its
+    // declared agent_type — flip status to IN_PROGRESS, spawn the sub-agent
+    // via runAgentLoop, replay its events, then commit COMPLETED or FAILED
+    // back to the graph. Sub-agents do not dispatch (only the @manager owns
+    // the DAG), preventing infinite recursion. Cycle convergence: once new
+    // tasks unblock as a result of this round, the next iteration tick picks
+    // them up automatically.
+    if (agentId === 'manager' && workspacePath && DagController.exists(workspacePath)) {
+      try {
+        const ready = DagController.getReadyTasks(workspacePath);
+        for (const t of ready) {
+          // Resolve target agent — strip leading '@' and lowercase. Unknown
+          // names fall back to @coder so a typo never strands a task.
+          const rawType = (t.agent_type || '').trim().replace(/^@+/, '').toLowerCase();
+          const targetAgentId = AGENTS[rawType] ? rawType : 'coder';
+
+          // Refuse to dispatch to ourselves (manager → manager) — that would
+          // collapse the loop into an unbounded recursion.
+          if (targetAgentId === 'manager') {
+            DagController.updateTaskStatus(workspacePath, t.id, 'FAILED',
+              `Cannot dispatch task to '@manager' — the manager is the dispatcher itself.`);
+            yield { type: 'thinking', text: `🛑 [DAG Engine] Task ${t.id} self-targets @manager — marked FAILED` };
+            continue;
+          }
+
+          DagController.updateTaskStatus(workspacePath, t.id, 'IN_PROGRESS');
+          dispatchedReady.add(`${t.id}:${t.agent_type}`);
+
+          const dispatchMsg = `[DAG Engine] Task ${t.id} dispatched to @${targetAgentId} (was: ${t.agent_type})`;
+          debugLog(workspacePath, dispatchMsg);
+          yield { type: 'thinking', text: `🚀 ${dispatchMsg}` };
+
+          // Construct the task prompt. The leading [DAG TASK ...] tag lets the
+          // sub-agent (and any audit log) see exactly which graph node it is
+          // executing, and the closing instruction pins the completion contract.
+          const taskPrompt =
+            `[DAG TASK ${t.id}] ${t.description}\n\n` +
+            `This task was dispatched by the DAG Orchestrator. Execute it end to end. ` +
+            `When the implementation is complete and the build is green, end your turn ` +
+            `cleanly so the orchestrator can mark this task as COMPLETED.`;
+
+          const subEvents: AgentEvent[] = [];
+          try {
+            const subGen = runAgentLoop(
+              taskPrompt,
+              targetAgentId,
+              [],
+              { ...effectiveConfig, model: config.workerModel || config.model },
+              workspacePath,
+              abortSignal,
+              sentinelHasError,
+              approvalCallback,
+              nativeEditCallback,
+              getCodeStructureCallback,
+              mcpTools,
+              callMcpToolCallback,
+              worktreeReviewCallback,
+              replaceSymbolCallback,
+              hitlCommandCallback,
+              mcpToolCategories,
+              getDiagnosticsCallback
+            );
+
+            yield { type: 'thinking', text: `━━━ DAG dispatch · ${t.id} → @${targetAgentId} ━━━` };
+            for await (const ev of subGen) {
+              subEvents.push(ev);
+              yield ev;
+            }
+          } catch (err: any) {
+            const errMsg = err?.message ?? String(err);
+            DagController.updateTaskStatus(workspacePath, t.id, 'FAILED', `Spawn error: ${errMsg}`);
+            debugLog(workspacePath, `[DAG Engine] Task ${t.id} spawn threw: ${errMsg}`);
+            yield { type: 'thinking', text: `❌ [DAG Engine] Task ${t.id} crashed during dispatch — marked FAILED` };
+            continue;
+          }
+
+          // ── Lifecycle hook — derive task outcome from the sub-agent's event stream ──
+          // FAILED triggers: any 'error' event surfaced (Sherlock audit failure,
+          // API error, abort), or the MAX_ITERATIONS warning chunk (stuck loop).
+          // COMPLETED otherwise — the engine's own Quality Gate already blocked
+          // the streamEnd unless the build was green, so a clean exit is proof
+          // of a passing build (and, if a worktree was used, a successful merge).
+          const hadError = subEvents.some(e => e.type === 'error');
+          const hitMaxIter = subEvents.some(e =>
+            e.type === 'streamChunk' && typeof e.text === 'string' &&
+            e.text.includes('Reached maximum iterations')
+          );
+          const finalText = subEvents
+            .filter(e => e.type === 'streamChunk')
+            .map(e => (e as { type: 'streamChunk'; text: string }).text)
+            .join('')
+            .trim()
+            .slice(0, 4000); // bound the result blob — full audit lives in the engine log
+
+          if (hadError || hitMaxIter) {
+            DagController.updateTaskStatus(workspacePath, t.id, 'FAILED', finalText || (hitMaxIter ? 'Hit MAX_ITERATIONS' : 'Sub-agent emitted error event'));
+            debugLog(workspacePath, `[DAG Engine] Task ${t.id} FAILED (hadError=${hadError}, hitMaxIter=${hitMaxIter})`);
+            yield { type: 'thinking', text: `❌ [DAG Engine] Task ${t.id} FAILED` };
+          } else {
+            DagController.updateTaskStatus(workspacePath, t.id, 'COMPLETED', finalText);
+            debugLog(workspacePath, `[DAG Engine] Task ${t.id} COMPLETED by @${targetAgentId}`);
+            yield { type: 'thinking', text: `✅ [DAG Engine] Task ${t.id} COMPLETED by @${targetAgentId}` };
+          }
+        }
+
+        // If we dispatched at least one task this tick, skip the manager's API
+        // call and re-enter the loop so newly-unblocked downstream tasks can
+        // be picked up immediately. The manager only needs to "think" once
+        // every task in the current ready frontier has been dispatched.
+        if (ready.length > 0) {
+          continue;
+        }
+      } catch (e: any) {
+        debugLog(workspacePath, `[DAG Engine] Dispatch evaluation failed: ${e?.message ?? String(e)}`);
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // ── Inter-Agent Mailbox drain (v8.2.0) ───────────────────────────────────────
     // Sub-agents running in parallel can send_message to this agent. Drain and
@@ -4354,6 +5762,40 @@ export async function* runAgentLoop(
           continue;
         }
         debugLog(workspacePath, 'Plan Verification: completion signal confirmed — exiting loop');
+        // ── v8.23.0: LSP Passive Feedback — pre-build "sixth sense" ─────────
+        // Cheaper than validateBuild (no compiler invocation, just queries the
+        // already-running TS/JSX language server for diagnostics on the files
+        // we just edited). If the LSP sees missing props, undeclared symbols,
+        // or type mismatches, surface them BEFORE we pay the cost of the full
+        // build. The agent gets the warning, fixes the typo, and on its next
+        // completion attempt the gate runs cleanly. Capped at one injection
+        // per turn (lspPassiveInjected) — a stubborn diagnostic must not trap
+        // the agent in an infinite pre-build loop. Reset on green build.
+        if (
+          getDiagnosticsCallback && !lspPassiveInjected &&
+          recentlyEditedFiles.size > 0 && workspacePath && !bypassQualityGate
+        ) {
+          try {
+            const _diagnostics = await getDiagnosticsCallback([...recentlyEditedFiles].slice(0, 5));
+            if (_diagnostics.length > 0) {
+              lspPassiveInjected = true;
+              const _diagBlock = _diagnostics.slice(0, 8).map(d => `  • ${d}`).join('\n');
+              const _passiveMsg =
+                `[LSP PASSIVE FEEDBACK] The Language Server detected ${_diagnostics.length} unresolved issue(s) ` +
+                `in the files you just edited:\n${_diagBlock}\n\n` +
+                `MANDATORY: Fix these BEFORE running npm run build or declaring the task done. ` +
+                `These are AST-level signals from the running TS/JSX server — they will become ` +
+                `compiler errors on the next build attempt.`;
+              yield { type: 'thinking', text: `🧭 LSP passive feedback: ${_diagnostics.length} issue(s) detected` };
+              messages.push({ role: 'user', content: _passiveMsg });
+              debugLog(workspacePath, `[LSP Passive] Injected ${_diagnostics.length} diagnostic(s) before Quality Gate`);
+              continue;
+            }
+          } catch (err: any) {
+            debugLog(workspacePath, `[LSP Passive] callback failed: ${err?.message ?? err} — falling through to Quality Gate`);
+          }
+        }
+        // ────────────────────────────────────────────────────────────────────
         // ── v8.16.0/8.16.1: Quality Gate + Escape Hatch ──────────────────────
         if (workspacePath && toolCallHistory.length > 0 && !buildFailureCtx && !bypassQualityGate) {
           yield { type: 'thinking', text: '🏗️ Quality Gate: validating build before completion…' };
@@ -4609,6 +6051,28 @@ export async function* runAgentLoop(
       }
       // ─────────────────────────────────────────────────────────────────────────
 
+      // ── Worktree Prefix Sanitizer (v8.22.0) ──────────────────────────────────
+      // The engine already executes tools inside the active worktree dynamically,
+      // but the LLM still hallucinates the explicit `.fluxo/worktrees/<id>/` head
+      // on its arguments under recovery pressure — which double-nests the path
+      // and turns into a fatal FILE NOT FOUND. Auto-correct silently across all
+      // file-tool path keys: `path`, `file_path`, `absolute_path`, `path_filter`
+      // (grep), and `cwd` (glob). The agent never sees an error; the iteration
+      // proceeds with the cleaned path. Failing loudly here was the v8.18.x
+      // approach for absolute paths, but worktree-prefix is a different failure
+      // mode — the LLM has the right repo-relative tail, just an extra head — so
+      // a silent fix is correct: it preserves intent and saves an iteration.
+      for (const pArg of ['path', 'file_path', 'absolute_path', 'path_filter', 'cwd']) {
+        if (typeof args[pArg] === 'string') {
+          const { cleaned, stripped } = stripWorktreePrefix(args[pArg]);
+          if (stripped) {
+            debugLog(workspacePath, `[Worktree Sanitizer] ${toolName}.${pArg}: "${args[pArg]}" → "${cleaned}"`);
+            args[pArg] = cleaned;
+          }
+        }
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
       // ── Deep Masking: Soft Fail ───────────────────────────────────────────────
       // If the LLM hallucinates a call to a disabled tool, intercept it before
       // Sherlock or execution — return a corrective error, never a panic crash.
@@ -4631,6 +6095,35 @@ export async function* runAgentLoop(
       // to change strategy instead of retrying in an infinite death spiral.
       const _cbFails = toolFailureTracker.get(toolName) ?? 0;
       if (_cbFails >= 3) {
+        // ── v8.17.1: read_file Soft Block — degrade, never permanently lock out ──
+        // Phase 1 DAG dogfooding showed that a permanent read_file lockout left
+        // the agent blind for the remainder of the session — it could no longer
+        // inspect any file even after the original cause (a wrong path) was
+        // gone. Soft-block strategy: pause one turn, force a list_dir on the
+        // parent directory of the failed path so the agent can see what is
+        // actually there, then RESET the counter so future read_file calls work.
+        if (toolName === 'read_file') {
+          const _failedPath = String(args.path ?? args.file_path ?? '').replace(/\\/g, '/');
+          const _parentDir  = _failedPath.includes('/')
+            ? _failedPath.substring(0, _failedPath.lastIndexOf('/')) || '.'
+            : '.';
+          const softMsg =
+            `[SOFT BLOCK v8.17.1] 'read_file' has failed ${_cbFails} times consecutively — ` +
+            `your path resolution is wrong. MANDATORY NEXT ACTION: call list_dir(path="${_parentDir}") ` +
+            `to inspect the real contents of that directory, then retry read_file with the correct ` +
+            `filename. The failure counter has been RESET — you have a fresh budget once you see the ` +
+            `directory listing. Do NOT call read_file again until you have run list_dir.`;
+          toolFailureTracker.delete('read_file');
+          debugLog(workspacePath, `[Circuit Breaker — Soft] 'read_file' counter reset; forcing list_dir(${_parentDir})`);
+          const sbDisplayArgs = Object.entries(args)
+            .filter(([k]) => k !== 'content')
+            .map(([k, v]) => `${k}: ${String(v).slice(0, 80)}`)
+            .join(', ');
+          yield { type: 'toolCall', name: toolName, args, displayArgs: sbDisplayArgs };
+          yield { type: 'toolResult', name: toolName, success: false, output: softMsg };
+          messages.push({ role: 'tool', tool_call_id: tc.id, name: toolName, content: softMsg });
+          continue;
+        }
         // ── v8.16.2: YIELD_TO_HUMAN — IO core tools abort loop, not retry ────────
         const IO_CORE_TOOLS = ['glob', 'search_in_files', 'list_dir', 'get_code_structure'];
         if (IO_CORE_TOOLS.includes(toolName)) {
@@ -4662,6 +6155,53 @@ export async function* runAgentLoop(
         .join(', ');
       yield { type: 'toolCall', name: toolName, args, displayArgs };
 
+      // ── Panoramic Physical Shield (v8.17.4) ──────────────────────────────────
+      // Promote the v8.17.3 prompt-level PANORAMIC RULE to a hard engine block.
+      // For @coder and @designer, the search/edit family (grep, glob,
+      // search_in_files, search_and_replace) is physically gated until the
+      // agent has called get_repo_map at least once in this session. The block
+      // fires BEFORE the Rabbit Hole guard so the shield message reaches the
+      // LLM even if the agent also tried to grep into node_modules.
+      if (PANORAMIC_GATED_AGENTS.has(agentId) &&
+          PANORAMIC_GATED_TOOLS.has(toolName) &&
+          !hasSeenRepoMap) {
+        const shieldMsg =
+          '[SYSTEM SHIELD] You are operating blind. You MUST call get_repo_map ' +
+          'to gain spatial awareness before searching or editing.';
+        debugLog(workspacePath, `[Panoramic Shield] ${toolName} blocked for @${agentId} — get_repo_map not yet called`);
+        yield { type: 'toolResult', name: toolName, success: false, output: shieldMsg };
+        messages.push({ role: 'tool', tool_call_id: tc.id, name: toolName, content: shieldMsg });
+        continue;
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
+      // ── Rabbit Hole Hard Block (v8.16.23) ────────────────────────────────────
+      // When a build/runtime error appears, the @coder occasionally drifts into
+      // inspecting node_modules/ instead of rolling back its own edits. Blocks
+      // any read/search/terminal tool whose args reference node_modules as a
+      // path segment. Whole-word boundary check so filenames like
+      // "node_modules_check.ts" still pass through.
+      const _rabbitHoleGated = toolName === 'read_file' || toolName === 'grep' ||
+                               toolName === 'glob' || toolName === 'search_and_replace' ||
+                               toolName === 'run_command';
+      if (_rabbitHoleGated) {
+        const _rabbitRe = /(?:^|[\/\\\s"'`])node_modules(?:[\/\\\s"'`]|$)/i;
+        const _rabbitHit = Object.values(args).some(
+          v => typeof v === 'string' && _rabbitRe.test(v)
+        );
+        if (_rabbitHit) {
+          const _rhMsg =
+            "[SYSTEM BLOCK] RABBIT HOLE DETECTED. You are strictly forbidden from " +
+            "inspecting or debugging 'node_modules/'. The bug is in your own code, " +
+            "not in the external libraries. Look at the files you just modified.";
+          debugLog(workspacePath, `[Rabbit Hole] ${toolName} blocked — args referenced node_modules`);
+          yield { type: 'toolResult', name: toolName, success: false, output: _rhMsg };
+          messages.push({ role: 'tool', tool_call_id: tc.id, name: toolName, content: _rhMsg });
+          continue;
+        }
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
       // ── Worktree Path Redirect (v8.8.0) ──────────────────────────────────────
       // When a git worktree is active, ALL file and command operations are silently
       // redirected to the worktree directory. The LLM uses normal relative paths
@@ -4670,28 +6210,37 @@ export async function* runAgentLoop(
       const _wtExcluded = toolName === 'enter_worktree' || toolName === 'exit_worktree' ||
                           toolName === 'skill' || toolName === 'enter_plan_mode';
 
-      // ── Plan Path Global Bypass (v8.16.20) ─────────────────────────────────
+      // ── Plan Path Global Bypass (v8.16.20 + v8.17.1) ───────────────────────
       // IMPLEMENTATION_PLAN.md is a session-global handoff file between @planner
       // and @manager/@coder. It MUST live at the repo root regardless of worktree
       // state — otherwise the planner writes it inside the sandbox, the manager
       // checks for it at the root and never finds it, and the planning loop
       // diverges into infinite retry. Detect any tool whose path argument ends
       // in IMPLEMENTATION_PLAN.md and force-route it to the main workspace.
+      //
+      // v8.17.1: extended to dag_state.json / task_dag_state.json. The DAG is a
+      // global orchestrator file — every agent writes its task status into the
+      // SAME .fluxo/dag_state.json. If the @coder writes its COMPLETED status
+      // inside a worktree sandbox, the @manager polling at the root never sees
+      // the update and the dispatcher stalls. Same fix, same global routing.
       const _planPathArg = String(
         args.path ?? args.file_path ?? args.absolute_path ?? ''
       ).replace(/\\/g, '/');
       const _isPlanFile = /(?:^|\/)\.fluxo\/IMPLEMENTATION_PLAN\.md$/i.test(_planPathArg) ||
                           _planPathArg.endsWith('IMPLEMENTATION_PLAN.md');
+      const _isDagStateFile = /(?:^|\/)(?:task_)?dag_state\.json$/i.test(_planPathArg);
+      const _isGlobalStateFile = _isPlanFile || _isDagStateFile;
       // ───────────────────────────────────────────────────────────────────────
 
-      const effectiveWorkspacePath = (activeWorktreePath && !_wtExcluded && !_isPlanFile)
+      const effectiveWorkspacePath = (activeWorktreePath && !_wtExcluded && !_isGlobalStateFile)
         ? activeWorktreePath
         : workspacePath;
       if (activeWorktreePath && effectiveWorkspacePath !== workspacePath) {
         debugLog(workspacePath, `[Worktree Redirect] ${toolName} → ${effectiveWorkspacePath}`);
       }
-      if (_isPlanFile && activeWorktreePath) {
-        debugLog(workspacePath, `[Plan Bypass v8.16.20] ${toolName}(${_planPathArg}) → main workspace (worktree active but plan is global)`);
+      if (_isGlobalStateFile && activeWorktreePath) {
+        const _bypassTag = _isDagStateFile ? 'DAG State Bypass v8.17.1' : 'Plan Bypass v8.16.20';
+        debugLog(workspacePath, `[${_bypassTag}] ${toolName}(${_planPathArg}) → main workspace (worktree active but file is global)`);
       }
       // ─────────────────────────────────────────────────────────────────────────
 
@@ -4756,8 +6305,22 @@ export async function* runAgentLoop(
           }
           // ──────────────────────────────────────────────────────────────────
         } else if (toolName === 'get_code_structure' && getCodeStructureCallback) {
-          yield { type: 'thinking', text: '🔭 Extracting code structure via LSP…' };
-          result = await getCodeStructureCallback(String(args.absolute_path ?? ''));
+          // v8.18.1 — Absolute Path Shield. The engine intercept bypasses the
+          // tool's execute() so the shield must mirror the rejection here.
+          // Hallucinated drive-letter paths (C:/Users/erick/source/repos/...)
+          // are rejected before they reach the LSP callback.
+          const _absPath = String(args.absolute_path ?? '').trim();
+          if (/^(?:[A-Za-z]:[\\/]|\/)/.test(_absPath)) {
+            result = {
+              success: false,
+              output:
+                '[SYSTEM SHIELD] Absolute paths are strictly forbidden. ' +
+                "You MUST use relative paths from the repository root (e.g., 'src/components/App.jsx').",
+            };
+          } else {
+            yield { type: 'thinking', text: '🔭 Extracting code structure via LSP…' };
+            result = await getCodeStructureCallback(_absPath);
+          }
         } else if (toolName.startsWith('mcp_') && callMcpToolCallback) {
           yield { type: 'thinking', text: `🔌 MCP: Calling external tool ${toolName}…` };
           result = await callMcpToolCallback(toolName, args);
@@ -4934,7 +6497,9 @@ export async function* runAgentLoop(
               callMcpToolCallback,
               undefined,              // no worktree review
               undefined,              // no replace symbol
-              undefined               // no HITL — planner is read-only
+              undefined,              // no HITL — planner is read-only
+              mcpToolCategories,      // v8.19.0 — RBAC filter will deny unknown-category tools to planner
+              undefined               // v8.23.0 — no LSP passive feedback for the planner (read-only, never edits)
             );
 
             for await (const event of plannerGen) {
@@ -5010,7 +6575,9 @@ export async function* runAgentLoop(
                 callMcpToolCallback,
                 worktreeReviewCallback,
                 replaceSymbolCallback,
-                hitlCommandCallback    // HITL propagated to all swarm sub-agents
+                hitlCommandCallback,    // HITL propagated to all swarm sub-agents
+                mcpToolCategories,       // v8.19.0 — each sub-agent re-applies its own RBAC filter
+                getDiagnosticsCallback   // v8.23.0 — sub-agents also get LSP passive feedback before their gate
               );
 
               for await (const event of subGen) {
@@ -5074,6 +6641,42 @@ export async function* runAgentLoop(
       // ─────────────────────────────────────────────────────────────────────────
 
       const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+
+      // ── Financial Killswitch (v8.24.0 — NON-NEGOTIABLE) ──────────────────────
+      // Hard engine abort the moment ANY tool result carries the `[YIELD TO HUMAN`
+      // sentinel. These payloads are emitted by tools that detected an OS-level
+      // failure the LLM cannot fix (Node lost cmd.exe via ENOENT on Windows,
+      // System32 dropped from PATH, ComSpec emptied, etc.). In the v8.23.x and
+      // earlier behavior, the YIELD payload was pushed back into the message
+      // history; the LLM read it, ignored the explicit "DO NOT retry" directive,
+      // and burned the rest of MAX_ITERATIONS hallucinating MCP servers and
+      // PowerShell evasions trying to "fix" a problem that lives outside the
+      // process — costing real money per recovery attempt with zero chance of
+      // success. The fix is structural: the result NEVER reaches the LLM. We
+      // surface the tool output to the user (so they see what tool produced
+      // the YIELD), emit a clear final error explaining what happened and what
+      // the human needs to do, and terminate the generator before any further
+      // API call. Detection is on the literal substring `[YIELD TO HUMAN` so
+      // the v8.16.8 cmd.exe payload, the v8.16.2 IO_CORE breaker payload, and
+      // any future tool that opts into this protocol all hit the same break.
+      if (typeof result.output === 'string' && result.output.includes('[YIELD TO HUMAN')) {
+        yield { type: 'toolResult', name: toolName, success: result.success, output: result.output, duration };
+        debugLog(workspacePath, `[Financial Killswitch] '${toolName}' returned YIELD_TO_HUMAN — aborting loop to prevent API drain`);
+        yield {
+          type: 'streamChunk',
+          text:
+            '\n\n🛑 **[FINANCIAL KILLSWITCH — v8.24.0]** A tool reported a fatal OS-level error ' +
+            '(see the tool output above). The agent loop has been halted before any further ' +
+            'LLM call to prevent burning API credits on a problem that lives outside the ' +
+            'process (typically a missing shell, broken PATH, or detached terminal). ' +
+            'Resolve the underlying environment issue (restart VS Code from a fresh terminal, ' +
+            'verify %ComSpec% on Windows, etc.) and retry the task.',
+        };
+        yield { type: 'streamEnd' };
+        return;
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
       yield { type: 'toolResult', name: toolName, success: result.success, output: result.output, duration };
       debugLog(workspacePath, `Tool ${toolName}: success=${result.success}${!result.success ? ` — ${result.output.slice(0, 300)}` : ''}`);
 
@@ -5127,6 +6730,20 @@ export async function* runAgentLoop(
                 `emite tu reporte y pídele ayuda al usuario para que ajuste el código manualmente.`,
             };
             debugLog(workspacePath, `Circuit Breaker activated for ${toolName} after ${fails} consecutive failures`);
+
+            // ── Micro-Condenser (v8.22.0) ────────────────────────────────────
+            // The breaker fired → the agent has just spent N iterations re-
+            // reading its own raw stack traces for this tool. Collapse the
+            // last 3 prior failure messages into a single [CONDENSER] system
+            // marker so the next LLM call sees one explicit corrective signal
+            // instead of a wall of redundant errors. The current iteration's
+            // CB-activated message is still pushed normally below — the LLM
+            // gets exactly one fresh error + one condenser reminder.
+            const _condenseResult = compactToolFailures(messages, toolName, 3);
+            if (_condenseResult.compacted > 0) {
+              debugLog(workspacePath, `[Condenser] Compacted ${_condenseResult.compacted} prior '${toolName}' failure(s) into a single system marker at index ${_condenseResult.insertedAt}`);
+            }
+            // ─────────────────────────────────────────────────────────────────
           }
         }
       } else {
@@ -5144,16 +6761,39 @@ export async function* runAgentLoop(
         }
         // ─────────────────────────────────────────────────────────────────────────
 
-        // ── Worktree State Sync (v8.8.0) ────────────────────────────────────────
+        // ── v8.17.4: Lift the Panoramic Physical Shield once the agent has seen the map ──
+        // A successful get_repo_map call is the only event that flips this flag.
+        // From here on, gated tools (grep/glob/search_in_files/search_and_replace)
+        // execute normally for the rest of the session.
+        if (toolName === 'get_repo_map' && !hasSeenRepoMap) {
+          hasSeenRepoMap = true;
+          debugLog(workspacePath, `[Panoramic Shield] Lifted for @${agentId} — get_repo_map call succeeded`);
+        }
+        // ─────────────────────────────────────────────────────────────────────────
+
+        // ── Worktree State Sync (v8.8.0 + v8.17.1 reset) ───────────────────────
+        // v8.17.1: Entering or exiting a worktree changes the entire filesystem
+        // root the agent is reading against. Any read_file failures accumulated
+        // before the worktree boundary were attributable to the OLD path layout,
+        // not the new one — keeping that count would punish the agent for
+        // failures that no longer apply. Reset on every worktree boundary.
         if (toolName === 'enter_worktree') {
           try {
             const wts = JSON.parse(fs.readFileSync(wtStateFile, 'utf-8'));
             activeWorktreePath = wts.worktreePath || null;
             debugLog(workspacePath, `[Worktree] Activated: ${wts.branchName} → ${activeWorktreePath}`);
           } catch { /* state file not written — no worktree context */ }
+          if (toolFailureTracker.has('read_file')) {
+            toolFailureTracker.delete('read_file');
+            debugLog(workspacePath, '[Circuit Breaker — Reset v8.17.1] read_file counter cleared on enter_worktree');
+          }
         } else if (toolName === 'exit_worktree') {
           activeWorktreePath = null;
           debugLog(workspacePath, '[Worktree] Deactivated — path redirect cleared');
+          if (toolFailureTracker.has('read_file')) {
+            toolFailureTracker.delete('read_file');
+            debugLog(workspacePath, '[Circuit Breaker — Reset v8.17.1] read_file counter cleared on exit_worktree');
+          }
         }
         // ─────────────────────────────────────────────────────────────────────────
       }
@@ -5176,6 +6816,22 @@ export async function* runAgentLoop(
       if ((toolName === 'replace_lines' || toolName === 'write_file') && result.success) {
         lastEditedFile = (args.path as string) || null;
       }
+      // v8.23.0 — Broader edit tracking for the LSP Passive Feedback poller.
+      // Captures every successful edit across all editing tools so the LSP
+      // check sees the full set of recently-touched files, not just the
+      // single file that gates SYNTAX_RECOVERY. Capped implicitly by Set
+      // semantics — same file edited 5 times stays one entry. Reset on a
+      // green build below (see run_command success branch).
+      const _EDIT_TOOLS_FOR_LSP = new Set([
+        'write_file', 'replace_lines', 'replace_block',
+        'replace_symbol', 'search_and_replace', 'insert_lines',
+      ]);
+      if (_EDIT_TOOLS_FOR_LSP.has(toolName) && result.success) {
+        const _editPath = (args.path ?? args.file_path) as string | undefined;
+        if (typeof _editPath === 'string' && _editPath.trim()) {
+          recentlyEditedFiles.add(_editPath.trim());
+        }
+      }
 
       // Build failure tracking + mandatory fix injection
       if (toolName === 'run_command') {
@@ -5193,6 +6849,13 @@ export async function* runAgentLoop(
           } else {
             buildFailureCtx = '';
             lastEditedFile = null;
+            // v8.23.0 — green build means the recently-edited set has been
+            // proven by the compiler; flush it so the next LSP poll only
+            // covers files touched AFTER this checkpoint. Also reset the
+            // per-turn LSP injection guard so a follow-up edit cycle gets a
+            // fresh diagnostic check.
+            recentlyEditedFiles.clear();
+            lspPassiveInjected = false;
           }
         }
       }
@@ -5280,6 +6943,25 @@ export async function* runAgentLoop(
         role: 'user',
         content: '⚡ RESULTADO RECIBIDO. Si el build está roto o la tarea incompleta, llama la siguiente herramienta. Si completaste TODOS los pasos y el build está limpio, envía tu Execution Report final (sin tool calls).',
       });
+    }
+
+    // ── Active Auto-Condenser (v8.23.0) ────────────────────────────────────
+    // Run once per outer iteration AFTER all tool results have been pushed
+    // and the iteration's user-side nudge is in place. Compacts stale tool
+    // failures and superseded edit results from the older portion of the
+    // history, leaving the live working window untouched. This is the
+    // cognitive analogue of the v8.22.0 reactive condenser: that one fires
+    // when one tool burns the breaker; this one fires every iteration on the
+    // accumulated residue across all tools, so Context Window Intoxication
+    // never gets a chance to set in even when no single tool trips its
+    // breaker. Idempotent and silent — if there is nothing to compact (small
+    // history, no stale residue), it is a no-op.
+    const _autoCompact = proactiveCompact(messages);
+    if (_autoCompact.compactedFailures > 0 || _autoCompact.compactedRedundantEdits > 0) {
+      debugLog(
+        workspacePath,
+        `[Auto-Condenser] Compacted ${_autoCompact.compactedFailures} failure(s) + ${_autoCompact.compactedRedundantEdits} redundant edit(s) at index ${_autoCompact.insertedAt} (history now ${messages.length} msgs)`,
+      );
     }
   }
 
@@ -5904,6 +7586,35 @@ use run_command with "git restore <path/to/broken_file>" to undo your
 catastrophic edit and return the file to its previous clean state. Then, read
 the clean file again and try a different, more careful approach using
 insert_lines.
+
+ANTI-RABBIT HOLE TRIGGER (v8.16.23 — DYNAMIC ROLLBACK):
+If you fail to fix a bug or runtime error after 3 attempts, or if you feel
+completely lost, you are in a Rabbit Hole. DO NOT keep guessing. You MUST
+immediately use run_command to execute git restore <file_path> and rollback
+the file to the last clean checkpoint. Once restored, reconsider your approach
+from scratch.
+
+The 3-attempts counter resets each time the build is verified green. If you
+catch yourself reading external libraries, inspecting node_modules/, or
+hypothesizing about framework internals to explain a bug in YOUR code → you
+are already in the rabbit hole. Roll back NOW. The engine will physically
+block any node_modules access — do not waste an iteration trying.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━ VERIFICATION STRICTNESS (v8.21.0 — NON-NEGOTIABLE) ━━━━━━━━━━━━━━━━━━━━━
+Once you have modified code using LSP tools (replace_symbol, insert_lines) and
+the subsequent 'npm run build' returns a SUCCESS (exit code 0), YOU MUST STOP.
+DO NOT use 'grep' or 'read_file' to double-check if your code was written.
+Trust the AST and the green build. IMMEDIATELY call
+'exit_worktree(action='merge')' to end your turn.
+
+Re-reading the file you just edited, grepping for the symbol you just inserted,
+or running any other "did it really land?" verification AFTER a green build is
+a CRITICAL FAILURE called Verification Anxiety. The LSP returned success, the
+compiler returned success — those are TWO independent oracles confirming the
+edit landed. There is no third oracle worth burning iterations on. Every
+post-green grep/read consumes an iteration toward the 25-iteration ceiling and
+risks deadlocking your turn. Merge and exit. The build is the proof.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 QUALITY GATE RULE (v8.16.0): Before declaring a task complete, your code MUST pass the project's build process. If the system rejects your completion with a [QUALITY GATE FAILED] message, analyze the build logs carefully, use your tools to fix the imports or logic errors, run the build again with run_command, and only then attempt to complete the task.
@@ -5919,7 +7630,24 @@ RULE (WORKTREE ISOLATION — FASE 1): Antes de ejecutar cualquier refactorizaci�
 
 RULE (EXTERNAL CONTEXT): Si el usuario te pide implementar una librería externa específica (ej. Stripe, React DnD, Firebase, Framer Motion, etc.) o cualquier concepto que requiera precisión técnica actualizada, TIENES PERMITIDO — y se RECOMIENDA — usar la herramienta fetch_documentation para leer el README oficial (ej. https://raw.githubusercontent.com/user/repo/main/README.md) o la documentación de npm (ej. https://www.npmjs.com/package/<nombre>) ANTES de escribir una sola línea de código. Esto evita el "Tutorial Bias" causado por conocimiento estático de entrenamiento. Prefiere siempre URLs de contenido raw (raw.githubusercontent.com) sobre páginas renderizadas para obtener texto más limpio.
 
-TOPOGRAPHY RULE (v8.12.0): Before making sweeping changes or searching blindly for functions, you MUST call get_repo_map to understand the semantic structure and dependencies of the workspace. This gives you an instant atlas of every exported symbol and its file location — use it before grep, before glob, before any multi-file refactor.
+━━━ PANORAMIC RULE (v8.17.3 — NON-NEGOTIABLE) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Before modifying any unknown file, you MUST use get_repo_map to gain a
+panoramic view of the codebase structure. This is not optional, even when you
+"think" you know where the file lives. The map shows you:
+  • The directory tree (depth ≤ 6) so you can spot the right module without grep.
+  • The exported symbols per file so you know which read_file targets actually
+    contain what you're looking for.
+  • Polyglot coverage — TS/JS via AST, plus Python/Go/Rust/Java/Ruby/C#/PHP/Kotlin/Swift via regex.
+
+A "known" file = one you have already read in this session. Anything else is
+unknown — call get_repo_map FIRST, then read_file the target you identified,
+then edit. Skipping the panoramic step is what causes:
+  ❌ MATCH ERRORS in search_and_replace (you guessed the file content).
+  ❌ Ghost imports referencing non-existent symbols.
+  ❌ Token-burning grep loops trying to triangulate a file you could have read.
+
+This rule supersedes the legacy TOPOGRAPHY RULE (v8.12.0).
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 CRITICAL RULE (MEMORY DISCIPLINE): After resolving a tool failure, discovering a project constraint, or establishing a new architectural pattern, you MUST update .fluxo/memory.md to document the lesson using write_file or search_and_replace. Never rely solely on short-term context — future sessions are blind without this record.
 
@@ -6541,6 +8269,50 @@ CRITICAL: A conversational paragraph or a plain bullet list instead of the Orche
 ────────────────────────────────────────────────────────────────────────────────
 `;
 
+// ─── RAW GIT WORKFLOW BLOCK (v8.17.1 — NON-NEGOTIABLE) ────────────────────────
+// Phase 1 DAG dogfooding showed @coder and @designer issuing raw `git checkout`
+// / `git merge` / `git push` via run_command, fighting the Worktree Isolation
+// engine and corrupting the merge state. The only sanctioned merge path is the
+// exit_worktree tool — it owns the diff review, the user approval, and the
+// state cleanup. This block is injected into every agent that has run_command
+// (it is meaningless for read-only agents like @planner).
+const RAW_GIT_WORKFLOW_BLOCK = `
+─── RAW GIT WORKFLOW (v8.17.1 — NON-NEGOTIABLE) ───────────────────────────────
+
+You are STRICTLY FORBIDDEN from using the run_command tool to execute
+'git checkout master', 'git checkout main', 'git merge', or 'git push'.
+
+To merge your changes from an isolated worktree back to the main branch, you
+MUST ONLY use the exit_worktree tool with action='merge'. exit_worktree owns:
+  • The diff preview shown to the human in VS Code's native diff editor.
+  • The user approval gate (merge vs. discard).
+  • The atomic state cleanup of .fluxo/active_worktree.json.
+
+Any raw git invocation that targets branches will be flagged as a workflow
+violation, will desynchronize the engine's worktree state tracker, and will
+trigger a failed merge that cannot be safely recovered. There is no exception:
+even if you "just want to peek" at another branch, do not use git checkout —
+ask the user via ask_user_approval instead.
+
+ALLOWED git commands via run_command (read-only / housekeeping):
+  ✅ git status, git log, git diff, git show, git blame, git rev-parse
+  ✅ git stash list, git tag, git describe, git branch (without -d/-D)
+  ✅ git fetch, git pull (only when you are NOT inside an active worktree)
+
+PROHIBITED git commands via run_command (workflow-altering):
+  ❌ git checkout <branch>, git switch <branch>
+  ❌ git merge, git rebase, git cherry-pick, git revert
+  ❌ git push, git push --force, git push -u
+  ❌ git reset --hard, git branch -d, git branch -D, git worktree (any action)
+
+For worktree lifecycle, the ONLY sanctioned tools are:
+  enter_worktree(reason="…")            → spawn a sandbox branch
+  exit_worktree(action="merge")         → diff review + user approval + merge to main
+  exit_worktree(action="discard")       → drop the sandbox branch entirely
+
+────────────────────────────────────────────────────────────────────────────────
+`;
+
 // ─── Agent Router ──────────────────────────────────────────────────────────────
 
 /** Detect which agent should handle a message based on keywords or @mentions */
@@ -6574,13 +8346,41 @@ export function routeToAgent(message: string): string {
   return 'coder'; // default
 }
 
+// ─── MCP Knowledge Block (v8.19.0 — Phase 3 Deep MCP) ──────────────────────
+// Injected only when the engine's RBAC filter has actually granted MCP tools
+// to this agent. Tells the LLM that external tools are live in its toolset
+// and frames them as "live context from the outside world" so it reaches for
+// them when its native tools cannot satisfy the task. Read-only agents and
+// agents that ended up with zero MCP tools after RBAC do NOT see this block.
+const MCP_KNOWLEDGE_BLOCK = `
+─── [EXTERNAL MCP KNOWLEDGE] (v8.19.0 — Phase 3) ──────────────────────────────
+
+You have been granted access to dynamically loaded external tools via the
+Model Context Protocol. Use them to fetch live context from the outside world.
+
+These tools are prefixed with 'mcp_<server>_<tool>' in your toolset and have
+been filtered to your role by the engine's RBAC layer — every tool you can
+see is one you are explicitly authorized to call. When a task requires real
+data (issue trackers, design files, databases, repository state, deploy
+status, etc.) prefer calling the matching MCP tool over guessing from your
+training cutoff or asking the user.
+
+────────────────────────────────────────────────────────────────────────────────
+`;
+
 /** Build full system prompt for an agent including tools and the shared separation protocol */
-export function buildAgentSystemPrompt(agentId: string): string {
+export function buildAgentSystemPrompt(agentId: string, hasMcpTools: boolean = false): string {
   const agent = AGENTS[agentId] || AGENTS.coder;
   // Inject OS_DIRECTIVE only for agents that have access to run_command.
   // This avoids polluting read-only agents (@planner) with OS-specific command advice.
   const osBlock = agent.tools.includes('run_command') ? OS_DIRECTIVE : '';
-  return `${MANIFESTO_REF}${agent.systemPrompt}${osBlock}\n${SEPARATION_PROTOCOL}`;
+  // v8.17.1: only inject the raw git block for agents that actually have run_command —
+  // it is the only tool the rule constrains, and read-only agents like @planner do
+  // not need the noise in their system prompt.
+  const gitBlock = agent.tools.includes('run_command') ? RAW_GIT_WORKFLOW_BLOCK : '';
+  // v8.19.0 — only mention MCP if RBAC actually admitted at least one external tool.
+  const mcpBlock = hasMcpTools ? MCP_KNOWLEDGE_BLOCK : '';
+  return `${MANIFESTO_REF}${agent.systemPrompt}${osBlock}\n${SEPARATION_PROTOCOL}${gitBlock}${mcpBlock}`;
 }
 
 /** Get all agents as a list for UI display */
@@ -6588,6 +8388,147 @@ export function getAgentList(): Array<{ id: string; name: string; emoji: string;
   return Object.values(AGENTS).map(({ id, name, emoji, color, description }) => ({
     id, name, emoji, color, description,
   }));
+}
+
+```
+
+### 📁 FILE: `src\commands\mcp.ts`
+```typescript
+#!/usr/bin/env node
+// ─── Fluxo MCP CLI (v8.20.0) ────────────────────────────────────────────────
+// Standalone Node entrypoint that mirrors `claude mcp add <server>`. Compiled
+// to out/commands/mcp.js by tsc. Invoke from any workspace root with:
+//
+//   node <path-to-vsix>/out/commands/mcp.js add <alias>
+//   node <path-to-vsix>/out/commands/mcp.js list
+//   node <path-to-vsix>/out/commands/mcp.js remove <alias>
+//   node <path-to-vsix>/out/commands/mcp.js registry
+//
+// Workspace is auto-detected from process.cwd() (or --workspace=<path>).
+// All ops touch .fluxo/mcp_servers.json via mcpConfigWriter — same code path
+// the in-extension `Fluxo: Add MCP Server` command uses.
+
+import * as path from 'path';
+import { listRegistry, getRegistryEntry } from '../utils/mcpRegistry';
+import { addServer, removeServer, listConfigured } from '../utils/mcpConfigWriter';
+
+function resolveWorkspace(args: string[]): string {
+  const flag = args.find(a => a.startsWith('--workspace='));
+  if (flag) { return path.resolve(flag.substring('--workspace='.length)); }
+  return process.cwd();
+}
+
+function printUsage(): void {
+  console.log('Fluxo MCP CLI (v8.20.0)');
+  console.log('');
+  console.log('Usage:');
+  console.log('  fluxo mcp add <alias> [--workspace=<path>]');
+  console.log('  fluxo mcp remove <alias> [--workspace=<path>]');
+  console.log('  fluxo mcp list [--workspace=<path>]');
+  console.log('  fluxo mcp registry');
+  console.log('');
+  console.log('Aliases live in the official registry (see `registry`).');
+  console.log('Files written to <workspace>/.fluxo/mcp_servers.json.');
+}
+
+function cmdRegistry(): number {
+  const entries = listRegistry();
+  console.log(`Official MCP registry (${entries.length} entries):\n`);
+  for (const e of entries) {
+    const star = e.starter ? ' ★' : '';
+    const cats = e.categories.join(', ');
+    console.log(`  ${e.alias}${star}`);
+    console.log(`    ${e.description}`);
+    console.log(`    categories: ${cats}`);
+    if (e.note) { console.log(`    note: ${e.note}`); }
+    console.log('');
+  }
+  console.log('★ = included in the auto-generated starter pack.');
+  return 0;
+}
+
+function cmdAdd(workspacePath: string, alias: string | undefined): number {
+  if (!alias) {
+    console.error('error: missing <alias>. Try `fluxo mcp registry` to see available servers.');
+    return 1;
+  }
+  const entry = getRegistryEntry(alias);
+  if (!entry) {
+    console.error(`error: "${alias}" is not in the official registry. Run \`fluxo mcp registry\` for the full list.`);
+    return 1;
+  }
+  const result = addServer(workspacePath, alias);
+  if (!result.ok) {
+    console.error(`error: ${result.reason}`);
+    return 1;
+  }
+  if (result.reason) {
+    console.log(result.reason);
+  } else {
+    console.log(`✅ Added "${result.alias}" to ${workspacePath}/.fluxo/mcp_servers.json`);
+    if (entry.note) { console.log(`   note: ${entry.note}`); }
+  }
+  return 0;
+}
+
+function cmdRemove(workspacePath: string, alias: string | undefined): number {
+  if (!alias) {
+    console.error('error: missing <alias>.');
+    return 1;
+  }
+  const result = removeServer(workspacePath, alias);
+  if (!result.ok) {
+    console.error(`error: ${result.reason}`);
+    return 1;
+  }
+  console.log(result.reason ?? `✅ Removed "${alias}" from .fluxo/mcp_servers.json`);
+  return 0;
+}
+
+function cmdList(workspacePath: string): number {
+  const configured = listConfigured(workspacePath);
+  const aliases = Object.keys(configured).sort();
+  if (aliases.length === 0) {
+    console.log('No MCP servers configured. Run `fluxo mcp add <alias>` to add one.');
+    return 0;
+  }
+  console.log(`Configured MCP servers (${aliases.length}):\n`);
+  for (const alias of aliases) {
+    const cfg = configured[alias];
+    console.log(`  ${alias}`);
+    console.log(`    command: ${cfg.command} ${(cfg.args ?? []).join(' ')}`);
+    if (cfg.categories) { console.log(`    categories: ${cfg.categories.join(', ')}`); }
+  }
+  return 0;
+}
+
+export function runCli(argv: string[]): number {
+  const args = argv.slice(2);
+  if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
+    printUsage();
+    return 0;
+  }
+  const sub = args[0];
+  const wsPath = resolveWorkspace(args);
+  const positional = args.slice(1).filter(a => !a.startsWith('--'));
+
+  switch (sub) {
+    case 'add':      return cmdAdd(wsPath, positional[0]);
+    case 'remove':
+    case 'rm':       return cmdRemove(wsPath, positional[0]);
+    case 'list':
+    case 'ls':       return cmdList(wsPath);
+    case 'registry': return cmdRegistry();
+    default:
+      console.error(`error: unknown subcommand "${sub}"`);
+      printUsage();
+      return 1;
+  }
+}
+
+// Only execute when invoked directly (not when imported by extension.ts).
+if (require.main === module) {
+  process.exit(runCli(process.argv));
 }
 
 ```
@@ -6602,6 +8543,8 @@ import { runAgentLoop, ChatMessage, EngineConfig, summarizeHistory } from './age
 import { routeToAgent, getAgentList } from './agents';
 import { Sentinel } from './sentinel';
 import { McpSwarmClient } from './mcpClient';
+import { listRegistry } from './utils/mcpRegistry';
+import { addServer, removeServer, listConfigured } from './utils/mcpConfigWriter';
 
 // ─── State Management ─────────────────────────────────────────────────────────
 
@@ -7070,6 +9013,7 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
     };
 
     const mcpTools = _mcpClient.getMcpTools();
+    const mcpToolCategories = _mcpClient.getMcpToolCategories();
 
     // ── LSP Symbol Replace callback (v8.5.0) ─────────────────────────────────
     // Uses VS Code's Language Server to locate a named AST symbol and replace it
@@ -7203,6 +9147,69 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
     };
     // ─────────────────────────────────────────────────────────────────────────────
 
+    // ── LSP Passive Feedback Callback (v8.23.0) ─────────────────────────────────
+    // Polls vscode.languages.getDiagnostics for the recently-edited files BEFORE
+    // the engine runs npm run build. The TS/JSX language server is already
+    // running and indexing every open document; querying its diagnostics is
+    // effectively free compared to a compiler invocation. Returns one
+    // human-readable line per diagnostic (file:line: message) suitable for
+    // injecting straight into the agent's message stream. Errors and warnings
+    // both flow through — the agent treats them uniformly. Filtered down to
+    // Error and Warning severity to silence Information/Hint chatter (LSPs
+    // emit a lot of "consider extracting this" hints that are not actionable
+    // pre-build).
+    //
+    // Behavior contract (matches the engine's expectations):
+    //   • Returns [] (not throws) when no diagnostics — the engine treats this
+    //     as "nothing to surface, proceed to Quality Gate".
+    //   • Resolves bare repo-relative paths against the workspace, just like
+    //     the get_code_structure callback does.
+    //   • Each path is opened (so the LSP indexes it if it wasn't already)
+    //     and given a short settle window — TS server can take ~300ms to
+    //     update diagnostics on a freshly-edited file. Total budget capped at
+    //     ~1.2s across all files so we do not block the gate noticeably.
+    const getDiagnosticsCallback = async (relPaths: string[]): Promise<string[]> => {
+      if (!Array.isArray(relPaths) || relPaths.length === 0) { return []; }
+      const out: string[] = [];
+      const settleMs = 300;
+      try {
+        for (const rel of relPaths.slice(0, 5)) {
+          if (typeof rel !== 'string' || !rel.trim()) { continue; }
+          let cleanPath = rel.trim();
+          // Strip /workspace/ Docker-bias and worktree-prefix hallucinations
+          // mirror the same heuristics get_code_structure uses.
+          if (cleanPath.startsWith('/workspace/'))      { cleanPath = cleanPath.substring(11); }
+          else if (cleanPath.startsWith('workspace/'))  { cleanPath = cleanPath.substring(10); }
+          else if (cleanPath.startsWith('\\workspace\\')) { cleanPath = cleanPath.substring(11); }
+          const finalPath = path.isAbsolute(cleanPath) ? cleanPath : path.join(workspacePath, cleanPath);
+          if (!fs.existsSync(finalPath)) { continue; }
+          const uri = vscode.Uri.file(finalPath);
+          try {
+            await vscode.workspace.openTextDocument(uri);
+            await new Promise<void>(r => setTimeout(r, settleMs));
+          } catch { /* continue with whatever diagnostics already exist */ }
+          const diags = vscode.languages.getDiagnostics(uri);
+          for (const d of diags) {
+            if (d.severity !== vscode.DiagnosticSeverity.Error && d.severity !== vscode.DiagnosticSeverity.Warning) {
+              continue;
+            }
+            const sev = d.severity === vscode.DiagnosticSeverity.Error ? 'error' : 'warning';
+            const line = d.range.start.line + 1;
+            const msg = (d.message || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+            out.push(`${cleanPath}:${line} [${sev}] ${msg}`);
+            if (out.length >= 10) { break; }
+          }
+          if (out.length >= 10) { break; }
+        }
+      } catch (err: any) {
+        // Defensive: never throw — engine treats absence/empty as "no LSP".
+        console.error('[Fluxo LSP Passive] callback error:', err);
+        return [];
+      }
+      return out;
+    };
+    // ─────────────────────────────────────────────────────────────────────────────
+
     for await (const event of runAgentLoop(
       userText,
       agentId,
@@ -7218,7 +9225,9 @@ async function _handleSendMessage(userText: string, model: string, workerModel: 
       async (name, args) => await _mcpClient.callMcpTool(name, args),
       worktreeReviewCallback,
       replaceSymbolCallback,
-      hitlCommandCallback
+      hitlCommandCallback,
+      mcpToolCategories,
+      getDiagnosticsCallback
     )) {
       _postToPanel({ ...event });
       if (event.type === 'streamChunk') { fullAssistantText += event.text; }
@@ -7616,7 +9625,11 @@ export function activate(context: vscode.ExtensionContext): void {
   _extensionUri = context.extensionUri;
   _context = context;
 
-  _mcpClient = new McpSwarmClient();
+  // v8.19.0 — pass the workspace root so the client also reads
+  // .fluxo/mcp_servers.json (per-project MCP config) on top of the
+  // user-scoped fluxo.mcpServers VSCode setting.
+  const _initWsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  _mcpClient = new McpSwarmClient(_initWsPath);
   _mcpClient.initialize();
 
   // Initialize conversation persistence
@@ -7717,6 +9730,82 @@ export function activate(context: vscode.ExtensionContext): void {
           ? '🟢 Sentinel activated — monitoring terminal for errors'
           : '⚫ Sentinel deactivated'
       );
+    }),
+
+    // ── MCP Commands (v8.20.0 — Zero-Config UX) ─────────────────────────────
+    // QuickPick-driven UI on top of the same mcpConfigWriter the CLI uses.
+    // Workspace is auto-detected; if no folder is open, fall back to the
+    // user's home or report and bail gracefully.
+    vscode.commands.registerCommand('fluxo.mcp.add', async () => {
+      const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!wsPath) {
+        vscode.window.showWarningMessage('Fluxo MCP: open a workspace folder first — server config lives in <workspace>/.fluxo/mcp_servers.json.');
+        return;
+      }
+      const items = listRegistry().map(e => ({
+        label: `${e.starter ? '★ ' : '  '}${e.alias}`,
+        description: e.categories.join(', '),
+        detail: e.description,
+        alias: e.alias,
+      }));
+      const pick = await vscode.window.showQuickPick(items, {
+        placeHolder: 'Select an MCP server to add to .fluxo/mcp_servers.json',
+        matchOnDescription: true,
+        matchOnDetail: true,
+      });
+      if (!pick) { return; }
+      const result = addServer(wsPath, pick.alias);
+      if (!result.ok) {
+        vscode.window.showErrorMessage(`Fluxo MCP: ${result.reason}`);
+      } else {
+        vscode.window.showInformationMessage(
+          result.reason ?? `✅ Added "${result.alias}" to .fluxo/mcp_servers.json. Reload the window for the new server to take effect.`
+        );
+      }
+    }),
+
+    vscode.commands.registerCommand('fluxo.mcp.remove', async () => {
+      const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!wsPath) {
+        vscode.window.showWarningMessage('Fluxo MCP: open a workspace folder first.');
+        return;
+      }
+      const configured = listConfigured(wsPath);
+      const aliases = Object.keys(configured).sort();
+      if (aliases.length === 0) {
+        vscode.window.showInformationMessage('Fluxo MCP: no servers configured in this workspace.');
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(aliases, {
+        placeHolder: 'Select an MCP server to remove',
+      });
+      if (!pick) { return; }
+      const result = removeServer(wsPath, pick);
+      if (!result.ok) {
+        vscode.window.showErrorMessage(`Fluxo MCP: ${result.reason}`);
+      } else {
+        vscode.window.showInformationMessage(result.reason ?? `🗑️ Removed "${pick}" from .fluxo/mcp_servers.json. Reload the window to disconnect.`);
+      }
+    }),
+
+    vscode.commands.registerCommand('fluxo.mcp.list', async () => {
+      const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!wsPath) {
+        vscode.window.showWarningMessage('Fluxo MCP: open a workspace folder first.');
+        return;
+      }
+      const configured = listConfigured(wsPath);
+      const aliases = Object.keys(configured).sort();
+      if (aliases.length === 0) {
+        vscode.window.showInformationMessage('Fluxo MCP: no servers configured. Run "Fluxo: Add MCP Server" to install one.');
+        return;
+      }
+      const lines = aliases.map(a => {
+        const cfg = configured[a];
+        const cmd = `${cfg.command} ${(cfg.args ?? []).join(' ')}`.trim();
+        return `• ${a} — ${cmd}`;
+      });
+      vscode.window.showInformationMessage(`Configured MCP servers (${aliases.length}):\n${lines.join('\n')}`, { modal: true });
     })
   );
 
@@ -7744,14 +9833,54 @@ export function deactivate(): void {
 ### 📁 FILE: `src\mcpClient.ts`
 ```typescript
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { NativeTool } from './tools';
+import { ensureStarterPack } from './utils/mcpConfigWriter';
+import { resolvePlaceholders } from './utils/mcpRegistry';
 
 interface McpServerConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  /**
+   * Optional v8.19.0 — explicit categories for this server's tools, used by
+   * the RBAC filter when the heuristic inference cannot classify them. Authors
+   * of mcp_servers.json can pin a server's tools to one or more roles.
+   * Examples: ["design", "figma"], ["database", "git"], ["pm", "jira"].
+   */
+  categories?: string[];
+}
+
+// ─── Category Inference (v8.19.0) ───────────────────────────────────────────
+// Heuristic mapping from server/tool/description text to RBAC categories.
+// Multi-tag: a single tool can carry several categories (e.g. GitHub provides
+// both git ops and issue/PR project-management surfaces). The RBAC filter in
+// agentEngine treats a tool as allowed if ANY of its categories overlaps the
+// agent's allowed set.
+
+const CATEGORY_KEYWORDS: Record<string, RegExp> = {
+  design:   /\b(design|ui|ux|css|sketch|wireframe|mockup|prototype|color)\b/i,
+  figma:    /\b(figma)\b/i,
+  image:    /\b(image|photo|illustration|icon|svg|png|jpg|asset)\b/i,
+  database: /\b(database|db|sql|postgres|postgresql|mysql|mariadb|mongo|mongodb|redis|sqlite|query|nosql|prisma|supabase|firebase)\b/i,
+  compiler: /\b(compile|compiler|build|lint|linter|tsc|typescript|gcc|rustc|webpack|vite|esbuild|swc)\b/i,
+  git:      /\b(git|repo|repository|branch|commit|merge|pull[\s-]?request|pr\b|gitlab|bitbucket)\b/i,
+  github:   /\b(github)\b/i,
+  pm:       /\b(jira|linear|asana|trello|notion|monday|clickup|project|ticket|issue|backlog|sprint|kanban)\b/i,
+  jira:     /\b(jira|atlassian)\b/i,
+  devops:   /\b(docker|kubernetes|k8s|deploy|deployment|ci\/?cd|pipeline|terraform|ansible|aws|gcp|azure)\b/i,
+};
+
+export function inferCategories(serverName: string, toolName: string, description: string): string[] {
+  const haystack = `${serverName} ${toolName} ${description}`.toLowerCase();
+  const cats = new Set<string>();
+  for (const [cat, re] of Object.entries(CATEGORY_KEYWORDS)) {
+    if (re.test(haystack)) { cats.add(cat); }
+  }
+  return Array.from(cats);
 }
 
 export class McpSwarmClient {
@@ -7759,21 +9888,105 @@ export class McpSwarmClient {
   private transports: Map<string, StdioClientTransport> = new Map();
 
   private cachedTools: NativeTool[] = [];
+  private toolCategories: Record<string, string[]> = {};
   private isInitialized = false;
+  private workspacePath: string | undefined;
+
+  /**
+   * v8.19.0 — workspacePath is optional but recommended. When provided, the
+   * client also reads .fluxo/mcp_servers.json from the workspace and merges it
+   * with the user-level fluxo.mcpServers VSCode setting. The workspace JSON
+   * wins on key collisions, so a project can pin its own MCP stack.
+   */
+  constructor(workspacePath?: string) {
+    this.workspacePath = workspacePath;
+  }
 
   public initialize() {
     this._initializeAsync().catch(err => console.error("[Fluxo MCP] Init error:", err));
   }
 
+  private _loadMergedConfig(): Record<string, McpServerConfig> {
+    const userConfig = vscode.workspace.getConfiguration('fluxo')
+      .get<Record<string, McpServerConfig>>('mcpServers') || {};
+
+    let workspaceConfig: Record<string, McpServerConfig> = {};
+    if (this.workspacePath) {
+      // v8.20.0 — Zero-Config Auto-Injection. If the workspace has never
+      // configured MCP, drop a starter pack JSON onto disk before we try to
+      // read it. ensureStarterPack is idempotent and only writes when the
+      // file is missing, so a user who deleted everything intentionally is
+      // never surprised by a re-seed mid-session.
+      try {
+        const written = ensureStarterPack(this.workspacePath);
+        if (written.length > 0) {
+          console.log(`[Fluxo MCP] Auto-injected starter pack into .fluxo/mcp_servers.json: ${written.join(', ')}`);
+        }
+      } catch (err: any) {
+        console.error(`[Fluxo MCP] Failed to auto-inject starter pack: ${err?.message ?? err}`);
+      }
+
+      const fp = path.join(this.workspacePath, '.fluxo', 'mcp_servers.json');
+      try {
+        if (fs.existsSync(fp)) {
+          const raw = fs.readFileSync(fp, 'utf-8');
+          const parsed = JSON.parse(raw);
+          // Accept both root-level map and { mcpServers: { ... } } envelope.
+          if (parsed && typeof parsed === 'object') {
+            workspaceConfig = (parsed.mcpServers ?? parsed) as Record<string, McpServerConfig>;
+          }
+          console.log(`[Fluxo MCP] Loaded .fluxo/mcp_servers.json (${Object.keys(workspaceConfig).length} server(s))`);
+        }
+      } catch (err: any) {
+        console.error(`[Fluxo MCP] Failed to read .fluxo/mcp_servers.json: ${err?.message ?? err}`);
+      }
+    }
+
+    // Workspace JSON wins on collisions — projects can pin their own MCP stack.
+    return { ...userConfig, ...workspaceConfig };
+  }
+
+  /**
+   * v8.20.0 — resolve ${ENV:...} / ${ARG:...:default} placeholders in a
+   * server config before we hand it to the StdioClientTransport. Applied to
+   * every string in args + every value in env. Servers that need a real env
+   * var (BRAVE_API_KEY, GITHUB_TOKEN) read it from process.env transparently.
+   */
+  private _resolveServerConfig(serverConfig: McpServerConfig): McpServerConfig {
+    const resolved: McpServerConfig = {
+      command: resolvePlaceholders(serverConfig.command),
+      args: serverConfig.args?.map(a => resolvePlaceholders(a)),
+    };
+    if (serverConfig.env) {
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(serverConfig.env)) {
+        env[k] = resolvePlaceholders(v);
+      }
+      resolved.env = env;
+    }
+    return resolved;
+  }
+
   private async _initializeAsync() {
-    const config = vscode.workspace.getConfiguration('fluxo').get<Record<string, McpServerConfig>>('mcpServers');
+    const config = this._loadMergedConfig();
     if (!config || Object.keys(config).length === 0) {
       this.isInitialized = true;
       return;
     }
 
-    for (const [serverName, serverConfig] of Object.entries(config)) {
-      try {
+    // v8.20.0 — Parallel boot. Cold `npx -y` fetches can take 10-30s on a
+    // fresh cache; running servers serially used to make startup time scale
+    // linearly with N servers. Parallelizing keeps total init bounded by the
+    // slowest server. A failure on one server never blocks the others, and
+    // never throws — the whole batch is wrapped in Promise.allSettled.
+    //
+    // Per-server connect timeout bumped 5s → 30s so first-run npx fetches
+    // have headroom. Transports that miss the deadline are explicitly
+    // closed to avoid orphan node processes.
+    const CONNECT_TIMEOUT_MS = 30_000;
+    await Promise.allSettled(
+      Object.entries(config).map(async ([serverName, rawConfig]) => {
+        const serverConfig = this._resolveServerConfig(rawConfig);
         const transport = new StdioClientTransport({
           command: serverConfig.command,
           args: serverConfig.args,
@@ -7781,54 +9994,84 @@ export class McpSwarmClient {
         });
 
         const client = new Client(
-          { name: 'fluxo-ai', version: '7.17.1' },
+          { name: 'fluxo-ai', version: '8.20.0' },
           { capabilities: {} }
         );
 
-        await Promise.race([
-          client.connect(transport),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 5000))
-        ]);
+        try {
+          await Promise.race([
+            client.connect(transport),
+            new Promise((_, reject) => setTimeout(() => reject(new Error(`Connection timeout (${CONNECT_TIMEOUT_MS}ms) — likely a slow npx fetch on first run`)), CONNECT_TIMEOUT_MS))
+          ]);
+          this.clients.set(serverName, client);
+          this.transports.set(serverName, transport);
+          console.log(`[Fluxo MCP] Connected to server: ${serverName}`);
+        } catch (err: any) {
+          console.error(`[Fluxo MCP] Failed to connect to server ${serverName}:`, err?.message ?? err);
+          // Clean up the transport on failure so we don't leak a dangling
+          // child process holding a stdio pipe.
+          try { await transport.close(); } catch { /* nothing more to clean */ }
+        }
+      })
+    );
 
-        this.clients.set(serverName, client);
-        this.transports.set(serverName, transport);
-        console.log(`[Fluxo MCP] Connected to server: ${serverName}`);
-      } catch (err: any) {
-        console.error(`[Fluxo MCP] Failed to connect to server ${serverName}:`, err);
-      }
-    }
-
-    await this._cacheTools();
+    await this._cacheTools(config);
     this.isInitialized = true;
   }
 
-  private async _cacheTools() {
+  private async _cacheTools(config: Record<string, McpServerConfig>) {
     const allTools: NativeTool[] = [];
+    const categoryMap: Record<string, string[]> = {};
+
     for (const [serverName, client] of this.clients.entries()) {
       try {
         const response = await Promise.race([
           client.listTools(),
           new Promise((_, reject) => setTimeout(() => reject(new Error('listTools timeout')), 5000))
         ]) as any;
+
+        const explicitCategories = config[serverName]?.categories ?? [];
+
         for (const t of response.tools) {
+          const fullName    = `mcp_${serverName}_${t.name}`;
+          const description = `[MCP Server: ${serverName}] ${t.description || ''}`;
           allTools.push({
             type: 'function',
             function: {
-              name: `mcp_${serverName}_${t.name}`,
-              description: `[MCP Server: ${serverName}] ${t.description || ''}`,
+              name: fullName,
+              description,
               parameters: (t.inputSchema as any) || { type: 'object', properties: {} }
             }
           });
+
+          // Merge explicit (config-pinned) + inferred categories. Explicit wins
+          // on intent but inferred cats add coverage if the author missed any.
+          const inferred = inferCategories(serverName, t.name, t.description || '');
+          const merged   = Array.from(new Set([...explicitCategories, ...inferred]));
+          categoryMap[fullName] = merged;
         }
       } catch (err) {
         console.error(`[Fluxo MCP] Failed to list tools for ${serverName}:`, err);
       }
     }
-    this.cachedTools = allTools;
+
+    this.cachedTools    = allTools;
+    this.toolCategories = categoryMap;
   }
 
   public getMcpTools(): NativeTool[] {
     return this.cachedTools;
+  }
+
+  /**
+   * v8.19.0 — return the per-tool category map keyed by full tool name (e.g.
+   * "mcp_github_create_issue" → ["github", "git", "pm"]). Consumed by the
+   * RBAC filter in agentEngine.ts. Tools whose keyword inference returns no
+   * matches AND whose server config did not pin categories appear here with
+   * an empty array — the RBAC filter treats those as "unknown".
+   */
+  public getMcpToolCategories(): Record<string, string[]> {
+    return this.toolCategories;
   }
 
   public async callMcpTool(fullName: string, args: any): Promise<{ success: boolean; output: string }> {
@@ -8395,468 +10638,6 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
 
 ```
 
-### 📁 FILE: `src\tools\ExitWorktreeTool\index.ts`
-```typescript
-// Powered by Fluxo Tech AI — https://fluxotechai.com
-import * as fs   from 'fs';
-import * as path from 'path';
-import * as cp   from 'child_process';
-import { NativeTool, ToolResult } from '../shared';
-
-export const TOOL_DEF: NativeTool = {
-  type: 'function',
-  function: {
-    name: 'exit_worktree',
-    description: `Finalize the active git worktree created by enter_worktree.
-
-action='merge'  → Commits all changes in the worktree and merges them into the main branch.
-                  Use this when npm run build passes and the work is verified complete.
-action='discard'→ Forcefully deletes the worktree branch without touching main.
-                  Use this when the worktree is broken or the task is aborted.
-                  The user's production code on main is NEVER affected by a discard.`,
-    parameters: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          description: "'merge' to integrate changes into main, 'discard' to delete the worktree cleanly.",
-        },
-        commit_message: {
-          type: 'string',
-          description: "Commit message summarising the changes. Required when action='merge'.",
-        },
-      },
-      required: ['action'],
-    },
-  },
-};
-
-const STATE_RELATIVE = path.join('.fluxo', 'active_worktree.json');
-
-export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
-  const action = String(args.action || '').toLowerCase();
-  if (action !== 'merge' && action !== 'discard') {
-    return { success: false, output: "ExitWorktree: 'action' must be 'merge' or 'discard'." };
-  }
-
-  // ── Load state ────────────────────────────────────────────────────────────
-  const stateFilePath = path.join(workspacePath, STATE_RELATIVE);
-  if (!fs.existsSync(stateFilePath)) {
-    return {
-      success: false,
-      output: 'ExitWorktree: No active worktree found. Call enter_worktree first.',
-    };
-  }
-
-  let state: { branchName: string; worktreePath: string };
-  try {
-    state = JSON.parse(fs.readFileSync(stateFilePath, 'utf-8'));
-  } catch {
-    return {
-      success: false,
-      output: 'ExitWorktree: Corrupted worktree state. Run "git worktree list" manually to inspect.',
-    };
-  }
-
-  const { branchName, worktreePath } = state;
-
-  // ── DISCARD ────────────────────────────────────────────────────────────────
-  if (action === 'discard') {
-    try {
-      cp.execSync(`git worktree remove --force "${worktreePath}"`, { cwd: workspacePath, stdio: 'pipe' });
-    } catch { /* worktree dir may already be missing — continue to prune */ }
-    try { cp.execSync('git worktree prune',          { cwd: workspacePath, stdio: 'pipe' }); } catch { /* non-fatal */ }
-    try { cp.execSync(`git branch -D "${branchName}"`, { cwd: workspacePath, stdio: 'pipe' }); } catch { /* non-fatal */ }
-    try { fs.unlinkSync(stateFilePath); } catch { /* non-fatal */ }
-
-    return {
-      success: true,
-      output:
-        `🗑️ WORKTREE DISCARDED — Sandbox deleted cleanly.\n\n` +
-        `Branch '${branchName}' and its worktree have been removed.\n` +
-        `The main workspace is UNTOUCHED — production code is safe.`,
-    };
-  }
-
-  // ── MERGE ─────────────────────────────────────────────────────────────────
-  const commitMsg = String(args.commit_message || `Fluxo worktree: ${branchName}`)
-    .replace(/"/g, "'"); // sanitise for shell
-
-  // Step 1 — stage & commit inside the worktree
-  try {
-    cp.execSync('git add -A', { cwd: worktreePath, stdio: 'pipe' });
-    const dirty = cp.execSync('git status --porcelain', { cwd: worktreePath, stdio: 'pipe' }).toString().trim();
-    if (dirty) {
-      cp.execSync(`git commit -m "${commitMsg}"`, { cwd: worktreePath, stdio: 'pipe' });
-    }
-  } catch (e: any) {
-    const stderr = (e.stderr?.toString() || e.message || '').slice(0, 400);
-    return {
-      success: false,
-      output:
-        `ExitWorktree (merge): Failed to commit changes in worktree:\n${stderr}\n\n` +
-        `Fix the issue inside the worktree, then retry. Or call exit_worktree with action='discard' to abort.`,
-    };
-  }
-
-  // Step 2 — merge worktree branch into the main workspace's current branch
-  try {
-    cp.execSync(
-      `git merge "${branchName}" --no-ff -m "Merge worktree '${branchName}': ${commitMsg}"`,
-      { cwd: workspacePath, stdio: 'pipe' }
-    );
-  } catch (e: any) {
-    const stderr = (e.stderr?.toString() || e.message || '').slice(0, 400);
-    return {
-      success: false,
-      output:
-        `ExitWorktree (merge): git merge failed:\n${stderr}\n\n` +
-        `Likely merge conflicts. Resolve them manually, or call exit_worktree with action='discard' to abort.`,
-    };
-  }
-
-  // Step 3 — cleanup worktree & branch
-  try { cp.execSync(`git worktree remove "${worktreePath}"`,  { cwd: workspacePath, stdio: 'pipe' }); } catch { /* non-fatal */ }
-  try { cp.execSync('git worktree prune',                      { cwd: workspacePath, stdio: 'pipe' }); } catch { /* non-fatal */ }
-  try { cp.execSync(`git branch -d "${branchName}"`,           { cwd: workspacePath, stdio: 'pipe' }); } catch { /* non-fatal */ }
-  try { fs.unlinkSync(stateFilePath); } catch { /* non-fatal */ }
-
-  return {
-    success: true,
-    output:
-      `✅ WORKTREE MERGED — Changes integrated into main.\n\n` +
-      `Branch '${branchName}' merged and cleaned up.\n` +
-      `All changes are now live in the workspace. Run npm run build to confirm.`,
-  };
-}
 
 ```
-
-### 📁 FILE: `src\tools\FetchDocumentationTool\index.ts`
-```typescript
-// Powered by Fluxo Tech AI — https://fluxotechai.com
-import { NativeTool, ToolResult } from '../shared';
-
-export const TOOL_DEF: NativeTool = {
-  type: 'function',
-  function: {
-    name: 'fetch_documentation',
-    description:
-      'Fetches the content of an external URL (e.g. a GitHub README, npm package page, or official documentation) ' +
-      'and returns it as clean plain text. Use this BEFORE writing any code that depends on an external library, ' +
-      'to read the real, up-to-date API instead of relying on training memory. ' +
-      'Ideal for: GitHub raw README files, npm package pages, official docs sites. ' +
-      'The response is automatically cleaned (scripts, nav, and styles removed) and truncated to 20,000 characters.',
-    parameters: {
-      type: 'object',
-      properties: {
-        url: {
-          type: 'string',
-          description:
-            'The full URL to fetch. Prefer raw content URLs when available ' +
-            '(e.g. https://raw.githubusercontent.com/user/repo/main/README.md). ' +
-            'For npm packages use https://www.npmjs.com/package/<name>.',
-        },
-      },
-      required: ['url'],
-    },
-  },
-};
-
-/**
- * Sync stub — this tool requires an async HTTP fetch.
- * The actual execution is handled in agentEngine.ts via the fetchDocumentationCallback path.
- * This stub is only reached if the engine falls through to executeTool() unexpectedly.
- */
-export function execute(_args: Record<string, any>, _workspacePath: string): ToolResult {
-  return {
-    success: false,
-    output:
-      '[SYSTEM ERROR] fetch_documentation requires async execution. ' +
-      'This stub should never be called directly — the engine routes it via fetchDocumentationCallback.',
-  };
-}
-
-```
-
-### 📁 FILE: `src\tools\FileEditTool\index.ts`
-```typescript
-import * as fs from 'fs';
-import { NativeTool, ToolResult, safePath } from '../shared';
-
-export const TOOL_DEF: NativeTool = {
-  type: 'function',
-  function: {
-    name: 'edit_file',
-    description: 'Surgically find and replace a specific string in a file. CRITICAL RULE: You MUST provide BOTH old_string AND new_string. NEVER omit old_string. If inserting new code, old_string must be the exact existing text (e.g., an import statement) that you will use as an anchor to replace with the anchor + the new code. PREFER MICRO-EDITS: If the change is complex, do multiple small edit_file calls instead of one large block to avoid syntax errors. WORKFLOW: (1) read_file to see exact text. (2) Copy the exact old_string from the output. (3) Provide new_string. Never use write_file on existing files.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path:       { type: 'string', description: 'File path relative to workspace root.' },
-        old_string: { type: 'string', description: 'REQUIRED — plain string only. The exact text to find. Must match the file exactly — copy from read_file output. NEVER omit. NEVER pass an object.' },
-        new_string: { type: 'string', description: 'REQUIRED — plain string only. The replacement text. Use empty string to delete the matched block. NEVER omit. NEVER pass an object.' },
-      },
-      required: ['path', 'old_string', 'new_string'],
-    },
-  },
-};
-
-export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
-  const fp = safePath(workspacePath, args.path);
-  if (!fs.existsSync(fp)) {
-    return { success: false, output: `File not found: ${args.path}. Use list_dir to verify the path.` };
-  }
-
-  // Alias resolution — accept old_value/new_value but correct the model
-  const aliasWarnings: string[] = [];
-  const rawOld = args.old_string ?? args.old_value;
-  const rawNew = args.new_string ?? args.new_value;
-
-  if (args.old_string === undefined && typeof args.old_value === 'string') {
-    aliasWarnings.push(`⚠ ALIAS USADO: Enviaste 'old_value' en lugar de 'old_string'. Por favor usa siempre 'old_string' en el futuro para mayor precisión.`);
-  }
-  if (args.new_string === undefined && typeof args.new_value === 'string') {
-    aliasWarnings.push(`⚠ ALIAS USADO: Enviaste 'new_value' en lugar de 'new_string'. Por favor usa siempre 'new_string' en el futuro para mayor precisión.`);
-  }
-
-  if (typeof rawOld !== 'string' || !rawOld) {
-    return { success: false, output: 'CRITICAL ERROR: "old_string" is required and must be a plain string. Call read_file first to get the exact text to replace. NEVER pass an object or omit this field.' };
-  }
-  if (typeof rawNew !== 'string') {
-    return { success: false, output: 'CRITICAL ERROR: "new_string" is required and must be a plain string. Pass an empty string "" to delete, or the replacement text. NEVER pass an object or omit this field.' };
-  }
-
-  const oldString = rawOld;
-  const newString = rawNew;
-
-  const original = fs.readFileSync(fp, 'utf-8');
-  if (!original.includes(oldString)) {
-    const preview = oldString.slice(0, 120).replace(/\r?\n/g, '↵');
-    return {
-      success: false,
-      output: [
-        `FIND FAILED — old_string not found in ${args.path}.`,
-        `Searched for: "${preview}"`,
-        `Call read_file first to get the exact text. Do NOT guess whitespace or indentation.`,
-      ].join('\n'),
-    };
-  }
-
-  const updated = original.replace(oldString, newString);
-
-  if (updated.trim() === '') {
-    return { success: false, output: 'SAFETY ABORT: replacement would produce an empty file. Check your old_string.' };
-  }
-
-  fs.writeFileSync(fp, updated, 'utf-8');
-  const preview = oldString.slice(0, 60).replace(/\r?\n/g, '↵');
-  const correctionNote = aliasWarnings.length > 0 ? '\n\n' + aliasWarnings.join('\n') : '';
-  return {
-    success: true,
-    output: `edit_file: ${args.path} — replaced "${preview}..."\n\nEDICION EXITOSA — Si la tarea no esta completa, llama la SIGUIENTE herramienta ahora.${correctionNote}`,
-  };
-}
-
-```
-
-### 📁 FILE: `src\tools\FileReadTool\index.ts`
-```typescript
-import * as fs from 'fs';
-import { NativeTool, ToolResult, safePath } from '../shared';
-
-export const TOOL_DEF: NativeTool = {
-  type: 'function',
-  function: {
-    name: 'read_file',
-    description: 'Read the full contents of a file. Each line is prefixed with its 1-based line number. Use this before edit_file to see the exact text to replace.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Path to the file relative to the workspace root.' },
-      },
-      required: ['path'],
-    },
-  },
-};
-
-export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
-  const fp = safePath(workspacePath, args.path);
-  if (!fs.existsSync(fp)) {
-    const parentDir = (args.path as string || '.').split('/').slice(0, -1).join('/') || '.';
-    return {
-      success: false,
-      output: [
-        `FILE NOT FOUND: "${args.path}"`,
-        ``,
-        `MANDATORY NEXT STEP: Call list_dir BEFORE any further read_file attempts.`,
-        `  Suggested target: list_dir on "${parentDir}"`,
-        `DO NOT retry read_file on guessed paths. Discover the actual structure first.`,
-      ].join('\n'),
-    };
-  }
-
-  const buffer = fs.readFileSync(fp);
-  let content: string;
-
-  // Detect UTF-16LE (BOM: FF FE) or generic binary with null bytes
-  if (buffer.length > 2 && buffer[0] === 0xFF && buffer[1] === 0xFE) {
-    content = buffer.toString('utf16le');
-  } else if (buffer.indexOf(0) !== -1) {
-    // Strip null bytes from other encodings to avoid API errors
-    content = buffer.toString('utf-8').replace(/\0/g, '');
-  } else {
-    content = buffer.toString('utf-8');
-  }
-
-  const truncated = content.length > 60_000
-    ? content.slice(0, 60_000) + '\n...[truncated at 60KB]'
-    : content;
-  const numbered = truncated.split('\n').map((line, i) => `${i + 1} | ${line}`).join('\n');
-  return { success: true, output: numbered };
-}
-
-```
-
-### 📁 FILE: `src\tools\FileWriteTool\index.ts`
-```typescript
-import * as fs from 'fs';
-import * as path from 'path';
-import { NativeTool, ToolResult, safePath } from '../shared';
-import { FileLockManager } from '../../utils/lockfile';
-import { checkSyntax } from '../../utils/syntaxValidator';
-
-export const TOOL_DEF: NativeTool = {
-  type: 'function',
-  function: {
-    name: 'write_file',
-    description: 'Create a new file or fully overwrite an existing markdown/JSON/config artifact. REQUIRED for: new source files, .md documents (plans, reports, docs), JSON config, and any file inside .fluxo/. The planner MUST use this tool to produce .fluxo/IMPLEMENTATION_PLAN.md. For modifying existing source code (.ts/.tsx/.js/.jsx/.py), prefer edit_file or replace_symbol to avoid overwriting unrelated code.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path:     { type: 'string', description: 'File path relative to workspace root.' },
-        content:  { type: 'string', description: 'Complete file content to write.' },
-        agent_id: { type: 'string', description: 'Unique identifier of the calling agent (e.g. "coder-1", "designer-2"). Used by the File Lock Manager to track ownership. Required when running in parallel orchestration mode.' },
-        healing_mode: { type: 'boolean', description: 'Set to true ONLY when intentionally writing a file that may have syntax issues, e.g., a partial template or already-broken file being repaired. Bypasses AST syntax validation.' },
-      },
-      required: ['path', 'content'],
-    },
-  },
-};
-
-export function execute(args: Record<string, any>, workspacePath: string): ToolResult {
-  if (typeof args.content !== 'string' || args.content.trim() === '') {
-    return { success: false, output: 'CRITICAL ERROR: "content" is missing or empty.' };
-  }
-  const fp = safePath(workspacePath, args.path);
-  const agentId = typeof args.agent_id === 'string' ? args.agent_id : 'agent';
-
-  // ── AST Syntax Validation (v8.14.0 — Syntax Shield) ─────────────────────────
-  // Runs before lock acquisition — no point locking if the content is broken.
-  // Skipped for non-TS/JS extensions (markdown, JSON, CSS, etc.) automatically.
-  if (!args.healing_mode) {
-    const _syntaxCheck = checkSyntax(fp, args.content);
-    if (!_syntaxCheck.ok) {
-      return {
-        success: false,
-        output:
-          `[SYNTAX ERROR DETECTED] The proposed change breaks the file syntax. Write aborted.\n` +
-          `Error details:\n${_syntaxCheck.errors}\n\n` +
-          `You MUST review your code block and fix the syntax before retrying.`,
-      };
-    }
-  }
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  if (!FileLockManager.acquireLock(fp, agentId)) {
-    return {
-      success: false,
-      output: `SYSTEM LOCK: El archivo ${args.path} está siendo editado actualmente por otro agente de tu equipo. Tienes prohibido forzar la edición. Por favor, usa la herramienta sleep por 5 segundos o trabaja en otro archivo mientras se libera el cerrojo.`,
-    };
-  }
-  try {
-    fs.mkdirSync(path.dirname(fp), { recursive: true });
-    fs.writeFileSync(fp, args.content, 'utf-8');
-    const size = Buffer.byteLength(args.content, 'utf-8');
-    return { success: true, output: `Written: ${args.path} (${size} bytes)` };
-  } finally {
-    FileLockManager.releaseLock(fp, agentId);
-  }
-}
-
-```
-
-### 📁 FILE: `src\tools\GetCodeStructureTool\index.ts`
-```typescript
-import { NativeTool, ToolResult } from '../shared';
-
-export const TOOL_DEF: NativeTool = {
-  type: 'function',
-  function: {
-    name: 'get_code_structure',
-    description:
-      'Uses VS Code\'s Language Server Protocol to extract all symbols (functions, classes, variables, methods) from a file, with their exact start/end line numbers. ' +
-      'Use this BEFORE reading or editing a large file to get a precise structural map — so you know exactly which line range to target without reading the entire file.',
-    parameters: {
-      type: 'object',
-      properties: {
-        absolute_path: {
-          type: 'string',
-          description: 'Absolute path to the file to analyze (e.g., /workspace/src/App.tsx).',
-        },
-      },
-      required: ['absolute_path'],
-    },
-  },
-};
-
-// Actual execution is handled by the getCodeStructureCallback in extension.ts (requires VS Code API).
-export function execute(_args: Record<string, any>, _workspacePath: string): ToolResult {
-  return {
-    success: false,
-    output: '[SYSTEM]: get_code_structure requires the VS Code extension host. This tool cannot run outside of VS Code.',
-  };
-}
-
-```
-
-### 📁 FILE: `src\tools\GetRepoMapTool\index.ts`
-```typescript
-import { buildRepoMap } from '../../utils/repoMap';
-import { NativeTool, ToolResult } from '../shared';
-
-export const TOOL_DEF: NativeTool = {
-  type: 'function',
-  function: {
-    name: 'get_repo_map',
-    description:
-      'Generates a compressed semantic AST map of the entire repository. ' +
-      'Use this tool FIRST when exploring a codebase to instantly know where components, functions, and classes are defined ' +
-      'without guessing file paths. ' +
-      'Returns a multi-line map: each file on its own header line, with its exported symbols indented below it. ' +
-      'After calling this, you can navigate directly to any symbol with read_file or replace_symbol.',
-    parameters: {
-      type: 'object',
-      properties: {},
-      required: [],
-    },
-  },
-};
-
-export function execute(_args: Record<string, any>, workspacePath: string): ToolResult {
-  const map = buildRepoMap(workspacePath);
-  if (!map) {
-    return {
-      success: false,
-      output: 'No mappable source files found. Try list_dir(".") to explore the workspace structure manually.',
-    };
-  }
-  return { success: true, output: `REPO MAP:\n\n${map}` };
-}
-
-```
-
-
-```
-
-
 

@@ -1,15 +1,14 @@
-[SYSTEM_MANIFEST]
-APP_NAME: fluxo-ai
-APP_VERSION: 8.33.0
-PART: 2
-GENERATED_AT: 2026-05-06T00:32:33.509Z
-[/SYSTEM_MANIFEST]
+# 📦 APP MANIFEST
+* **App Name:** fluxo-ai
+* **Version:** 8.33.0
+* **Stack:** Vanilla JS
+* **Part:** 2
+* **Generated At:** 2026-05-06T00:32:33.622Z
 
-[CODEBASE_START]
+---
 
-================================================================================
-FILE PATH: FluxoAI_context_part2.md
-================================================================================
+### 📁 FILE: `FluxoAI_context_part2.md`
+```text
 # 📦 APP MANIFEST
 * **App Name:** fluxo-ai
 * **Version:** 8.24.0
@@ -8859,4 +8858,5 @@ export function execute(_args: Record<string, any>, workspacePath: string): Tool
 ```
 
 
+```
 
