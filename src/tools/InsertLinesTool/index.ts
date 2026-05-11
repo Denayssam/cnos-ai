@@ -19,10 +19,8 @@ export const TOOL_DEF: NativeTool = {
   type: 'function',
   function: {
     name: 'insert_lines',
-    description: `Insert new lines into a file at a specific 1-based line number WITHOUT removing or rewriting any existing content. The new content is placed BEFORE the target line — every original line stays intact.
-PRIMARY USE CASE: dropping a fresh component, function, or import block into a file when replace_block / replace_lines would force you to count brackets across a huge JSX payload. Pure insertion never miscounts because nothing is being deleted.
-WORKFLOW: (1) Call read_file to get the current line count. (2) Pick at_line — use 1 to prepend, or (last_line + 1) to append at EOF, or any specific anchor line. (3) Call insert_lines with content.
-The tool runs through the AST Syntax Shield, so the resulting file must still parse — but because nothing is removed, balanced inserts almost always pass on the first try.`,
+    description: `Insert content BEFORE a 1-based line number. Nothing is removed.
+Best for dropping a fresh component/function block into a file (replace_* would force counting brackets across 50+ JSX lines). read_file FIRST to get line count. at_line=1 prepends, at_line=(lastLine+1) appends.`,
     parameters: {
       type: 'object',
       properties: {
