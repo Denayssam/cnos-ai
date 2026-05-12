@@ -48,6 +48,7 @@ const repoMap_1 = require("./utils/repoMap");
 const gitSafety_1 = require("./utils/gitSafety");
 const buildValidator_1 = require("./utils/buildValidator");
 const DagController = __importStar(require("./utils/dagController"));
+const MAX_SWARM_DEPTH = 2;
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 function resolveEndpointAndKey(model, config) {
     // Bare "deepseek-*" (no slash) → DeepSeek direct API. Models with "deepseek/" prefix go to OpenRouter.
@@ -452,6 +453,48 @@ discoveryAnswerCallback) {
             if (wts.worktreePath && fs.existsSync(wts.worktreePath)) {
                 activeWorktreePath = wts.worktreePath;
                 debugLog(workspacePath, `[Worktree] Session restored — branch: ${wts.branchName} → ${wts.worktreePath}`);
+                // ── v8.36.3: Stale JSON Corruption Sanitizer ─────────────────────────
+                // Test 11 root cause: a prior session left package.json with malformed
+                // JSON ("type": "modul"scripts": {). The agent then tried to surgically
+                // repair text it could never match — the corrupted substring leaked
+                // into the conversation history via error messages and the agent
+                // attempted to edit the error text instead of the actual file. The
+                // result was a 75-iteration recovery spiral that never converged.
+                //
+                // Fix: before the agent runs, JSON-parse every *.json at the worktree
+                // root. If any fail, DELETE the corrupted file silently. The agent
+                // will recreate it via write_file (correct path) instead of attempting
+                // search_and_replace on text it cannot match (broken path).
+                try {
+                    const wtRoot = wts.worktreePath;
+                    const entries = fs.readdirSync(wtRoot);
+                    for (const entry of entries) {
+                        if (!entry.endsWith('.json')) {
+                            continue;
+                        }
+                        const fp = path.join(wtRoot, entry);
+                        try {
+                            const stat = fs.statSync(fp);
+                            if (!stat.isFile()) {
+                                continue;
+                            }
+                            const content = fs.readFileSync(fp, 'utf-8');
+                            if (content.trim() === '') {
+                                continue;
+                            }
+                            JSON.parse(content);
+                        }
+                        catch (parseErr) {
+                            try {
+                                fs.unlinkSync(fp);
+                                debugLog(workspacePath, `[v8.36.3 Stale JSON Sanitizer] Deleted corrupted ${entry} at worktree root — agent will recreate it cleanly via write_file`);
+                            }
+                            catch { /* unlink failure — non-fatal, agent still gets a chance to overwrite */ }
+                        }
+                    }
+                }
+                catch { /* readdir failure — non-fatal */ }
+                // ──────────────────────────────────────────────────────────────────────
             }
         }
         catch { /* corrupted state — proceed without worktree context */ }
@@ -551,7 +594,11 @@ discoveryAnswerCallback) {
                         `cleanly so the orchestrator can mark this task as COMPLETED.`;
                     const subEvents = [];
                     try {
-                        const subGen = runAgentLoop(taskPrompt, targetAgentId, [], { ...effectiveConfig, model: config.workerModel || config.model }, workspacePath, abortSignal, sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback, mcpToolCategories, getDiagnosticsCallback, listMcpResourcesCallback);
+                        const subGen = runAgentLoop(taskPrompt, targetAgentId, [], {
+                            ...effectiveConfig,
+                            model: config.workerModel || config.model,
+                            _swarmDepth: (effectiveConfig._swarmDepth ?? 0) + 1, // v8.36.3
+                        }, workspacePath, abortSignal, sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback, mcpToolCategories, getDiagnosticsCallback, listMcpResourcesCallback);
                         yield { type: 'thinking', text: `━━━ DAG dispatch · ${t.id} → @${targetAgentId} ━━━` };
                         for await (const ev of subGen) {
                             subEvents.push(ev);
@@ -1915,7 +1962,27 @@ discoveryAnswerCallback) {
                     const teamSpec = Array.isArray(args.team)
                         ? args.team
                         : [];
-                    if (teamSpec.length === 0) {
+                    // ── v8.36.3: Swarm Depth Cap ─────────────────────────────────────
+                    // Test 11 spawned 4 nested create_team calls (Manager → Coder →
+                    // Coder → Coder → Coder). Each level inherited filesystem state
+                    // but had a fresh context, so each level rediscovered the same
+                    // corrupted package.json and burned its iteration budget on the
+                    // same fix attempts. Total: ~75 wasted iterations.
+                    const _currentDepth = effectiveConfig._swarmDepth ?? 0;
+                    if (_currentDepth >= MAX_SWARM_DEPTH) {
+                        result = {
+                            success: false,
+                            output: `[SYSTEM ENGINE BLOCK — Swarm Depth Cap v8.36.3] create_team REJECTED.\n` +
+                                `You are already inside a sub-agent loop spawned by a previous create_team ` +
+                                `(depth ${_currentDepth}, max ${MAX_SWARM_DEPTH}). Spawning another team here ` +
+                                `creates a recursion bomb — observed in Test 11, where 4 nested spawns burned ` +
+                                `~75 iterations rediscovering the same problem.\n\n` +
+                                `MANDATORY: Solve the current task in THIS loop. Use read_file, write_file, ` +
+                                `search_and_replace, and run_command directly. If the task is truly beyond ` +
+                                `your scope, send your Execution Report and let the parent manager decide.`,
+                        };
+                    }
+                    else if (teamSpec.length === 0) {
                         result = { success: false, output: 'create_team: the "team" array is empty or malformed. Provide at least one { agent, task } entry.' };
                     }
                     else {
@@ -1931,7 +1998,12 @@ discoveryAnswerCallback) {
                                 ? `${member.task}\n\n--- INCOMING MESSAGES ---\n${pendingMsgs.join('\n')}`
                                 : member.task;
                             const subGen = runAgentLoop(taskMessage, subAgentId, [], // each sub-agent starts with a clean conversation slate
-                            { ...effectiveConfig, model: config.workerModel || config.model }, workspacePath, abortSignal, sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback, // HITL propagated to all swarm sub-agents
+                            {
+                                ...effectiveConfig,
+                                model: config.workerModel || config.model,
+                                // v8.36.3 — increment depth so sub-agents can't unbounded-recurse via create_team
+                                _swarmDepth: (effectiveConfig._swarmDepth ?? 0) + 1,
+                            }, workspacePath, abortSignal, sentinelHasError, approvalCallback, nativeEditCallback, getCodeStructureCallback, mcpTools, callMcpToolCallback, worktreeReviewCallback, replaceSymbolCallback, hitlCommandCallback, // HITL propagated to all swarm sub-agents
                             mcpToolCategories, // v8.19.0 — each sub-agent re-applies its own RBAC filter
                             getDiagnosticsCallback, // v8.23.0 — sub-agents also get LSP passive feedback before their gate
                             listMcpResourcesCallback // v8.26.0 — Phase 3.4 resource discovery propagated to swarm sub-agents
@@ -2189,6 +2261,41 @@ discoveryAnswerCallback) {
                     recentlyEditedFiles.add(_editPath.trim());
                 }
             }
+            // ── v8.36.3: EJSONPARSE Recovery Interceptor ────────────────────────────
+            // Test 11 root cause #2: when npm hits malformed JSON it prints the
+            // corrupted snippet ("type": "modul"scripts": {) in the error output.
+            // The agent then grafted that error-substring into search_and_replace
+            // attempts — searching for text that exists in the error message but
+            // NOT in the file (which has been overwritten by intervening writes).
+            // Replace the raw npm error with a structured directive that pins the
+            // recovery to write_file (cannot fail on snippet match) and explicitly
+            // warns the agent that the error substring is NOT the file content.
+            if (toolName === 'run_command' && !result.success && typeof result.output === 'string') {
+                if (/EJSONPARSE|JSONParseError|JSON\.parse Invalid/i.test(result.output)) {
+                    const _pathMatch = result.output.match(/Invalid (\S+\.json)/i)
+                        || result.output.match(/parsing (\S+\.json)/i)
+                        || result.output.match(/(\S+\.json):\s*\d+:\d+/);
+                    const _badFile = _pathMatch ? _pathMatch[1] : 'package.json';
+                    result = {
+                        ...result,
+                        output: result.output +
+                            `\n\n[SYSTEM RECOVERY v8.36.3] EJSONPARSE detected in ${_badFile}.\n` +
+                            `Your in-context memory of this file is STALE — the corrupted substring quoted ` +
+                            `in the error above is NOT necessarily the current file content (the file may ` +
+                            `have been overwritten by intervening writes).\n\n` +
+                            `MANDATORY RECOVERY (in this exact order):\n` +
+                            `1. Call read_file("${_badFile}") to see the ACTUAL current content.\n` +
+                            `2. Call write_file("${_badFile}", <complete valid JSON>) to overwrite the entire file.\n` +
+                            `   DO NOT use search_and_replace — JSON corruption makes snippets unreliable.\n` +
+                            `3. Retry the original run_command.\n\n` +
+                            `Common JSON build errors:\n` +
+                            `• Missing comma between properties (e.g., "type":"module" "scripts":{...})\n` +
+                            `• Property merged into value (e.g., "type":"modul"scripts":{)\n` +
+                            `When in doubt, rewrite the file from scratch — it's a few lines.`,
+                    };
+                }
+            }
+            // ──────────────────────────────────────────────────────────────────────────
             // Build failure tracking + mandatory fix injection
             if (toolName === 'run_command') {
                 const cmd = (args.command || '').toLowerCase();

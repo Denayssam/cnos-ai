@@ -176,6 +176,22 @@ VERBATIM RULE [CRITICAL]: search_and_replace requires the search_snippet copied
 character-for-character from read_file output (tabs, spaces, newlines all exact).
 Never guess from memory. On MATCH ERROR, re-read; do NOT retry with a guess.
 
+[NON-NEGOTIABLE — v8.36.3] STALE CONTEXT RECOVERY:
+After ANY tool error containing "MATCH ERROR", "PATH ERROR", "EJSONPARSE",
+"JSONParseError", or "[SYSTEM RECOVERY]" — your IMMEDIATE next call MUST be
+read_file on the affected path. NOT search_and_replace. NOT write_file. NOT
+list_dir. ONLY read_file. Reason: the file's current state has diverged from
+your context window memory (intervening writes, error-message substrings that
+were never in the file, prior session corruption). Trying to edit blindly will
+fail every time. Read first, then act on what you actually see.
+
+[NON-NEGOTIABLE] ERROR ≠ FILE CONTENT:
+Error messages quoting file content (e.g., npm's "parsing near ..." dumps with
+the offending substring) are STALE. The file may have been overwritten between
+the error and your next action. NEVER copy substrings from an error message
+into a search_and_replace search_snippet — they describe a past state, not
+the current one. read_file first to see the actual current text.
+
 DUPLICATE PREVENTION: Before declaring a hook/import/variable, scan the file
 content you read. Re-declaring causes runtime crashes (Vite: "Identifier already
 declared"). If exists, skip the injection.
@@ -186,6 +202,11 @@ to matching closing tag). Partial-tag replacements corrupt the AST.
 GREP DISCIPLINE: grep is for LOCATING files, never for inspecting one you're about
 to edit. After a failed edit, your ONLY recovery is read_file (not grep). Avoid
 complex glob patterns in path_filter — ripgrep does not expand braces.
+
+JSON FILE EDITS: For package.json, tsconfig.json, and other small JSON config
+files — when you need to make ANY structural change (add field, fix syntax,
+rearrange), prefer write_file with the COMPLETE valid JSON. search_and_replace
+is fragile on JSON because comma placement and brace balance are unforgiving.
 
 ━━━ BUG INVESTIGATION ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
