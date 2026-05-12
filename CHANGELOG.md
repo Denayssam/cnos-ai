@@ -2,6 +2,26 @@
 
 ---
 
+## [v8.36.4] - The Continuation Audit Patch (Test 12 Triage)
+
+**Objetivo:** Cerrar la observación de Test 12 — la corrida quedó "tan cerca pero tan lejos": 25 iteraciones, el agente hizo progreso real (worktree limpio, package.json válido, src/* creado, una build casi pasando) pero el cap duro de iteraciones lo cortó antes de poder cerrar. La queja legítima: a veces el bot necesita 30, no 25, pero subir el cap global a 30 inflaría el costo de TODAS las corridas (incluyendo las que terminan en 15 iteraciones). La solución propuesta por el usuario: que el Manager mire el código y el progreso en la iteración 24 y decida si otorgar 10-15 iteraciones más. Esta versión implementa exactamente eso — extension *earned*, no free.
+
+- **Continuation Audit constants (`src/agentEngine.ts` líneas 88-96):** Tres constantes nuevas — `MAX_ITERATIONS = 25` (sin cambio), `CONTINUATION_AUDIT_TRIGGER_OFFSET = 1` (audit en la penúltima iteración) y `MAX_EXTENSION_ITERATIONS = 15` (techo absoluto por extensión, ergo el cap total nunca supera 40).
+
+- **Dynamic iteration ceiling (`src/agentEngine.ts` líneas 605-650):** El loop ahora usa `let effectiveMaxIterations` en lugar del const, inicializado a `MAX_ITERATIONS`. Cuando el agente entra a su última iteración permitida Y es top-level (`_swarmDepth === 0`) Y la audit aún no se disparó, el motor llama a `auditContinuation`. Si grants, `effectiveMaxIterations += verdict.iterations`; el loop continúa naturalmente con más presupuesto.
+
+- **auditContinuation function (`src/agentEngine.ts` líneas 2615-2715):** Nueva función helper que arma un mensaje al Manager model con el task original, la cola truncada de la conversación (~30 mensajes, tool outputs cortados a 400 chars), y un system prompt conservador: "el usuario paga por iteración. Default DENY. Solo extiende si (a) hay progreso reciente, (b) hay camino claro a completar en 5-15 iteraciones, (c) el agente NO está en panic loop sobre el mismo error, (d) la tarea NO está ya casi terminada". El auditor retorna un JSON `{extend: boolean, iterations: 5-15, reason: string}`; el motor lo parsea defensivamente (regex extract, clamp range, fallback a deny). Si el JSON falla parse o el LLM se equivoca, default DENY — fail-safe del lado del usuario.
+
+- **Top-level-only restriction:** La auditoría solo dispara en el loop top-level (`_swarmDepth === 0`). Sub-agents spawneados por `create_team` o el DAG dispatcher NO pueden pedir extensiones independientes. Razón: ya tuvimos la observación en Test 11 de la bomba de recursión cuando los sub-agents acumulaban iteraciones; permitirles también extender independientemente sería re-introducir el mismo problema con costo amplificado.
+
+- **Single-fire guard:** Con `continuationAuditFired` boolean, la auditoría ocurre EXACTAMENTE una vez por loop. No hay "extensión de extensión". Si los +15 también se queman sin terminar, el loop muere con el mensaje normal de MAX_ITERATIONS (showing the new effective ceiling).
+
+**Costo declarado:** Una llamada al Manager model con ~5-8k tokens de input + ~200 tokens output. A Sonnet 4.5 pricing eso es ~$0.015-0.025 por audit. Si extiende, el costo adicional escala con las iteraciones usadas (~$0.02-0.04 cada una en el worker model). Worst case: audit + 15 iteraciones extra = ~$0.40 adicionales por sesión que de otra manera moriría a 25 y forzaría retry completo. Best case: la audit detecta panic loop, niega, y el loop muere a tiempo sin gastar más.
+
+**Predicción:** El próximo Test 12 con prompt similar debería ver la audit dispararse al iter 25. Si el agente está cerca de cerrar (build casi green, archivos correctos), grant. Si está dando vueltas en el mismo error TS1295/EJSONPARSE sin recovery, deny. El usuario verá un yield visible en chat: "🧭 Continuation Audit granted +N iterations" o "❌ Continuation Audit denied extension".
+
+---
+
 ## [v8.36.3] - The Corruption Cascade Patch (Test 11 Triage)
 
 **Objetivo:** Cerrar el patrón de muerte económica observado en Test 11 ($3.50 quemados en ~75 iteraciones sin completar la tarea). Cuatro fixes quirúrgicos sobre la causa-raíz, sin agregar más shields al motor. El problema no era ausencia de defensas (Anti-Gaslighting, Quality Gate, Action Enforcement, Circuit Breaker, Sherlock, Pre-Merge QG y Lie Detector TODAS dispararon en Test 11) — era que las defensas detectaban síntomas mientras la cascada se alimentaba a sí misma: un package.json corrupto sobreviviente de Test 10 → npm imprime el snippet roto en cada error → el agente injerta ese substring en search_and_replace creyendo que es contenido actual del archivo → MATCH ERROR loop infinito → Manager respawneando create_team 4 veces buscando agentes "frescos" que heredan el mismo archivo corrupto pero con contexto limpio que no ve la corrupción.

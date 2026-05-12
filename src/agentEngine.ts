@@ -86,6 +86,14 @@ function resolveEndpointAndKey(model: string, config: EngineConfig): { endpointU
   return { endpointUrl: OPENROUTER_URL, resolvedKey: config.apiKey, resolvedModel: model };
 }
 const MAX_ITERATIONS = 25;
+// v8.36.4 — Continuation Audit constants. The penultimate iteration of each
+// agent loop triggers a Manager-model audit that decides whether to grant a
+// bounded extension. Test 12 showed Gemini 2.5 Pro needing ~30 iterations on
+// the task tracker CLI, and hard-stopping at 25 cost the entire prior $1+ of
+// work. Hard-stopping is correct as a default (cost guard) but the extension
+// is earned: only granted if the agent has a clear path to completion.
+const CONTINUATION_AUDIT_TRIGGER_OFFSET = 1; // audit at MAX_ITERATIONS - 1
+const MAX_EXTENSION_ITERATIONS = 15; // ceiling on a single grant
 
 // ─── RBAC Categories (v8.19.0 — Phase 3 Deep MCP) ───────────────────────────
 // Principle of Least Privilege for MCP tools. Each agent role is allowed a
@@ -593,15 +601,51 @@ export async function* runAgentLoop(
   }
   // ─────────────────────────────────────────────────────────────────────────
 
-  while (iterations < MAX_ITERATIONS) {
+  // v8.36.4 — Dynamic iteration ceiling. Starts at MAX_ITERATIONS but the
+  // Continuation Auditor may raise it once per session (top-level only).
+  let effectiveMaxIterations = MAX_ITERATIONS;
+  let continuationAuditFired = false;
+
+  while (iterations < effectiveMaxIterations) {
     if (abortSignal.aborted) {
       yield { type: 'error', message: '⊘ Cancelled by user' };
       return;
     }
 
     iterations++;
-    debugLog(workspacePath, `--- Iteration ${iterations}/${MAX_ITERATIONS} ---`);
-    yield { type: 'iterationCount', count: iterations, max: MAX_ITERATIONS };
+
+    // ── v8.36.4 Continuation Audit ──────────────────────────────────────────
+    // When the agent is about to start its LAST permitted iteration, give a
+    // Manager-model auditor a chance to grant a bounded extension. Strict
+    // single-fire, top-level-only (sub-agents can't independently inflate
+    // budget — observed Test 11 recursion bomb). Conservative auditor prompt
+    // defaults to DENY.
+    if (
+      !continuationAuditFired &&
+      iterations === effectiveMaxIterations &&
+      effectiveMaxIterations === MAX_ITERATIONS &&
+      (effectiveConfig._swarmDepth ?? 0) === 0
+    ) {
+      continuationAuditFired = true;
+      yield { type: 'thinking', text: '🧭 Continuation Audit: reviewing progress before final iteration…' };
+      try {
+        const verdict = await auditContinuation(messages, userMessage, agentId, effectiveConfig, abortSignal);
+        if (verdict.extend && verdict.iterations > 0) {
+          effectiveMaxIterations += verdict.iterations;
+          debugLog(workspacePath, `[v8.36.4 Continuation Audit] GRANTED +${verdict.iterations} iterations. Reason: ${verdict.reason}`);
+          yield { type: 'streamChunk', text: `\n\n🧭 **Continuation Audit** granted **+${verdict.iterations} iterations** (new ceiling: ${effectiveMaxIterations}).\nReason: ${verdict.reason}\n\n` };
+        } else {
+          debugLog(workspacePath, `[v8.36.4 Continuation Audit] DENIED. Reason: ${verdict.reason}`);
+          yield { type: 'thinking', text: `❌ Continuation Audit denied extension — ${verdict.reason}` };
+        }
+      } catch (e) {
+        debugLog(workspacePath, `[v8.36.4 Continuation Audit] FAILED to audit: ${String(e).slice(0, 200)}`);
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    debugLog(workspacePath, `--- Iteration ${iterations}/${effectiveMaxIterations} ---`);
+    yield { type: 'iterationCount', count: iterations, max: effectiveMaxIterations };
     yield { type: 'thinking', text: iterations === 1 ? `Agent ${agent.name} is planning…` : `Iteration ${iterations}: processing…` };
 
     // ── DAG Active Dispatcher (v8.17.2 — Phase 2) ────────────────────────────
@@ -2585,8 +2629,8 @@ export async function* runAgentLoop(
     }
   }
 
-  debugLog(workspacePath, `MAX_ITERATIONS (${MAX_ITERATIONS}) reached.`);
-  yield { type: 'streamChunk', text: `\n\n⚠️ Reached maximum iterations (${MAX_ITERATIONS}). The task was too long or the agent got stuck.` };
+  debugLog(workspacePath, `MAX_ITERATIONS (${effectiveMaxIterations}) reached.`);
+  yield { type: 'streamChunk', text: `\n\n⚠️ Reached maximum iterations (${effectiveMaxIterations}). The task was too long or the agent got stuck.` };
   yield { type: 'streamEnd' };
 }
 
@@ -2601,6 +2645,94 @@ async function detectIntent(userMessage: string, config: EngineConfig, signal: A
   const response = await callOpenRouterBlocking(routingMessages, { ...config, model: routerModel }, signal);
   return (response.content || '').trim().toLowerCase();
 }
+
+// ─── Continuation Auditor (v8.36.4) ───────────────────────────────────────────
+// Spawns at iteration MAX_ITERATIONS-1 to decide whether to grant the agent
+// more iterations. Conservative by design — defaults to NO extension unless
+// there is empirical evidence of progress + a clear short path to completion.
+// Always uses the Manager model (better reasoning than worker; this is the
+// budget gatekeeper, not a worker).
+interface AuditorVerdict {
+  extend: boolean;
+  iterations: number;
+  reason: string;
+}
+
+function summarizeHistoryForAudit(messages: ChatMessage[]): string {
+  // Pull last 30 messages; truncate tool outputs to first 400 chars each.
+  // The auditor needs SIGNALS (success, error, build state), not full payloads.
+  const tail = messages.slice(-30);
+  return tail.map(m => {
+    const role = m.role;
+    const rawContent: unknown = (m as any).content;
+    const content: string = typeof rawContent === 'string'
+      ? rawContent
+      : (rawContent == null ? '' : JSON.stringify(rawContent));
+    const truncated = content.length > 400 ? content.slice(0, 400) + '… [truncated]' : content;
+    // For assistant messages with tool_calls, surface the tool names called
+    const toolCalls = (m as any).tool_calls;
+    const toolHint = Array.isArray(toolCalls) && toolCalls.length > 0
+      ? ` [called: ${toolCalls.map((tc: any) => tc.function?.name ?? '?').join(', ')}]`
+      : '';
+    return `<${role}${toolHint}> ${truncated}`;
+  }).join('\n');
+}
+
+async function auditContinuation(
+  history: ChatMessage[],
+  originalTask: string,
+  agentId: string,
+  config: EngineConfig,
+  signal: AbortSignal,
+): Promise<AuditorVerdict> {
+  const auditSystemPrompt =
+    `You are the Fluxo Continuation Auditor.\n\n` +
+    `An agent loop is about to hit its iteration cap (${MAX_ITERATIONS}). ` +
+    `Decide whether the agent deserves a bounded extension (up to ${MAX_EXTENSION_ITERATIONS} more iterations).\n\n` +
+    `THE USER IS PAYING PER ITERATION. Default to DENY. Only EXTEND when ALL of the following hold:\n` +
+    `  • The agent has shown forward progress in the recent history (successful tool calls, not panic loops).\n` +
+    `  • There is a CLEAR remaining path to completion that fits in 5-15 more iterations.\n` +
+    `  • The agent is NOT stuck on the same error repeating (e.g., 3+ identical MATCH ERROR or build failures with no recovery).\n` +
+    `  • The task is NOT already substantially complete (don't extend just to polish).\n\n` +
+    `Output rules:\n` +
+    `  • Return ONE JSON object on a single line, NOTHING ELSE — no prose, no markdown, no fences.\n` +
+    `  • Schema: {"extend": boolean, "iterations": number, "reason": string}\n` +
+    `  • iterations: integer 5-15 when extending, 0 when denying.\n` +
+    `  • reason: ONE short sentence (<= 25 words) — what convinced you to extend / deny.`;
+
+  const auditUserContent =
+    `Agent: @${agentId}\n` +
+    `\n` +
+    `ORIGINAL TASK:\n${originalTask}\n` +
+    `\n` +
+    `RECENT HISTORY (tail of conversation, tool outputs truncated):\n${summarizeHistoryForAudit(history)}\n` +
+    `\n` +
+    `Return ONLY the JSON object.`;
+
+  const auditMessages: ChatMessage[] = [
+    { role: 'system', content: auditSystemPrompt },
+    { role: 'user', content: auditUserContent },
+  ];
+
+  try {
+    const auditConfig: EngineConfig = { ...config, maxTokens: 200 };
+    const response = await callOpenRouterBlocking(auditMessages, auditConfig, signal);
+    const raw = (response.content || '').trim();
+    const jsonMatch = raw.match(/\{[\s\S]*?\}/);
+    if (!jsonMatch) {
+      return { extend: false, iterations: 0, reason: 'auditor returned no JSON' };
+    }
+    const parsed = JSON.parse(jsonMatch[0]);
+    const extend = parsed.extend === true;
+    const itersRaw = Number(parsed.iterations);
+    const iters = Math.max(0, Math.min(MAX_EXTENSION_ITERATIONS, isFinite(itersRaw) ? Math.floor(itersRaw) : 0));
+    const reason = String(parsed.reason ?? '').slice(0, 200);
+    return { extend, iterations: extend ? Math.max(5, iters) : 0, reason };
+  } catch (e) {
+    return { extend: false, iterations: 0, reason: 'auditor failed: ' + String(e).slice(0, 100) };
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ─── OpenRouter API ───────────────────────────────────────────────────────────
 
