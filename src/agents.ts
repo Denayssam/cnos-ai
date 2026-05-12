@@ -1056,35 +1056,34 @@ For worktree lifecycle, the ONLY sanctioned tools are:
 
 // ─── Agent Router ──────────────────────────────────────────────────────────────
 
-/** Detect which agent should handle a message based on keywords or @mentions */
+/** Detect which agent should handle a message.
+ *
+ * v8.36.2 — Manager-as-front-door. Previously this function did keyword-scoring
+ * routing (e.g. messages containing 'create'/'file'/'typescript' went to @coder)
+ * and defaulted to @coder when nothing matched. That bypassed the documented
+ * architecture in the README ("Describe tu feature en el chat → @manager
+ * detecta el tipo de tarea") and made the Manager-model dropdown effectively
+ * dead — most coding prompts scored at least one @coder keyword and never
+ * reached the Manager brain. Test 10 surfaced this: every iteration ran on
+ * workerModel even though the user had picked a Manager model.
+ *
+ * The new contract: every message goes to @manager unless the user explicitly
+ * names another agent via @mention. Manager's system prompt knows how to
+ * short-circuit trivial edits (send_message to @coder) and orchestrate complex
+ * tasks (enter_plan_mode / create_team). Power users who want to skip the
+ * Manager turn keep the fast path by typing "@coder fix this".
+ */
 export function routeToAgent(message: string): string {
   const lower = message.toLowerCase();
 
-  // Explicit @mention overrides everything
-  if (lower.includes('@coder')) { return 'coder'; }
+  if (lower.includes('@coder'))     { return 'coder'; }
   if (lower.includes('@designer') || lower.includes('@diseñador')) { return 'designer'; }
   if (lower.includes('@dashboard')) { return 'dashboard'; }
-  if (lower.includes('@payments') || lower.includes('@pagos')) { return 'payments'; }
-  if (lower.includes('@manager')) { return 'manager'; }
+  if (lower.includes('@payments') || lower.includes('@pagos'))     { return 'payments'; }
+  if (lower.includes('@planner'))   { return 'planner'; }
+  if (lower.includes('@manager'))   { return 'manager'; }
 
-  // Score each agent by keyword matches
-  const scores: Record<string, number> = { coder: 0, designer: 0, dashboard: 0, payments: 0, manager: 0 };
-
-  for (const [agentId, agent] of Object.entries(AGENTS)) {
-    for (const kw of agent.keywords) {
-      if (lower.includes(kw)) {
-        scores[agentId] = (scores[agentId] || 0) + 1;
-      }
-    }
-  }
-
-  // Find highest scoring agent
-  const top = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
-  if (top && top[1] > 0) {
-    return top[0];
-  }
-
-  return 'coder'; // default
+  return 'manager';
 }
 
 // ─── MCP Knowledge Block (v8.19.0 — Phase 3 Deep MCP) ──────────────────────
