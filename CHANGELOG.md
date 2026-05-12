@@ -2,6 +2,20 @@
 
 ---
 
+## [v8.36.5] - The Friction Triage Patch (Test 13)
+
+**Objetivo:** Cerrar tres bugs concretos observados en Test 13 sin agregar arquitectura nueva. La corrida murió a 25 iteraciones porque (a) el Sanitizer de v8.36.3 no cubrió el caso de un worktree nuevo creado mid-loop, (b) el JSON extractor de la Continuation Audit fallaba en respuestas envueltas en markdown, y (c) el HITL whitelist era demasiado angosto — el agente intentó `mkdir src` y `del tasks.json` (operaciones triviales y seguras en un worktree sandbox) y el usuario las denegó manualmente, quemando 4 iteraciones de recovery. Cada fix es quirúrgico y trata un síntoma específico del test.
+
+- **Sanitizer scope expandido (`src/agentEngine.ts` líneas 161-193, 489-505, 2430-2438):** El sanitizer de JSON corrupto se refactorizó a un helper `sanitizeWorktreeJson(worktreeRoot, workspacePath)`. Ahora se llama en DOS puntos: (1) session restore al inicio del loop (comportamiento v8.36.3) y (2) inmediatamente después de un `enter_worktree` exitoso (nuevo). El Test 13 expuso el gap: el primer Sanitizer corrió sobre el worktree restaurado de Test 12 (correcto), pero el agente inmediatamente creó un worktree FRESCO con `enter_worktree`, ese worktree heredó del main branch un package.json corrupto, y el Sanitizer ya no aplicaba. Ahora aplica.
+
+- **Continuation Audit JSON extractor robusto (`src/agentEngine.ts` líneas 2716-2754):** El parser regex de v8.36.4 (`/\{[\s\S]*?\}/` non-greedy) fallaba cuando el modelo envolvía la respuesta en ` ```json ... ``` `, prefijaba prosa antes del JSON, o spaneaba múltiples líneas. El nuevo extractor (a) strippea fences de markdown primero, (b) localiza el primer `{` y cuenta llaves balanceadas (respetando strings y escapes) para encontrar el `}` matching, (c) cae al fallback de "parsear el response completo" si no encuentra braces. Test 13 mostró el síntoma: `auditor returned no JSON` al iter 24 — ahora el extractor maneja los formatos que Gemini realmente devuelve.
+
+- **HITL whitelist amplio (`src/agentEngine.ts` líneas 138-167):** El array `HITL_SAFE_PATTERNS` se expandió con `mkdir`, `md`, `del`/`erase` (single file, sin wildcards ni `/s`), `rm` (sin `-r`/`-f`/globs), `type`, `cat`, `touch`, `copy`/`cp`, `move`/`mv`, `rename`/`ren`. Las variantes peligrosas (`rm -rf`, `del /s *`, comandos con `&&`/`;`/`|`) siguen cayendo a aprobación humana porque el matcher solo evalúa el primer segmento y los regex tienen lookaheads negativos. Cierra el ciclo Test 13: `mkdir src` y `del tasks.json` ahora auto-aprueban — el agente hace progreso en vez de pivotear a `create_dir`/`delete_file` y gastar iteraciones.
+
+**Nota declarada:** Ninguno de estos fixes cambia comportamiento de producción cuando el motor está funcionando bien — solo cierran trampas observadas en Test 13. El test del usuario debe completar este escenario o exponer un cuarto fallo concreto que aún no hemos visto. Si el cuarto fallo aparece, la discusión estratégica (swarm vs single agent + integración local LLM vía Ollama) que el usuario inició queda en cola.
+
+---
+
 ## [v8.36.4] - The Continuation Audit Patch (Test 12 Triage)
 
 **Objetivo:** Cerrar la observación de Test 12 — la corrida quedó "tan cerca pero tan lejos": 25 iteraciones, el agente hizo progreso real (worktree limpio, package.json válido, src/* creado, una build casi pasando) pero el cap duro de iteraciones lo cortó antes de poder cerrar. La queja legítima: a veces el bot necesita 30, no 25, pero subir el cap global a 30 inflaría el costo de TODAS las corridas (incluyendo las que terminan en 15 iteraciones). La solución propuesta por el usuario: que el Manager mire el código y el progreso en la iteración 24 y decida si otorgar 10-15 iteraciones más. Esta versión implementa exactamente eso — extension *earned*, no free.

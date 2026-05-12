@@ -126,10 +126,66 @@ const HITL_SAFE_PATTERNS = [
     /^\s*echo\s+(?!.*>)/i, // echo without redirect
     /^\s*(node|npm|npx|yarn|pnpm|tsc|git|vsce|bun)\s+(--version|-v)\b/i,
     /^\s*(where|which)\b/i,
+    // v8.36.5 — Test 13 observed the agent attempting basic filesystem ops via
+    // shell ("mkdir src", "del tasks.json") and getting blocked by HITL.
+    // These are harmless on a sandboxed worktree and the bot's recovery to
+    // create_dir / delete_file just wasted iterations. Auto-approve safe
+    // single-arg filesystem primitives. The dangerous variants (rm -rf, del /s,
+    // mkdir with redirects/&&) still fall through to user approval because
+    // they contain `;`/`|`/`&&` and we only match the first segment.
+    /^\s*mkdir\s+(?!.*\.\.)[\w./\\-]+\s*$/i, // mkdir foo  (single relative path)
+    /^\s*md\s+(?!.*\.\.)[\w./\\-]+\s*$/i, // md foo     (Windows alias)
+    /^\s*(del|erase)\s+(?!.*\.\.)(?!.*[/\\]\*)[\w./\\-]+\s*$/i, // del foo.txt (single file, no wildcards, no /s)
+    /^\s*rm\s+(?!.*\.\.)(?!-r)(?!-f)(?!.*\*)[\w./\\-]+\s*$/i, // rm foo.txt  (POSIX, no -r/-f, no globs)
+    /^\s*type\s+(?!.*\.\.)[\w./\\-]+\s*$/i, // type foo.txt (Windows cat)
+    /^\s*cat\s+(?!.*\.\.)[\w./\\-]+\s*$/i, // cat foo.txt (POSIX)
+    /^\s*(touch|copy|cp|move|mv|rename|ren)\s+/i, // basic copy/move ops
 ];
 function isSafeCommandForAutoRun(command) {
     const firstSegment = command.split(/\s*[|;&]+\s*/)[0] ?? command;
     return HITL_SAFE_PATTERNS.some(p => p.test(firstSegment));
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// ── Stale JSON Corruption Sanitizer (v8.36.3 + v8.36.5 scope expansion) ───────
+// Test 11 surfaced the pattern: a prior session leaves package.json with
+// malformed JSON. The agent then tries to surgically repair text it can never
+// match — the corrupted substring leaks into context via error messages and
+// the agent edits the error text instead of the file. v8.36.3 added this
+// sanitizer only at session-restore. v8.36.5 extends it to fire AFTER any
+// successful enter_worktree call too (Test 13 case: fresh worktree inherited
+// a corrupted package.json from the main branch state).
+function sanitizeWorktreeJson(worktreeRoot, workspacePath) {
+    if (!worktreeRoot || !fs.existsSync(worktreeRoot)) {
+        return;
+    }
+    try {
+        const entries = fs.readdirSync(worktreeRoot);
+        for (const entry of entries) {
+            if (!entry.endsWith('.json')) {
+                continue;
+            }
+            const fp = path.join(worktreeRoot, entry);
+            try {
+                const stat = fs.statSync(fp);
+                if (!stat.isFile()) {
+                    continue;
+                }
+                const content = fs.readFileSync(fp, 'utf-8');
+                if (content.trim() === '') {
+                    continue;
+                }
+                JSON.parse(content);
+            }
+            catch {
+                try {
+                    fs.unlinkSync(fp);
+                    debugLog(workspacePath, `[Stale JSON Sanitizer] Deleted corrupted ${entry} at ${worktreeRoot} — agent will recreate via write_file`);
+                }
+                catch { /* unlink failure — non-fatal */ }
+            }
+        }
+    }
+    catch { /* readdir failure — non-fatal */ }
 }
 // ─────────────────────────────────────────────────────────────────────────────
 function debugLog(workspacePath, msg) {
@@ -461,48 +517,8 @@ discoveryAnswerCallback) {
             if (wts.worktreePath && fs.existsSync(wts.worktreePath)) {
                 activeWorktreePath = wts.worktreePath;
                 debugLog(workspacePath, `[Worktree] Session restored — branch: ${wts.branchName} → ${wts.worktreePath}`);
-                // ── v8.36.3: Stale JSON Corruption Sanitizer ─────────────────────────
-                // Test 11 root cause: a prior session left package.json with malformed
-                // JSON ("type": "modul"scripts": {). The agent then tried to surgically
-                // repair text it could never match — the corrupted substring leaked
-                // into the conversation history via error messages and the agent
-                // attempted to edit the error text instead of the actual file. The
-                // result was a 75-iteration recovery spiral that never converged.
-                //
-                // Fix: before the agent runs, JSON-parse every *.json at the worktree
-                // root. If any fail, DELETE the corrupted file silently. The agent
-                // will recreate it via write_file (correct path) instead of attempting
-                // search_and_replace on text it cannot match (broken path).
-                try {
-                    const wtRoot = wts.worktreePath;
-                    const entries = fs.readdirSync(wtRoot);
-                    for (const entry of entries) {
-                        if (!entry.endsWith('.json')) {
-                            continue;
-                        }
-                        const fp = path.join(wtRoot, entry);
-                        try {
-                            const stat = fs.statSync(fp);
-                            if (!stat.isFile()) {
-                                continue;
-                            }
-                            const content = fs.readFileSync(fp, 'utf-8');
-                            if (content.trim() === '') {
-                                continue;
-                            }
-                            JSON.parse(content);
-                        }
-                        catch (parseErr) {
-                            try {
-                                fs.unlinkSync(fp);
-                                debugLog(workspacePath, `[v8.36.3 Stale JSON Sanitizer] Deleted corrupted ${entry} at worktree root — agent will recreate it cleanly via write_file`);
-                            }
-                            catch { /* unlink failure — non-fatal, agent still gets a chance to overwrite */ }
-                        }
-                    }
-                }
-                catch { /* readdir failure — non-fatal */ }
-                // ──────────────────────────────────────────────────────────────────────
+                // v8.36.3 + v8.36.5: Stale JSON Corruption Sanitizer
+                sanitizeWorktreeJson(wts.worktreePath, workspacePath);
             }
         }
         catch { /* corrupted state — proceed without worktree context */ }
@@ -2252,6 +2268,13 @@ discoveryAnswerCallback) {
                         const wts = JSON.parse(fs.readFileSync(wtStateFile, 'utf-8'));
                         activeWorktreePath = wts.worktreePath || null;
                         debugLog(workspacePath, `[Worktree] Activated: ${wts.branchName} → ${activeWorktreePath}`);
+                        // v8.36.5 — Sanitize the freshly-created worktree's JSON files.
+                        // Closes the Test 13 scope gap: the v8.36.3 sanitizer ran on
+                        // session-restore but a NEW worktree spawned mid-loop could still
+                        // inherit a corrupted package.json from main branch state.
+                        if (activeWorktreePath) {
+                            sanitizeWorktreeJson(activeWorktreePath, workspacePath);
+                        }
                     }
                     catch { /* state file not written — no worktree context */ }
                     if (toolFailureTracker.has('read_file')) {
@@ -2513,12 +2536,60 @@ async function auditContinuation(history, originalTask, agentId, config, signal)
     try {
         const auditConfig = { ...config, maxTokens: 200 };
         const response = await callOpenRouterBlocking(auditMessages, auditConfig, signal);
-        const raw = (response.content || '').trim();
-        const jsonMatch = raw.match(/\{[\s\S]*?\}/);
-        if (!jsonMatch) {
-            return { extend: false, iterations: 0, reason: 'auditor returned no JSON' };
+        let raw = (response.content || '').trim();
+        // v8.36.5 — Defensive JSON extraction. Test 13 showed the non-greedy
+        // regex /\{[\s\S]*?\}/ failed when the model wrapped output in markdown
+        // fences (```json ... ```), included reasoning prose, or returned the
+        // JSON on multiple lines. Strip fences first, then locate the outermost
+        // balanced {...} block by brace counting.
+        raw = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
+        let extracted = null;
+        // Find first '{', then track brace depth to find the matching '}'.
+        const firstOpen = raw.indexOf('{');
+        if (firstOpen >= 0) {
+            let depth = 0;
+            let inString = false;
+            let escape = false;
+            for (let i = firstOpen; i < raw.length; i++) {
+                const ch = raw[i];
+                if (escape) {
+                    escape = false;
+                    continue;
+                }
+                if (ch === '\\' && inString) {
+                    escape = true;
+                    continue;
+                }
+                if (ch === '"') {
+                    inString = !inString;
+                    continue;
+                }
+                if (inString) {
+                    continue;
+                }
+                if (ch === '{') {
+                    depth++;
+                }
+                else if (ch === '}') {
+                    depth--;
+                    if (depth === 0) {
+                        extracted = raw.slice(firstOpen, i + 1);
+                        break;
+                    }
+                }
+            }
         }
-        const parsed = JSON.parse(jsonMatch[0]);
+        if (!extracted) {
+            // Fallback: try parsing the whole stripped response in case it's already pure JSON
+            try {
+                JSON.parse(raw);
+                extracted = raw;
+            }
+            catch {
+                return { extend: false, iterations: 0, reason: `auditor returned no parseable JSON (raw: "${raw.slice(0, 80)}")` };
+            }
+        }
+        const parsed = JSON.parse(extracted);
         const extend = parsed.extend === true;
         const itersRaw = Number(parsed.iterations);
         const iters = Math.max(0, Math.min(MAX_EXTENSION_ITERATIONS, isFinite(itersRaw) ? Math.floor(itersRaw) : 0));
