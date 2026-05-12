@@ -188,6 +188,57 @@ function sanitizeWorktreeJson(worktreeRoot, workspacePath) {
     catch { /* readdir failure — non-fatal */ }
 }
 // ─────────────────────────────────────────────────────────────────────────────
+// ── Worktree .gitignore Guard (v8.36.6) ───────────────────────────────────────
+// Test 15 surfaced the pattern: agent shipped a clean build, Pre-Merge QG
+// approved, user clicked merge — and exit_worktree(merge) failed because
+// node_modules contained .exe files that Windows had file-locked, so git
+// couldn't unlink them during the merge. The fix is upstream: never let
+// node_modules / dist / out enter the commit in the first place. This helper
+// reads the worktree's .gitignore (creates if missing) and appends entries
+// idempotently. Safe to call repeatedly — only writes if a needed entry is
+// absent. Non-fatal on any IO failure (worst case: agent has to manually fix
+// .gitignore, but the merge would still fail loudly rather than silently).
+const WORKTREE_GITIGNORE_REQUIRED_ENTRIES = [
+    'node_modules/',
+    'dist/',
+    'out/',
+    'build/',
+    '.fluxo/',
+];
+function ensureWorktreeGitignore(worktreeRoot, workspacePath) {
+    if (!worktreeRoot || !fs.existsSync(worktreeRoot)) {
+        return;
+    }
+    const gitignorePath = path.join(worktreeRoot, '.gitignore');
+    try {
+        let content = '';
+        if (fs.existsSync(gitignorePath)) {
+            content = fs.readFileSync(gitignorePath, 'utf-8');
+        }
+        const existingLines = content.split('\n').map(l => l.trim());
+        const missing = [];
+        for (const required of WORKTREE_GITIGNORE_REQUIRED_ENTRIES) {
+            const bareForm = required.replace(/\/$/, '');
+            const alreadyPresent = existingLines.some(l => l === required || l === bareForm);
+            if (!alreadyPresent) {
+                missing.push(required);
+            }
+        }
+        if (missing.length === 0) {
+            return;
+        }
+        const prefix = content.length > 0 && !content.endsWith('\n') ? '\n' : '';
+        const block = `${prefix}\n# Fluxo AI v8.36.6 — Worktree merge safety (prevent locked-binary conflicts)\n${missing.join('\n')}\n`;
+        fs.appendFileSync(gitignorePath, block, 'utf-8');
+        debugLog(workspacePath, `[Worktree .gitignore Guard] Added ${missing.length} entries (${missing.join(', ')}) to ${gitignorePath} — prevents Windows file-lock merge conflicts on compiled binaries`);
+    }
+    catch {
+        // Read-only filesystem, permission error, or no git environment — non-fatal.
+        // The merge may still hit the original conflict, but that's strictly no
+        // worse than pre-v8.36.6 behavior.
+    }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 function debugLog(workspacePath, msg) {
     if (!workspacePath || !path.isAbsolute(workspacePath)) {
         console.warn('[debugLog] Skipped — workspacePath is empty or not absolute:', JSON.stringify(workspacePath));
@@ -519,6 +570,8 @@ discoveryAnswerCallback) {
                 debugLog(workspacePath, `[Worktree] Session restored — branch: ${wts.branchName} → ${wts.worktreePath}`);
                 // v8.36.3 + v8.36.5: Stale JSON Corruption Sanitizer
                 sanitizeWorktreeJson(wts.worktreePath, workspacePath);
+                // v8.36.6: Worktree .gitignore guard (node_modules, dist, build, out)
+                ensureWorktreeGitignore(wts.worktreePath, workspacePath);
             }
         }
         catch { /* corrupted state — proceed without worktree context */ }
@@ -2274,6 +2327,13 @@ discoveryAnswerCallback) {
                         // inherit a corrupted package.json from main branch state.
                         if (activeWorktreePath) {
                             sanitizeWorktreeJson(activeWorktreePath, workspacePath);
+                            // v8.36.6 — Worktree .gitignore guard. Prevents the Test 15
+                            // failure where exit_worktree(merge) collided on Windows-locked
+                            // node_modules/*.exe files when git tried to apply the branch
+                            // diff to main. Injecting node_modules/, dist/, etc. into
+                            // .gitignore BEFORE any npm install / tsc run means git never
+                            // tracks those paths, so the merge moves only source code.
+                            ensureWorktreeGitignore(activeWorktreePath, workspacePath);
                         }
                     }
                     catch { /* state file not written — no worktree context */ }

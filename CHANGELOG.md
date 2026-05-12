@@ -2,6 +2,32 @@
 
 ---
 
+## [v8.36.6] - The Merge Safety Patch (Test 15 Last-Mile)
+
+**Objetivo:** Cerrar el único fallo que impidió a Test 15 cruzar la línea de meta. La corrida llegó más lejos que cualquier test anterior: Sonnet 4.5 + worktree limpio + Sanitizer + nuevo HITL whitelist construyó el proyecto, llegó a `npm run build` green, el Pre-Merge Quality Gate (v8.35.1) lo certificó, el usuario clickeó merge — y entonces `exit_worktree(merge)` falló con conflicto en `node_modules/@esbuild/win32-x64/esbuild.exe` porque Windows tenía el binario file-locked y git no pudo unlink durante el merge. La cadena de eventos posterior (cmd.exe ENOENT → Financial Killswitch) fue corolario del primer fallo, no causa independiente.
+
+El problema NO era de razonamiento del agente — era que `node_modules/` estaba siendo commiteado al worktree branch porque la carpeta de testing del usuario no tenía `.gitignore` excluyéndolo. Cuando el motor intentó mergear ese branch a main, git se tropezó moviendo binarios bloqueados.
+
+- **`ensureWorktreeGitignore` helper (`src/agentEngine.ts` líneas 196-238):** Nuevo helper idempotente que lee/crea el `.gitignore` en la raíz del worktree y appendea entradas faltantes del set `[node_modules/, dist/, out/, build/, .fluxo/]`. Si todas ya están presentes, no-op. Si el archivo no existe, lo crea. Si la línea está en bare form (`node_modules` sin slash), se considera presente. Falla silenciosa en filesystems read-only o sin permisos — non-fatal por construcción, ya que el peor caso es comportamiento idéntico al pre-v8.36.6.
+
+- **Llamado en DOS puntos (mirror de Sanitizer scope):** (1) session restore al inicio de `runAgentLoop`, justo después de `sanitizeWorktreeJson` para worktrees existentes; (2) inmediatamente después de un `enter_worktree` exitoso, para worktrees recién creados ANTES de que el agente corra cualquier `npm install`. El timing es crítico: la inyección debe ocurrir antes del primer commit del worktree, sino `node_modules` ya está trackeado y git lo mantiene.
+
+**Trade-off declarado:** Inyectamos 5 entradas al `.gitignore` del usuario sin pedir permiso. Para un proyecto greenfield (caso de uso típico de worktrees) esto es exactamente lo que el usuario querría. Para un proyecto preexistente con un `.gitignore` cuidadosamente curado, agregamos hasta 5 líneas comentadas con el header `# Fluxo AI v8.36.6 — Worktree merge safety`. Idempotente, fácil de revertir manualmente.
+
+**Predicción para Test 16:** Mismo prompt task-tracker-CLI + Sonnet 4.5 + worktree limpio. Cadena esperada:
+1. `enter_worktree` crea branch ✅
+2. Sanitizer + .gitignore guard corren ✅
+3. Agente hace `npm init`, `npm install typescript`, scaffold ✅
+4. `npm run build` green ✅
+5. Pre-Merge QG aprueba ✅
+6. `exit_worktree(merge)` ya NO toca `node_modules/*.exe` porque git nunca los trackeó → **merge limpio ✅**
+7. Smoke test `node dist/index.js add "buy milk"` ✅
+8. **Tarea completa por primera vez end-to-end.**
+
+Si el cmd.exe ENOENT aparece otra vez, eso es 100% problema de tu sesión de VS Code (reiniciar VS Code desde una terminal fresca lo cura) y no de Fluxo.
+
+---
+
 ## [v8.36.5] - The Friction Triage Patch (Test 13)
 
 **Objetivo:** Cerrar tres bugs concretos observados en Test 13 sin agregar arquitectura nueva. La corrida murió a 25 iteraciones porque (a) el Sanitizer de v8.36.3 no cubrió el caso de un worktree nuevo creado mid-loop, (b) el JSON extractor de la Continuation Audit fallaba en respuestas envueltas en markdown, y (c) el HITL whitelist era demasiado angosto — el agente intentó `mkdir src` y `del tasks.json` (operaciones triviales y seguras en un worktree sandbox) y el usuario las denegó manualmente, quemando 4 iteraciones de recovery. Cada fix es quirúrgico y trata un síntoma específico del test.
