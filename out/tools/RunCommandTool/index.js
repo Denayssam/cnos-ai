@@ -26,18 +26,10 @@ exports.TOOL_DEF = {
     type: 'function',
     function: {
         name: 'run_command',
-        description: 'Execute a shell command in the workspace directory. ' +
-            'CRITICAL: DO NOT use this tool to read files (e.g., cat, type, Get-Content). You MUST use read_file instead. Bypassing this will result in instant failure. ' +
-            'On Windows use Windows commands (dir, del, move, copy) — never Linux commands (ls, rm -rf, mv, cp). ' +
-            'Always quote paths that contain spaces. ' +
-            'WORKTREE NOTE: If a Git Worktree is active, do NOT use "cd" to navigate into it. ' +
-            'All native tools (read_file, run_command, replace_block) already operate on the correct ' +
-            'workspace context automatically — attempting "cd <worktree-path>" will break the working directory. ' +
-            'WINDOWS ENOENT RULE (v8.16.8): If npm run build (or any command) fails with ENOENT related to cmd.exe ' +
-            'or spawnSync, do NOT try to use PowerShell, node -e, or any hacking script as a workaround. ' +
-            'It is a Node environment error — the OS shell is unreachable. Yield to human and stop the task. ' +
-            'MICRO-ROLLBACK ALLOWED (v8.16.13): "git restore <path>" is explicitly permitted and is your CTRL+Z ' +
-            'when an edit catastrophically breaks a single file. Use it before attempting any further fixes.',
+        description: 'Execute a shell command (npm/tsc/git/firebase). NEVER for reading files (use read_file) ' +
+            'or for ls/find/grep/cat (use glob/grep/list_dir/search_in_files). Worktree is auto-routed — ' +
+            'do NOT use "cd .fluxo/worktrees/...". Quote paths with spaces. ' +
+            '"git restore <path>" is your CTRL+Z when an edit breaks a file.',
         parameters: {
             type: 'object',
             properties: {

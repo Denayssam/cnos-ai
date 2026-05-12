@@ -45,14 +45,8 @@ exports.TOOL_DEF = {
     type: 'function',
     function: {
         name: 'replace_block',
-        description: `Replace a text block in a file using semantic string-based targeting — no line numbers required.
-MANDATORY WORKFLOW: (1) Call read_file to get the current content. (2) Copy the exact block you want to replace as search_snippet — include 2-3 lines of surrounding context to guarantee uniqueness. (3) Call replace_block with your new replace_snippet.
-MATCHING: Tries exact match first; if whitespace/indentation differs, automatically falls back to fuzzy line-by-line matching that ignores leading/trailing spaces.
-FAIL-SAFE: If search_snippet is not found (hallucinated character, wrong indentation), the tool does NOTHING and returns an error — the file is never corrupted. Call read_file again and re-copy the block verbatim.
-STRICT RULES:
-  • search_snippet must be unique in the file — fails if it matches more than once (add more surrounding lines).
-  • Use replace_snippet = "" to delete the block without inserting anything.
-  • Does NOT bypass guards unless healing_mode: true is set.`,
+        description: `Replace a text block by exact + fuzzy matching — no line numbers.
+read_file FIRST → copy search_snippet verbatim with 2-3 lines of context for uniqueness → call. replace_snippet="" deletes. On not-found the file is untouched; re-read and retry with the verbatim block.`,
         parameters: {
             type: 'object',
             properties: {

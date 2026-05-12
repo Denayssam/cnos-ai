@@ -11,14 +11,15 @@ const OS_DIRECTIVE = _isWindows
 
 You are running on Windows. run_command uses Windows shell only.
 
-For shell commands: use dir/del/move/copy/md (not ls/rm/mv/cp/mkdir -p).
+For shell commands: use dir/del/move/copy (not ls/rm/mv/cp).
 For builds and git: npm/tsc/git work identically on every OS.
 
 File reads via terminal are BLOCKED at engine level — use read_file:
   ❌ type/more/cat/head/tail "src\\file.js"  → use read_file('src/file.js')
 
-Directory creation: use create_dir('src/components') — Windows mkdir does NOT
-accept the -p flag. Native md works but create_dir is preferred for clarity.
+Directory creation: ALWAYS use create_dir('src/components'). NEVER call
+'mkdir' or 'md' via run_command — they fail noisily when the directory
+already exists, burning iterations on recovery. create_dir is idempotent.
 
 Paths in Windows: backslash separator (src\\components\\Button.tsx). Quote any
 path containing spaces. Engine normalizes paths automatically; always use

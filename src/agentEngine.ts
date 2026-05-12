@@ -1635,24 +1635,40 @@ export async function* runAgentLoop(
           // ─────────────────────────────────────────────────────────────────────
         } else if (toolName === 'search_and_replace' && nativeEditCallback) {
           yield { type: 'thinking', text: '🔍 Applying VS Code native edit…' };
-          result = await nativeEditCallback(
-            String(args.path ?? ''),
-            String(args.search_snippet ?? ''),
-            String(args.replace_snippet ?? '')
+          // v8.36.1 — Aliasing parity with SearchReplaceTool.execute(). Tier-1
+          // models (Gemini 2.5 Pro, Claude 3.7) emit file_path/filepath and
+          // search_pattern/replace_pattern instead of the canonical names.
+          // Without this fallback the engine forwarded empty strings to
+          // applyNativeEdit, which surfaced as "File not found: ." — observed
+          // in Test 9 with Gemini on package.json.
+          const _srPath = String(
+            args.path ?? args.file_path ?? args.filepath ?? ''
           );
-          // ── Smart Failure Interceptor (v8.16.22 — Strict Fallback) ─────────
-          // The previous gentle hint allowed the agent to drift into grep abuse
-          // when search_and_replace missed. Replace with a strict directive that
-          // forbids grep / guessing entirely and pins read_file as the only
-          // legal recovery path.
+          const _srSearch = String(
+            args.search_snippet ?? args.search ?? args.old_code ?? args.search_pattern ?? ''
+          );
+          const _srReplace = String(
+            args.replace_snippet ?? args.replace ?? args.new_code ?? args.replace_pattern ?? ''
+          );
+          result = await nativeEditCallback(_srPath, _srSearch, _srReplace);
+          // ── Smart Failure Interceptor (v8.16.22 + v8.36.1) ─────────────────
+          // v8.36.1 — Branch the recovery directive on failure mode. Path
+          // misses ("File not found") demand list_dir; content misses demand
+          // read_file. Conflating them (the v8.16.22 behavior) sent the agent
+          // into the wrong recovery loop in Test 9.
           if (!result.success) {
+            const _isPathMiss = /File not found/i.test(result.output);
             result = {
               ...result,
-              output: result.output +
-                '\n\n[SYSTEM ENFORCEMENT] MATCH ERROR. You hallucinated the search_snippet. ' +
-                "You are STRICTLY FORBIDDEN from using 'grep' or guessing to fix this. " +
-                "You MUST immediately use 'read_file' to extract the exact lines verbatim. " +
-                'Any other action will result in system failure.',
+              output: result.output + (_isPathMiss
+                ? '\n\n[SYSTEM ENFORCEMENT] PATH ERROR. The file path could not be opened. ' +
+                  'Call list_dir to enumerate the directory and verify the EXACT relative path ' +
+                  '(check the alias you used: the canonical arg is `path`, not file_path/filepath). ' +
+                  'Then retry search_and_replace with the corrected path.'
+                : '\n\n[SYSTEM ENFORCEMENT] MATCH ERROR. You hallucinated the search_snippet. ' +
+                  "You are STRICTLY FORBIDDEN from using 'grep' or guessing to fix this. " +
+                  "You MUST immediately use 'read_file' to extract the exact lines verbatim. " +
+                  'Any other action will result in system failure.'),
             };
           }
           // ──────────────────────────────────────────────────────────────────

@@ -6,20 +6,8 @@ exports.TOOL_DEF = {
     type: 'function',
     function: {
         name: 'replace_symbol',
-        description: `Replace a complete logical block (function, class, variable, React component) by looking up its exact name in the Abstract Syntax Tree (AST) via the VS Code Language Server.
-
-WHEN TO USE: Any time you need to rewrite an entire function, class, or named component. The LSP finds the exact code boundaries — you never count lines or copy snippets.
-
-MANDATORY WORKFLOW:
-1. Call get_code_structure or read_file to confirm the exact symbol name (case-sensitive).
-2. Call replace_symbol with: file_path, symbol_name, and new_code (your complete replacement).
-3. The Language Server locates the AST node, extracts its precise Range, and replaces it atomically.
-
-FAIL-SAFE: If symbol_name is not found, the tool returns an error and the file is NEVER modified.
-  → Use get_code_structure to list available symbol names before retrying.
-
-FALLBACK: For files without LSP support (plain text, config files, unsupported languages),
-  use replace_block with search_snippet + replace_snippet instead.`,
+        description: `Replace a named function/class/component via LSP — no line counting.
+Call get_code_structure first to confirm the exact symbol_name (case-sensitive). On not-found the file is untouched; retry with the correct name. For files without LSP support use search_and_replace.`,
         parameters: {
             type: 'object',
             properties: {

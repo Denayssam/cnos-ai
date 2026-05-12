@@ -45,12 +45,8 @@ exports.TOOL_DEF = {
     type: 'function',
     function: {
         name: 'replace_lines',
-        description: `Replace an exact range of lines in a file using coordinate-based targeting.
-MANDATORY WORKFLOW: (1) Call read_file to get current line numbers. (2) Identify start_line and end_line for the block to replace. (3) Call replace_lines with new_content.
-CRITICAL: Line numbers shift after every edit — always call read_file again before a subsequent replace_lines on the same file.
-Use new_content = "" to delete the line range without inserting anything.
-NEVER skip read_file — guessing line numbers without reading first is PROHIBITED.
-TO INSERT NEW LINES WITHOUT DELETING: Set start_line and end_line to the exact same number (the line you want to target). In new_content, write the original text of that line, add a newline character (\\n), and then write your new code.`,
+        description: `Replace a 1-based line range. read_file FIRST (line numbers shift after every edit).
+new_content="" deletes the range. To insert without deleting: set start_line=end_line and prepend the original line text + \\n in new_content.`,
         parameters: {
             type: 'object',
             properties: {

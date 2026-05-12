@@ -42,39 +42,9 @@ exports.TOOL_DEF = {
     type: 'function',
     function: {
         name: 'search_and_replace',
-        description: `Replace a specific block of code in a file using contextual search — no line numbers required.
-PREFERRED EDITING TOOL: Use this for small, surgical edits guided by the Verbatim Rule.
-
-⚠️ SCOPE LIMIT (v8.16.18): If you need to inject a massive new React component, DO NOT use this tool. Use insert_lines instead.
-
-⚠️ UDIFF-STYLE PRECISION (v8.17.3 — read this before every call):
-  Guessing whitespace IS THE #1 cause of MATCH ERRORS in this tool. Tabs vs.
-  spaces, trailing whitespace, CRLF vs. LF, indentation drift — all of them
-  silently break the match even when the code "looks right" in your context.
-  HARD RULE:
-    1. ALWAYS call read_file (or get_repo_map → read_file) immediately before
-       this tool to capture the file in its current state. Reading from memory
-       of a previous turn is NOT allowed — files mutate.
-    2. Copy the search_snippet VERBATIM from the read_file output, character
-       for character, including every space and tab. Do NOT retype.
-    3. Format the replace_snippet like a unified diff hunk: keep the SAME
-       indentation level as the search_snippet's leading whitespace, preserve
-       the SAME line-ending style, and leave NO trailing whitespace on new
-       lines you add.
-    4. If the previous call returned MATCH ERROR, do NOT retry with a guessed
-       snippet — re-read the file and copy verbatim again. Your guess is wrong.
-
-STRATEGY: In 'search_snippet', include enough context (2–3 lines before and after the target change) to ensure the match is unique in the file. Minor indentation differences are tolerated via fuzzy whitespace-normalization, but the fuzzy fallback is a safety net — it is NOT a license to improvise indentation.
-WORKFLOW:
-  1. Call read_file to get the current file content (MANDATORY — see UDIFF rule above).
-  2. Copy the exact block you want to replace as search_snippet (include surrounding context for uniqueness).
-  3. Call search_and_replace — the engine applies the change in the VS Code editor (file stays unsaved for review).
-  4. After the call, tell the user: "Cambio aplicado en el editor. Revísalo y presiona Ctrl+S para guardar."
-RULES:
-  • search_snippet must match a unique block — add more surrounding lines if ambiguous.
-  • No AST guards: the edit appears in VS Code for visual review before saving.
-  • Use replace_snippet = "" to delete a block.
-  • Do NOT call further edit tools on the same file before the user confirms with Ctrl+S.`,
+        description: `Surgical edit by contextual search — no line numbers needed.
+Workflow: read_file FIRST → copy search_snippet VERBATIM (every space/tab/newline) → call. Use replace_snippet="" to delete.
+For >50 line injections use insert_lines instead. On MATCH ERROR re-read the file (your snippet is wrong); never guess.`,
         parameters: {
             type: 'object',
             properties: {
