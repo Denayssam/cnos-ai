@@ -1,4 +1,6 @@
 import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import { NativeTool, ToolResult } from '../shared';
 
 // ─── Strengthened Windows Spawn (v8.24.0) ────────────────────────────────────
@@ -139,6 +141,37 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
     return { success: false, output: `Blocked dangerous command: ${cmd}` };
   }
 
+  // ── File-Creation-via-Shell Shield (v8.36.7) ─────────────────────────────────
+  // MUST run BEFORE the Anti-Hacker (read) shield below, because the CLI_FILE_READ
+  // regex matches the bare verb `type` and would mislabel a CREATE intent
+  // (`type nul > src\store.ts`) as a blocked "file read", suggesting read_file —
+  // the wrong tool. Test 16 dogfooding: @coder tried `type nul > src\store.ts` to
+  // scaffold an empty file, got "lectura bloqueada", never learned to use
+  // write_file, and burned iterations. Here we catch the file-CREATION idioms
+  // explicitly and route the agent to the correct tool (write_file). Conservative
+  // by design: we target the known creation verbs, NOT every `>` redirection, so
+  // legitimate command-output logging / `2>&1` is never false-positived.
+  const FILE_CREATE_VIA_SHELL = [
+    /\btype\s+nul\s*>>?/i,                       // type nul > file        (cmd)
+    /\becho\b[^|]*>>?\s*["']?[\w.$/\\-]/i,        // echo ... > file        (cmd/sh)
+    /\bcopy\s+con\b/i,                            // copy con file          (cmd)
+    /\bfsutil\s+file\s+createnew\b/i,             // fsutil file createnew  (cmd)
+    /\bNew-Item\b[^|]*-ItemType\s+File/i,         // New-Item -ItemType File (PS)
+    /(?:^|[|;&]\s*)ni\s+[^|]*-ItemType\s+File/i,  // ni -ItemType File       (PS)
+    /\b(?:Set-Content|Add-Content|Out-File)\b/i,  // PowerShell write cmdlets
+    /(?:^|[|;&]\s*)touch\s+\S/i,                   // touch file             (POSIX)
+  ];
+  if (FILE_CREATE_VIA_SHELL.some(p => p.test(cmd))) {
+    return {
+      success: false,
+      output:
+        '[SYSTEM SHIELD] Para CREAR o ESCRIBIR un archivo usa la herramienta write_file(path, content) — ' +
+        'nunca redirección de shell (type nul >, echo >, copy con, New-Item, touch). ' +
+        'write_file crea los directorios padre automáticamente y es idempotente, ' +
+        'incluso para archivos vacíos. La terminal es EXCLUSIVA para npm/tsc/git.',
+    };
+  }
+
   // ── Anti-Hacker Shield: block CLI direct file-reading ───────────────────────
   // Only the FIRST segment (before any pipe) is checked — this allows legitimate
   // pipeline filtering like "npm run build | head -50" or "tsc 2>&1 | grep error".
@@ -249,6 +282,57 @@ export function execute(args: Record<string, any>, workspacePath: string): ToolR
     const stdout = err.stdout ? String(err.stdout).trim() : '';
     const stderr = err.stderr ? String(err.stderr).trim() : '';
     const combined = [stdout, stderr].filter(Boolean).join('\n').trim();
+
+    // ── Missing-script Hint + Auto-Repair (v8.36.7) ────────────────────────────
+    // Test 16 dogfooding: @coder ran `npm run build` against a package.json it had
+    // just written WITHOUT a "scripts.build" entry, got `Missing script: "build"`,
+    // then thrashed (`npx tsc --verbose` → TS5093) into MAX_ITERATIONS. Two layers:
+    //   (1) Auto-repair — if package.json exists, lacks the script, and the value is
+    //       SAFELY inferable (build→tsc, gated on tsconfig.json; start→node dist/index.js),
+    //       add ONLY that one script and announce it (transparent, never silent;
+    //       never overwrites; reversible via the engine's git checkpoint + worktree diff).
+    //   (2) Hint — otherwise, append an actionable directive so the raw npm error
+    //       becomes "read_file → add script with write_file → re-run", speaking the
+    //       same language as the @coder SCAFFOLD PROTOCOL prompt (Cohesión Sistémica).
+    const scriptRunMatch = cmd.match(/^\s*(?:npm|yarn|pnpm)\s+run\s+([\w:-]+)/i);
+    if (scriptRunMatch && /missing script/i.test(combined)) {
+      const scriptName = scriptRunMatch[1];
+      const pkgPath = path.join(workspacePath, 'package.json');
+      try {
+        if (fs.existsSync(pkgPath)) {
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+          pkg.scripts = pkg.scripts || {};
+          if (!pkg.scripts[scriptName]) {
+            const hasTsconfig = fs.existsSync(path.join(workspacePath, 'tsconfig.json'));
+            let inferred: string | undefined;
+            if (scriptName === 'build' && hasTsconfig) inferred = 'tsc';
+            else if (scriptName === 'start') inferred = 'node dist/index.js';
+            if (inferred) {
+              pkg.scripts[scriptName] = inferred;
+              fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf-8');
+              return {
+                success: false,
+                output:
+                  `[SYSTEM AUTO-REPAIR] package.json no tenía "scripts.${scriptName}". ` +
+                  `He añadido "${scriptName}": "${inferred}". Revisa el cambio y vuelve a ejecutar ` +
+                  `\`npm run ${scriptName}\`. (Cambio acotado y reversible: queda registrado en el ` +
+                  `checkpoint del Time Machine y en el diff del worktree antes de cualquier merge.)`,
+              };
+            }
+          }
+        }
+      } catch { /* fall through to the hint — auto-repair must never throw */ }
+      return {
+        success: false,
+        output:
+          combined + '\n\n' +
+          `[SYSTEM HINT] El script "${scriptName}" no existe en package.json. ` +
+          `NO reintentes el comando ni improvises npx con flags. ` +
+          `Usa read_file('package.json') → añade "${scriptName}" al bloque "scripts" con write_file → ` +
+          `re-ejecuta. Para un proyecto TypeScript, "build": "tsc".`,
+      };
+    }
+
     return { success: false, output: combined || errMsg || 'Command failed with no output' };
   }
 }

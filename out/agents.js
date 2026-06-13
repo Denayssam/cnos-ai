@@ -20,6 +20,10 @@ For builds and git: npm/tsc/git work identically on every OS.
 File reads via terminal are BLOCKED at engine level — use read_file:
   ❌ type/more/cat/head/tail "src\\file.js"  → use read_file('src/file.js')
 
+File CREATION via terminal is BLOCKED — use write_file (even for empty files):
+  ❌ type nul > src\\file.ts | echo. > x | copy con | New-Item -ItemType File
+  ✅ write_file('src/file.ts', '<content>')  → creates parent dirs, idempotent
+
 Directory creation: ALWAYS use create_dir('src/components'). NEVER call
 'mkdir' or 'md' via run_command — they fail noisily when the directory
 already exists, burning iterations on recovery. create_dir is idempotent.
@@ -29,7 +33,8 @@ path containing spaces. Engine normalizes paths automatically; always use
 RELATIVE paths from repo root.
 
 Forbidden Windows commands (will fail or be intercepted):
-  ls, pwd, cat, rm -rf, mv, cp, chmod, touch, type, more, head, tail, mkdir -p
+  ls, pwd, cat, rm -rf, mv, cp, chmod, touch, type, more, head, tail, mkdir -p,
+  type nul >, echo >, copy con, New-Item -ItemType File (use write_file instead)
 
 ─────────────────────────────────────────────────────────────────────────────────
 `
@@ -39,6 +44,8 @@ Forbidden Windows commands (will fail or be intercepted):
 Standard POSIX commands available: ls, rm, mv, cp, mkdir -p.
 Forward-slash path separator: src/components/Button.tsx
 File reads via terminal still discouraged — prefer read_file for code inspection.
+File creation via terminal (touch, echo > file, > file) is BLOCKED — use
+write_file (even for empty files: creates parent dirs, idempotent).
 
 ─────────────────────────────────────────────────────────────────────────────────
 `;
@@ -218,6 +225,18 @@ is fragile on JSON because comma placement and brace balance are unforgiving.
 CODE-FIRST: When user requests modify access/features/behaviors, ALWAYS check
 if logic is in the code first. Never assume external admin panel/database is
 needed before reading the source.
+
+━━━ PROJECT INIT / SCAFFOLD PROTOCOL [NON-NEGOTIABLE] ━━━━━━━━━━━━━━━━━━━━━━━
+
+When scaffolding a NEW project (no package.json yet, or one you just created):
+1. Create package.json with write_file and INCLUDE a complete "scripts" block for
+   everything you will run — at minimum "build". For a TypeScript project:
+     "scripts": { "build": "tsc", "start": "node dist/index.js" }
+2. NEVER run npm run build (or npm run <X>) before confirming package.json
+   actually contains that script. Running a script that does not exist burns iterations.
+3. If npm run <X> fails with 'Missing script: <X>': do NOT retry the command,
+   do NOT improvise 'npx tsc --verbose' or random flags. read_file('package.json') →
+   add the missing script with write_file → re-run. ONE corrective path, nothing else.
 
 ━━━ BUILD REPAIR PROTOCOL [NON-NEGOTIABLE] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
