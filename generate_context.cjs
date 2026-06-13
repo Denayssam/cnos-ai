@@ -6,9 +6,15 @@ const OUTPUT_FILE = 'cnos_full_context.txt';
 const PACKAGE_JSON_PATH = path.join(__dirname, 'package.json');
 
 // 🛡️ The Ignore List
+// Basenames matched at any depth. `public/assets` was useless here because the
+// check compares basenames, not relative paths — the bundle output lived under
+// android/app/src/main/assets/public/ and was matching by basename "assets" not
+// being in the list, so the entire Capacitor-copied web bundle got slurped in.
 const IGNORE_DIRS = [
-    'node_modules', '.git', 'dist', 'build', 'coverage', 
-    '.firebase', '.github', '.vscode', 'public/assets'
+    'node_modules', '.git', 'dist', 'build', 'coverage',
+    '.firebase', '.github', '.vscode',
+    'android', 'ios',          // Capacitor native shells (mirror of dist/)
+    'assets'                   // Vite bundle output, wherever it shows up
 ];
 
 const IGNORE_FILES = [

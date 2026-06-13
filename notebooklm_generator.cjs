@@ -1,23 +1,35 @@
 const fs = require('fs');
 const path = require('path');
 
-// 🛠️ CONFIGURATION FOR NOTEBOOK LM
+// 🛠️ CONFIGURATION
 const OUTPUT_FILE = 'notebooklm_context.txt';
 const PACKAGE_JSON_PATH = path.join(__dirname, 'package.json');
 
-// 🛡️ The Ignore List (Aggressively blocking build & native folders)
+// 🛡️ The Ignore List
+// Matched by basename at any depth (NOT by relative path), so use plain folder
+// names — 'public/assets' never matched here; the real bundle dir is 'assets'.
 const IGNORE_DIRS = [
-    'node_modules', '.git', 'dist', 'build', 'coverage', 
-    '.firebase', '.github', '.vscode', 'public', 'assets',
-    'android', 'ios', '.next', 'out' // <- CRÍTICO: Bloquea las carpetas nativas de Capacitor
+    'node_modules', '.git', 'dist', 'build', 'coverage',
+    '.firebase', '.github', '.vscode',
+    'out',        // compiled TS output — duplicates src/ as .js + .js.map noise
+    'assets',     // Vite/build bundle output, wherever it lands
+    '.claude',    // Claude Code local config (settings.local.json) — not product code
+    '.fluxo'      // runtime artifacts (mcp_servers.json, memory.md) — not product code
 ];
 
 const IGNORE_FILES = [
     'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
     '.DS_Store', 'thumbs.db',
     path.basename(__filename), // Ignore this script itself
-    '.env.local', 'firebase-debug.log', 'ui-debug.log'
+    OUTPUT_FILE,
+    '.env.local', 'firebase-debug.log', 'ui-debug.log',
+    'metadata.json'
 ];
+
+// 🛑 Generated context dumps (output of this script and its siblings). Re-feeding
+// these to NotebookLM is context-of-context noise, so skip any file whose name
+// starts with one of these prefixes — regardless of part number or extension.
+const GENERATED_CONTEXT_RE = /^(notebooklm_context|cnos_full_context|FluxoAI_context|FluxoAi_part)/i;
 
 // 📄 Extensions to Capture
 const ALLOWED_EXTENSIONS = [
@@ -62,8 +74,8 @@ function getAllFiles(dirPath, arrayOfFiles) {
                 arrayOfFiles = getAllFiles(fullPath, arrayOfFiles);
             }
         } else {
-            // Ignorar archivos de salida anteriores
-            if (file.startsWith('notebooklm_context')) return;
+            // Ignorar dumps de contexto generados (este script y sus hermanos)
+            if (GENERATED_CONTEXT_RE.test(file)) return;
 
             if ((ALLOWED_EXTENSIONS.includes(path.extname(file)) || file === '.env') && !IGNORE_FILES.includes(file)) {
                 // Ignorar archivos .min.js o .min.css

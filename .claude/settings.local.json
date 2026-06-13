@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(npm run *)",
-      "Bash(npx vsce *)"
+      "Bash(npx vsce *)",
+      "Bash(cd \"/d/CNOS_Mirror/03_EXPERIMENTAL/fluxo-coder\" && npm run compile 2>&1 | head -40)",
+      "Read(//d/CNOS_Mirror/03_EXPERIMENTAL/fluxo-coder/**)"
     ]
   }
 }
